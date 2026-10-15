@@ -1,0 +1,296 @@
+[
+  {
+    "id": "AEG-TEST-EICAR",
+    "name": "EICAR antivirus test file",
+    "severity": "critical",
+    "category": "malware",
+    "description": "The EICAR standard test string. Harmless - used to verify that antivirus detection works.",
+    "file_types": ["any"],
+    "strings": {"a": {"regex": "^X5O!P%@AP\\[4\\\\PZX54\\(P\\^\\)7CC\\)7\\}\\$EICAR-STANDARD-ANTIVIRUS-TEST-FILE!\\$H\\+H\\*"}},
+    "condition": "a"
+  },
+  {
+    "id": "AEG-HT-MIMIKATZ",
+    "name": "Mimikatz credential dumping tool",
+    "severity": "critical",
+    "category": "malware",
+    "description": "Strings from Mimikatz, a tool that extracts passwords and hashes from Windows memory.",
+    "mitre": ["T1003.001"],
+    "file_types": ["pe", "script", "text", "any"],
+    "strings": {
+      "a": {"text": "sekurlsa::logonpasswords", "nocase": true, "wide": true},
+      "b": {"text": "gentilkiwi", "nocase": true, "wide": true},
+      "c": {"text": "mimikatz", "nocase": true, "wide": true},
+      "d": {"text": "lsadump::sam", "nocase": true, "wide": true},
+      "e": {"text": "kerberos::golden", "nocase": true, "wide": true}
+    },
+    "condition": "2 of them"
+  },
+  {
+    "id": "AEG-HT-COBALTSTRIKE",
+    "name": "Cobalt Strike beacon artefacts",
+    "severity": "critical",
+    "category": "malware",
+    "description": "Artefacts of a Cobalt Strike beacon / stager, a post-exploitation framework heavily abused by ransomware gangs.",
+    "mitre": ["T1071.001", "T1055"],
+    "file_types": ["pe", "script", "text", "other", "any"],
+    "strings": {
+      "a": {"text": "%s as %s\\%s: %d", "wide": false},
+      "b": {"text": "beacon.dll", "nocase": true},
+      "c": {"text": "ReflectiveLoader"},
+      "d": {"regex": "\\\\\\\\\\.\\\\pipe\\\\(MSSE-\\d+-server|msagent_[0-9a-f]{2}|postex_[0-9a-f]{4}|status_[0-9a-f]{2})"},
+      "e": {"text": "%%IMPORT%%"},
+      "f": {"text": "beacon.x64.dll", "nocase": true}
+    },
+    "condition": "d or (c and (b or f)) or (a and e)"
+  },
+  {
+    "id": "AEG-HT-METERPRETER",
+    "name": "Metasploit Meterpreter payload",
+    "severity": "critical",
+    "category": "malware",
+    "mitre": ["T1059", "T1071"],
+    "file_types": ["pe", "script", "elf", "text", "any"],
+    "strings": {
+      "a": {"text": "metsrv.dll", "nocase": true},
+      "b": {"text": "ext_server_stdapi", "nocase": true},
+      "c": {"text": "Meterpreter", "nocase": false},
+      "d": {"hex": "FC E8 82 00 00 00 60 89 E5 31 C0 64 8B 50 30"},
+      "e": {"hex": "FC 48 83 E4 F0 E8 C0 00 00 00 41 51 41 50 52 51"}
+    },
+    "condition": "d or e or 2 of (a,b,c)"
+  },
+  {
+    "id": "AEG-STEALER-BROWSER",
+    "name": "Information stealer (browser credential theft)",
+    "severity": "high",
+    "category": "malware",
+    "description": "Accesses browser credential stores, cookies and crypto wallets together - the typical behaviour of infostealers (RedLine, Lumma, Vidar, Raccoon ...).",
+    "mitre": ["T1555.003", "T1539"],
+    "file_types": ["pe", "script", "text"],
+    "strings": {
+      "a": {"text": "\\Google\\Chrome\\User Data", "nocase": true, "wide": true},
+      "b": {"text": "Login Data", "wide": true},
+      "c": {"text": "Local State", "wide": true},
+      "d": {"text": "os_crypt", "nocase": true},
+      "e": {"text": "encrypted_key"},
+      "f": {"regex": "(?i)(wallet\\.dat|Exodus\\\\exodus\\.wallet|Electrum\\\\wallets|\\\\Ethereum\\\\keystore|MetaMask|nkbihfbeogaeaoehlefnkodbefgpgknn)"},
+      "g": {"text": "\\Mozilla\\Firefox\\Profiles", "nocase": true, "wide": true},
+      "h": {"text": "logins.json"},
+      "i": {"regex": "(?i)(api\\.telegram\\.org/bot|discord(app)?\\.com/api/webhooks)"},
+      "j": {"text": "CryptUnprotectData"},
+      "k": {"text": "Cookies", "wide": true}
+    },
+    "condition": "(a and b and (d or e) and (f or i or g or k)) or (f and i and (b or h)) or (j and e and b and (i or f))"
+  },
+  {
+    "id": "AEG-STEALER-DISCORD",
+    "name": "Discord token grabber",
+    "severity": "high",
+    "category": "malware",
+    "mitre": ["T1528"],
+    "file_types": ["pe", "script", "text"],
+    "strings": {
+      "a": {"regex": "(?i)discord(canary|ptb)?\\\\Local Storage\\\\leveldb"},
+      "b": {"regex": "\\[\\\\w-\\]\\{24\\}\\\\\\.\\[\\\\w-\\]\\{6\\}\\\\\\.\\[\\\\w-\\]\\{27\\}|dQw4w9WgXcQ:"},
+      "c": {"regex": "(?i)discord(app)?\\.com/api/webhooks/\\d+/"},
+      "d": {"text": "api.ipify.org", "nocase": true}
+    },
+    "condition": "a and (b or c or d)"
+  },
+  {
+    "id": "AEG-RANSOM-GENERIC",
+    "name": "Ransomware behaviour strings",
+    "severity": "critical",
+    "category": "ransomware",
+    "description": "Combination of shadow-copy deletion, recovery disabling and ransom note text typical of ransomware binaries.",
+    "mitre": ["T1486", "T1490"],
+    "file_types": ["pe", "script", "text"],
+    "strings": {
+      "a": {"regex": "(?i)vssadmin(\\.exe)?\\s+delete\\s+shadows", "wide": false},
+      "a2": {"text": "delete shadows /all /quiet", "nocase": true, "wide": true},
+      "b": {"regex": "(?i)bcdedit(\\.exe)?\\s+/set\\s+\\{?default\\}?\\s+(recoveryenabled\\s+no|bootstatuspolicy\\s+ignoreallfailures)"},
+      "c": {"regex": "(?i)wbadmin(\\.exe)?\\s+delete\\s+catalog"},
+      "d": {"regex": "(?i)(your (important )?files (have been|are) encrypted|all of your files|decrypt(ion)? (tool|key|software)|to recover your (files|data))", "wide": false},
+      "d2": {"text": "your files are encrypted", "nocase": true, "wide": true},
+      "e": {"regex": "(?i)[a-z2-7]{56}\\.onion"},
+      "f": {"regex": "(?i)(bitcoin|monero|btc wallet)"}
+    },
+    "condition": "((a or a2) and (b or c)) or ((a or a2 or b or c) and (d or d2) and (e or f)) or ((d or d2) and e and f)"
+  },
+  {
+    "id": "AEG-MINER-XMRIG",
+    "name": "XMRig cryptocurrency miner",
+    "severity": "high",
+    "category": "malware",
+    "description": "XMRig Monero miner. Frequently installed silently by malware to steal CPU/GPU time (cryptojacking).",
+    "mitre": ["T1496"],
+    "file_types": ["pe", "elf", "macho", "script", "text", "other"],
+    "strings": {
+      "a": {"text": "xmrig", "nocase": true},
+      "b": {"regex": "stratum\\+(tcp|ssl|tls)://"},
+      "c": {"text": "randomx", "nocase": true},
+      "d": {"text": "cryptonight", "nocase": true},
+      "e": {"text": "\"donate-level\""}
+    },
+    "condition": "(a and (b or c or d)) or (b and e)"
+  },
+  {
+    "id": "AEG-RAT-STRINGS",
+    "name": "Remote access trojan artefacts",
+    "severity": "high",
+    "category": "malware",
+    "description": "Strings associated with commodity RATs (AsyncRAT, njRAT, Quasar, Remcos, DcRat, XWorm).",
+    "mitre": ["T1219"],
+    "file_types": ["pe", "script", "text"],
+    "strings": {
+      "a": {"text": "AsyncRAT", "nocase": true, "wide": true},
+      "b": {"text": "Remcos", "wide": true},
+      "c": {"text": "Quasar.Client", "wide": true},
+      "d": {"regex": "(?i)njrat|nj_?worm", "wide": false},
+      "e": {"text": "DcRat", "wide": true},
+      "f": {"text": "XWorm", "wide": true},
+      "g": {"text": "Breaking-Security.Net", "nocase": true, "wide": true},
+      "h": {"text": "Pastebin", "wide": true},
+      "i": {"text": "\\nuR\\noisreVtnerruC\\swodniW\\tfosorciM\\erawtfoS", "nocase": true, "wide": true}
+    },
+    "condition": "any of (a,c,e,f,g,i) or (b and (g or h)) or d"
+  },
+  {
+    "id": "AEG-PS-OFFENSIVE",
+    "name": "Offensive PowerShell framework",
+    "severity": "high",
+    "category": "malware",
+    "description": "Functions from offensive PowerShell toolkits (PowerSploit, Empire, Nishang, PowerView).",
+    "mitre": ["T1059.001"],
+    "file_types": ["script", "text"],
+    "strings": {
+      "a": {"regex": "(?i)Invoke-(Mimikatz|ReflectivePEInjection|Shellcode|TokenManipulation|DllInjection|PowerShellTcp|Kerberoast|SMBExec|WMIExec|BloodHound)"},
+      "b": {"regex": "(?i)(Get-GPPPassword|Get-Keystrokes|Get-TimedScreenshot|Invoke-NinjaCopy|Out-Minidump|Invoke-CredentialInjection)"},
+      "c": {"regex": "(?i)(PowerView|Find-LocalAdminAccess|Get-NetDomainController|Invoke-UserHunter)"}
+    },
+    "condition": "any of them"
+  },
+  {
+    "id": "AEG-LOADER-SHELLCODE-PS",
+    "name": "PowerShell shellcode loader",
+    "severity": "high",
+    "category": "malware",
+    "mitre": ["T1059.001", "T1055"],
+    "file_types": ["script", "text"],
+    "strings": {
+      "a": {"regex": "(?i)VirtualAlloc"},
+      "b": {"regex": "(?i)(CreateThread|GetDelegateForFunctionPointer|Marshal\\]::Copy)"},
+      "c": {"regex": "(?i)\\[Byte\\[\\]\\]\\s*\\$\\w+\\s*=\\s*(0x[0-9a-f]{2}\\s*,\\s*){32,}"},
+      "d": {"regex": "(?i)(DllImport\\(\"kernel32|Add-Type\\s+-TypeDefinition|func_get_proc_address)"}
+    },
+    "condition": "a and b and (c or d)"
+  },
+  {
+    "id": "AEG-FAKE-CAPTCHA",
+    "name": "ClickFix / fake CAPTCHA clipboard lure",
+    "severity": "high",
+    "category": "malware",
+    "description": "Web page that copies a malicious command to the clipboard and tells the user to paste it into Win+R ('verify you are human'). A leading 2024-2026 infostealer delivery technique.",
+    "mitre": ["T1204.004", "T1059.001"],
+    "file_types": ["text", "script", "html", "htm", "any"],
+    "strings": {
+      "a": {"regex": "(?i)(navigator\\.clipboard\\.writeText|document\\.execCommand\\(\\s*['\"]copy)"},
+      "b": {"regex": "(?i)(powershell|mshta|cmd\\s*/c|conhost)"},
+      "c": {"regex": "(?i)(Windows\\s*\\+\\s*R|Win\\s*\\+\\s*R|press\\s+(Ctrl|Control)\\s*\\+\\s*V|I'?m not a robot|verify (you are|you're) (a )?human|verification (step|id))"}
+    },
+    "condition": "all of them"
+  },
+  {
+    "id": "AEG-PHISH-HTML",
+    "name": "HTML credential phishing page",
+    "severity": "medium",
+    "category": "malware",
+    "description": "Local HTML file with a password form that posts to a remote server or exfiltrates via Telegram - common phishing attachment.",
+    "mitre": ["T1566.001"],
+    "file_types": ["text", "html", "htm", "shtml", "svg"],
+    "strings": {
+      "a": {"regex": "(?i)type\\s*=\\s*[\"']?password"},
+      "b": {"regex": "(?i)(api\\.telegram\\.org/bot|action\\s*=\\s*[\"']https?://|\\.php[\"'])"},
+      "c": {"regex": "(?i)(microsoft|office ?365|outlook|onedrive|sharepoint|docusign|adobe|wetransfer|dropbox|paypal|bank|webmail)"},
+      "d": {"regex": "(?i)(atob\\(|unescape\\(|eval\\(|fromCharCode)"}
+    },
+    "condition": "a and b and (c or d)"
+  },
+  {
+    "id": "AEG-HTML-SMUGGLING",
+    "name": "HTML smuggling payload",
+    "severity": "high",
+    "category": "malware",
+    "description": "HTML/SVG that assembles a binary in the browser and forces a download - used to bypass email/web gateways.",
+    "mitre": ["T1027.006"],
+    "file_types": ["text", "html", "htm", "svg"],
+    "strings": {
+      "a": {"regex": "(?i)new\\s+Blob\\s*\\("},
+      "b": {"regex": "(?i)(msSaveOrOpenBlob|\\.download\\s*=|createObjectURL)"},
+      "c": {"regex": "(?i)(atob\\s*\\(|base64)"},
+      "d": {"regex": "(?i)\\.(zip|iso|img|exe|js|vbs|hta|lnk|msi|one)[\"']"}
+    },
+    "condition": "a and b and c and d"
+  },
+  {
+    "id": "AEG-NIX-ROOTKIT",
+    "name": "Linux userland rootkit / LD_PRELOAD hijack",
+    "severity": "high",
+    "category": "malware",
+    "mitre": ["T1574.006", "T1014"],
+    "file_types": ["elf", "script", "text"],
+    "strings": {
+      "a": {"text": "/etc/ld.so.preload"},
+      "b": {"regex": "(readdir64?|fopen64?)"},
+      "c": {"regex": "dlsym"},
+      "d": {"regex": "(?i)(hide_?(pid|port|file|proc)|libprocesshider|diamorphine|reptile)"}
+    },
+    "condition": "d or (a and b and c)"
+  },
+  {
+    "id": "AEG-NIX-BOTNET",
+    "name": "IoT/Linux botnet (Mirai family)",
+    "severity": "high",
+    "category": "malware",
+    "mitre": ["T1498"],
+    "file_types": ["elf", "script"],
+    "strings": {
+      "a": {"text": "/bin/busybox"},
+      "b": {"regex": "(?i)(MIRAI|ECCHI|OWARI|SORA|okiru)"},
+      "c": {"text": "/proc/net/tcp"},
+      "d": {"regex": "(?i)(attack_(udp|tcp|app)_|scanner_init|killer_init)"}
+    },
+    "condition": "d or (a and b) or (a and c and b)"
+  },
+  {
+    "id": "AEG-WEBSHELL-CHINA-CHOPPER",
+    "name": "China Chopper / generic web shell",
+    "severity": "critical",
+    "category": "malware",
+    "mitre": ["T1505.003"],
+    "file_types": ["script", "text"],
+    "strings": {
+      "a": {"regex": "(?i)<%@\\s*Page\\s+Language\\s*=\\s*\"?Jscript\"?.{0,200}eval\\(Request"},
+      "b": {"regex": "(?i)<\\?php\\s+@?eval\\(\\$_(POST|REQUEST)\\["},
+      "c": {"regex": "(?i)(Process\\.Start|Runtime\\.getRuntime\\(\\)\\.exec)\\s*\\(\\s*request\\.getParameter"}
+    },
+    "condition": "any of them"
+  },
+  {
+    "id": "AEG-MAC-STEALER",
+    "name": "macOS information stealer (AMOS / Atomic family)",
+    "severity": "high",
+    "category": "malware",
+    "description": "AppleScript/osascript that phishes the login password and harvests Keychain, browser and wallet data.",
+    "mitre": ["T1555.001", "T1056.002"],
+    "file_types": ["macho", "script", "text"],
+    "strings": {
+      "a": {"regex": "(?i)osascript"},
+      "b": {"regex": "(?i)display dialog.{0,200}(password|hidden answer)"},
+      "c": {"regex": "(?i)(login\\.keychain|Keychains/)"},
+      "d": {"regex": "(?i)(Exodus|Electrum|Coinomi|Binance|MetaMask|nkbihfbeogaeaoehlefnkodbefgpgknn)"}
+    },
+    "condition": "(a or b) and b and (c or d)"
+  }
+]

@@ -1,0 +1,4 @@
+# Bundled hash signatures: <sha256|sha1|md5><TAB><threat name>
+# Updated feeds (MalwareBazaar etc.) are downloaded by `aegis update` into the data directory.
+275a021bbfb6489e54d471899f7db9d1663fc695ec2fe2a2c4538aabf651fd0f	EICAR-Test-File (not a virus)
+44d88612fea8a8f36de82e1278abb02f	EICAR-Test-File (not a virus)

@@ -1,0 +1,54 @@
+# Potentially unwanted programs / adware / scareware commonly found on consumer PCs.
+# Matched case-insensitively as substrings of installed program display names.
+onelaunch
+wave browser
+wavebrowser
+shift browser
+webcompanion
+web companion
+pc accelerate
+driver support
+driversupport
+reimage repair
+restoro
+fortect
+bytefence
+segurazo
+santivirus
+mindspark
+search protect
+conduit
+babylon toolbar
+ask toolbar
+mywebsearch
+mysearchdial
+delta toolbar
+sweet page
+snap.do
+iobit advanced systemcare
+pc cleaner pro
+pc optimizer pro
+advanced mac cleaner
+mackeeper
+clean my pc
+cleanmypc
+speedup my pc
+slimcleaner
+driver booster
+winzip driver updater
+outbyte
+pcappstore
+pc app store
+yandex browser manager
+safe finder
+searchbaron
+chromium bundle
+relevantknowledge
+opencandy
+installcore
+eorezo
+crossrider
+superfish
+browserair
+chrome cleaner pro
+microleaves
