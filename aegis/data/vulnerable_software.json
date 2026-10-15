@@ -1,0 +1,269 @@
+{
+  "_comment": [
+    "Vulnerable / end-of-life software rules used by aegis/scanners/software.py.",
+    "Fields: id, name_regex (case-insensitive, searched in the installed program's display name),",
+    "severity (info|low|medium|high|critical), advice (plain-English action), cve (string or list, optional),",
+    "version matching - exactly one of:",
+    "  max_vulnerable_version: affected when installed version <= this value (inclusive)",
+    "  fixed_version:          affected when installed version <  this value (exclusive)",
+    "  'any' (max_vulnerable_version = \"any\"): every version is affected / end-of-life",
+    "  exact_versions: [..]    affected only for these exact versions",
+    "Optional: exclude_regex (skip names matching), version_from_name (regex with one group; used instead of",
+    "DisplayVersion, e.g. Java 'Update 361'), eol (true => reported as unsupported software), eol_date (YYYY-MM-DD;",
+    "rule only applies on/after this date), platforms (default [windows, darwin]; Linux distro packages",
+    "backport fixes so version-based rules are unreliable there), title (finding title override), reference (URL/ID)."
+  ],
+  "rules": [
+    {
+      "id": "flash",
+      "name_regex": "adobe flash player",
+      "max_vulnerable_version": "any",
+      "severity": "high",
+      "eol": true,
+      "eol_date": "2020-12-31",
+      "cve": "multiple (end of life 2020-12-31)",
+      "advice": "Adobe Flash Player has been dead since December 2020 and is full of unpatched, actively exploited holes. Uninstall it (Adobe's official uninstaller is at helpx.adobe.com/flash-player/kb/uninstall-flash-player-windows.html)."
+    },
+    {
+      "id": "shockwave",
+      "name_regex": "adobe shockwave player",
+      "max_vulnerable_version": "any",
+      "severity": "high",
+      "eol": true,
+      "eol_date": "2019-04-09",
+      "cve": "multiple (end of life 2019-04-09)",
+      "advice": "Adobe Shockwave Player was discontinued in April 2019 and has unpatched vulnerabilities. Uninstall it."
+    },
+    {
+      "id": "silverlight",
+      "name_regex": "^microsoft silverlight",
+      "max_vulnerable_version": "any",
+      "severity": "medium",
+      "eol": true,
+      "eol_date": "2021-10-12",
+      "cve": "end of life 2021-10-12",
+      "advice": "Microsoft Silverlight reached end of support on 2021-10-12 and no longer gets security fixes. Uninstall it unless a legacy application you still need requires it."
+    },
+    {
+      "id": "quicktime",
+      "name_regex": "^(apple )?quicktime",
+      "max_vulnerable_version": "any",
+      "severity": "high",
+      "eol": true,
+      "cve": "multiple (Apple ended QuickTime for Windows support in 2016; CISA/US-CERT alert TA16-105A)",
+      "reference": "https://www.cisa.gov/news-events/alerts/2016/04/14/apple-ends-support-quicktime-windows",
+      "advice": "Apple stopped patching QuickTime for Windows in 2016 and known flaws can never be fixed. Uninstall it (Settings > Apps) - modern players such as VLC handle the same media files."
+    },
+    {
+      "id": "java-6-7",
+      "name_regex": "^(java\\(tm\\)|java)(\\s+se)?(\\s+(development kit|runtime environment))?\\s+(6|7)(\\.\\d+)?(\\s|$)",
+      "max_vulnerable_version": "any",
+      "severity": "high",
+      "eol": true,
+      "cve": "multiple (Java 6 and 7 are long past end of public updates)",
+      "advice": "Java 6 and 7 have not received public security updates for years and are a favourite exploit-kit target. Uninstall them; if an application needs Java, install a current supported version (Java 17/21 LTS, for example Eclipse Temurin)."
+    },
+    {
+      "id": "java-8-old",
+      "name_regex": "^(java\\(tm\\)|java)(\\s+se)?(\\s+(development kit|runtime environment))?\\s+8(\\.\\d+)?\\s+update\\s+\\d+",
+      "version_from_name": "update\\s+(\\d+)",
+      "fixed_version": "401",
+      "severity": "medium",
+      "cve": "multiple (Oracle Critical Patch Updates)",
+      "advice": "This Java 8 build is missing at least two years of security fixes. Update Java (java.com or your vendor's installer) to the latest Java 8 update, or move to a current LTS release such as Java 17 or 21."
+    },
+    {
+      "id": "winrar",
+      "name_regex": "^winrar",
+      "fixed_version": "7.13",
+      "severity": "high",
+      "cve": ["CVE-2025-8088", "CVE-2025-6218"],
+      "advice": "WinRAR before 7.13 has a path-traversal flaw (CVE-2025-8088) that was exploited in the wild by the RomCom group: opening a booby-trapped archive can silently drop malware into your Startup folder. Update WinRAR to 7.13 or newer from rarlab.com."
+    },
+    {
+      "id": "7zip",
+      "name_regex": "^7-zip",
+      "fixed_version": "24.09",
+      "severity": "medium",
+      "cve": "CVE-2025-0411",
+      "advice": "7-Zip before 24.09 lets archives bypass Windows' 'Mark of the Web' protection (CVE-2025-0411), so downloaded malware runs without SmartScreen warnings. Update to 24.09 or newer from 7-zip.org."
+    },
+    {
+      "id": "python2",
+      "name_regex": "^python\\s+2\\.\\d+",
+      "max_vulnerable_version": "any",
+      "severity": "medium",
+      "eol": true,
+      "eol_date": "2020-01-01",
+      "cve": "end of life 2020-01-01",
+      "advice": "Python 2 has been unsupported since 1 January 2020 and receives no security fixes. Migrate scripts to Python 3 and uninstall Python 2."
+    },
+    {
+      "id": "putty",
+      "name_regex": "^putty",
+      "fixed_version": "0.81",
+      "severity": "medium",
+      "cve": ["CVE-2024-31497", "CVE-2023-48795"],
+      "advice": "PuTTY before 0.81 leaks private-key bits when you use NIST P-521 ECDSA keys (CVE-2024-31497, enough for an attacker to recover the key) and earlier versions are exposed to the Terrapin attack. Update PuTTY from chiark.greenend.org.uk/~sgtatham/putty/ and replace any P-521 keys."
+    },
+    {
+      "id": "notepadpp",
+      "name_regex": "^notepad\\+\\+",
+      "fixed_version": "8.8.2",
+      "severity": "medium",
+      "cve": "CVE-2025-49144",
+      "advice": "Notepad++ before 8.8.2 has an installer privilege-escalation flaw (CVE-2025-49144). Update from notepad-plus-plus.org."
+    },
+    {
+      "id": "vlc",
+      "name_regex": "^vlc media player",
+      "fixed_version": "3.0.21",
+      "severity": "medium",
+      "cve": "CVE-2024-46461",
+      "advice": "VLC before 3.0.21 can be crashed or exploited with a malformed media file (CVE-2024-46461 and others). Update VLC from videolan.org."
+    },
+    {
+      "id": "acrobat-old",
+      "name_regex": "^adobe (acrobat|reader)\\s*(x|xi|11|10|9|8|7)(?![a-z0-9])",
+      "max_vulnerable_version": "any",
+      "severity": "high",
+      "eol": true,
+      "cve": "multiple (end of life: Reader X 2015, XI 2017)",
+      "advice": "This version of Adobe Acrobat/Reader is long out of support and has many unpatched, exploited PDF vulnerabilities. Uninstall it and install the current Adobe Acrobat Reader (or use your browser's built-in PDF viewer)."
+    },
+    {
+      "id": "acrobat-2015-2017",
+      "name_regex": "^adobe acrobat( pro| standard)?( dc)?( classic)?\\s*(2015|2017)",
+      "max_vulnerable_version": "any",
+      "severity": "high",
+      "eol": true,
+      "eol_date": "2022-06-07",
+      "cve": "multiple (end of support 2020-04 for 2015, 2022-06 for 2017)",
+      "advice": "This Adobe Acrobat release is out of support and no longer receives security patches. Upgrade to the current Acrobat or Acrobat Reader."
+    },
+    {
+      "id": "office-2010",
+      "name_regex": "^microsoft office (professional|standard|home|small business|enterprise|ultimate|plus|student|basic|personal).*\\b2010\\b",
+      "max_vulnerable_version": "any",
+      "severity": "high",
+      "eol": true,
+      "eol_date": "2020-10-13",
+      "cve": "end of support 2020-10-13",
+      "advice": "Microsoft Office 2010 stopped receiving security updates on 2020-10-13; Word/Excel exploits for it stay open forever. Upgrade to Microsoft 365 or a supported Office version."
+    },
+    {
+      "id": "office-2013",
+      "name_regex": "^microsoft office (professional|standard|home|small business|enterprise|ultimate|plus|student|basic|personal).*\\b2013\\b",
+      "max_vulnerable_version": "any",
+      "severity": "high",
+      "eol": true,
+      "eol_date": "2023-04-11",
+      "cve": "end of support 2023-04-11",
+      "advice": "Microsoft Office 2013 stopped receiving security updates on 2023-04-11. Upgrade to Microsoft 365 or a supported Office version."
+    },
+    {
+      "id": "office-2016-2019",
+      "name_regex": "^microsoft office (professional|standard|home|small business|enterprise|ultimate|plus|student|basic|personal).*\\b(2016|2019)\\b",
+      "max_vulnerable_version": "any",
+      "severity": "medium",
+      "eol": true,
+      "eol_date": "2025-10-14",
+      "cve": "end of support 2025-10-14",
+      "advice": "Microsoft Office 2016 and 2019 stopped receiving security updates on 2025-10-14. Upgrade to Microsoft 365, Office 2024 or another supported version; until then keep macros disabled and avoid opening unexpected attachments."
+    },
+    {
+      "id": "office-2021",
+      "name_regex": "^microsoft office (ltsc )?(professional|standard|home|small business|enterprise|plus|student|basic|personal)?.*\\b2021\\b",
+      "exclude_regex": "proof|language|mui|shared|interop",
+      "max_vulnerable_version": "any",
+      "severity": "medium",
+      "eol": true,
+      "eol_date": "2026-10-13",
+      "cve": "end of support 2026-10-13",
+      "advice": "Microsoft Office 2021 reached end of support on 2026-10-13. Upgrade to Microsoft 365 or Office 2024."
+    },
+    {
+      "id": "internet-explorer",
+      "name_regex": "^internet explorer",
+      "max_vulnerable_version": "any",
+      "severity": "low",
+      "eol": true,
+      "eol_date": "2022-06-15",
+      "cve": "retired 2022-06-15",
+      "advice": "Internet Explorer was retired on 2022-06-15 and receives no security updates. Use Microsoft Edge (which has an IE-compatibility mode if a legacy site demands it)."
+    },
+    {
+      "id": "zoom-old",
+      "name_regex": "^zoom( workplace| meetings)?(\\s*\\(|\\s*$|\\s+\\d)",
+      "exclude_regex": "outlook|plugin|room|rooms|connector|sdk",
+      "fixed_version": "6.0",
+      "severity": "medium",
+      "cve": "multiple (Zoom security bulletins)",
+      "advice": "This Zoom client is more than a year behind and misses many security fixes (see zoom.com/trust/security-bulletin). Update from Zoom's menu: profile picture > Check for updates."
+    },
+    {
+      "id": "chrome-old",
+      "name_regex": "^google chrome$",
+      "fixed_version": "130",
+      "severity": "medium",
+      "title": "Outdated web browser: Google Chrome",
+      "cve": "multiple",
+      "advice": "This Google Chrome is two or more years out of date and missing dozens of exploited-in-the-wild fixes. Open chrome://settings/help to update, then restart Chrome."
+    },
+    {
+      "id": "edge-old",
+      "name_regex": "^microsoft edge$",
+      "fixed_version": "130",
+      "severity": "medium",
+      "title": "Outdated web browser: Microsoft Edge",
+      "cve": "multiple",
+      "advice": "This Microsoft Edge is two or more years out of date. Open edge://settings/help to update, then restart Edge."
+    },
+    {
+      "id": "firefox-old",
+      "name_regex": "^mozilla firefox",
+      "exclude_regex": "maintenance service",
+      "fixed_version": "128",
+      "severity": "medium",
+      "title": "Outdated web browser: Mozilla Firefox",
+      "cve": "multiple",
+      "advice": "This Firefox is older than the current Extended Support Release (128) and no longer receives security updates. Open Menu > Help > About Firefox to update."
+    },
+    {
+      "id": "openssl-1x",
+      "name_regex": "^openssl",
+      "fixed_version": "3.0",
+      "platforms": ["windows"],
+      "severity": "medium",
+      "eol": true,
+      "cve": "OpenSSL 1.1.1 and older are end of life (1.1.1: 2023-09-11)",
+      "advice": "OpenSSL 1.x no longer receives public security fixes. Update to OpenSSL 3.x (or uninstall it if no program of yours needs it)."
+    },
+    {
+      "id": "teamviewer-old",
+      "name_regex": "^teamviewer",
+      "exclude_regex": "meeting|plugin|printer|outlook",
+      "fixed_version": "15.8.3",
+      "severity": "medium",
+      "cve": "CVE-2020-13699",
+      "advice": "TeamViewer before 15.8.3 has an unquoted URI handler flaw (CVE-2020-13699) that lets a web page steal your TeamViewer session credentials, and old versions are also a favourite of tech-support scammers. Update TeamViewer or uninstall it if you do not use it."
+    },
+    {
+      "id": "ccleaner-backdoor",
+      "name_regex": "^ccleaner",
+      "exact_versions": ["5.33.6162", "1.07.3191"],
+      "severity": "high",
+      "cve": "Floxif supply-chain backdoor (September 2017)",
+      "advice": "This exact CCleaner build (5.33.6162 / Cloud 1.07.3191) shipped with the Floxif backdoor. Uninstall it, update to a current CCleaner (or remove it) and run a full antivirus scan."
+    }
+  ],
+  "remote_access_software": [
+    "teamviewer", "anydesk", "rustdesk", "splashtop", "logmein", "gotomypc", "goto resolve", "screenconnect",
+    "connectwise control", "connectwise automate", "ultraviewer", "ammyy", "radmin", "remote utilities",
+    "realvnc", "vnc server", "vnc viewer", "tightvnc", "ultravnc", "tigervnc", "chrome remote desktop",
+    "supremo", "dwservice", "dwagent", "meshcentral", "mesh agent", "atera", "n-able", "take control", "pdq connect",
+    "parsec", "zoho assist", "dameware", "beyondtrust", "bomgar", "remotepc", "aeroadmin", "getscreen",
+    "level.io", "ninjaone", "ninjarmm", "kaseya", "datto rmm", "syncro", "simplehelp", "action1", "nomachine",
+    "microsoft remote help", "quick assist"
+  ]
+}

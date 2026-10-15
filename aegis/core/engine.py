@@ -46,12 +46,22 @@ class ScanEngine:
         on_finding: Optional[Callable[[Finding], None]] = None,
         deep: Optional[bool] = None,
     ) -> ScanResult:
+        from_profile = not scanners
         names = list(scanners) if scanners else list(PROFILES.get(profile, []))
         if not names:
             raise ValueError("no scanners selected")
         unknown = [n for n in names if n not in REGISTRY]
         if unknown:
-            raise ValueError(f"unknown scanner(s): {', '.join(unknown)}; available: {', '.join(sorted(REGISTRY))}")
+            if from_profile:
+                # A built-in profile references a scanner whose module failed to
+                # load (e.g. an optional dependency). Skip it rather than abort.
+                for n in unknown:
+                    log.warning("profile %r scanner %r is unavailable - skipping", profile, n)
+                names = [n for n in names if n in REGISTRY]
+                if not names:
+                    raise ValueError("no scanners available")
+            else:
+                raise ValueError(f"unknown scanner(s): {', '.join(unknown)}; available: {', '.join(sorted(REGISTRY))}")
 
         if paths:
             scan_paths = [Path(p) for p in paths]
