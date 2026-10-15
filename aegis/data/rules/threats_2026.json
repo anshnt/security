@@ -1,0 +1,2590 @@
+[
+  {
+    "id": "AEG-T26-CF-FIX-LURE",
+    "name": "ClickFix 'fix this error' lure page",
+    "severity": "medium",
+    "category": "malware",
+    "description": "Web page that copies a shell command to the clipboard and tells the visitor to paste it into the Windows Run dialog or a terminal to 'fix' a fake browser crash, missing font/extension, audio-driver or update error (ClickFix variants: CrashFix, GlitchFix, fake Google Meet audio fix). The user, not malware, launches the command. A saved tech-support tutorial with a copy button can look the same, so verify the page.",
+    "mitre": [
+      "T1204.004",
+      "T1059.001"
+    ],
+    "file_types": [
+      "text",
+      "script",
+      "html",
+      "htm",
+      "hta",
+      "svg",
+      "mhtml"
+    ],
+    "strings": {
+      "clip": {
+        "regex": "\\b(?:navigator\\.clipboard\\.writeText|execCommand\\(\\s*['\\\"]copy['\\\"]|clipboardData\\.setData\\()",
+        "nocase": true
+      },
+      "keys": {
+        "regex": "\\b(?:Win(dows)?\\s*(key)?\\s*\\+\\s*[RX]\\b|Windows\\s+key|Ctrl\\s*\\+\\s*V\\b|Run\\s+(dialog|box|command))",
+        "nocase": true
+      },
+      "cmd": {
+        "regex": "\\b(?:powershell|pwsh|mshta|cmd(\\.exe)?\\s*/[ck]\\b|wscript|cscript|rundll32|msiexec|bitsadmin|curl(\\.exe)?\\s+-|finger(\\.exe)?\\s|nslookup\\s)",
+        "nocase": true
+      },
+      "fix": {
+        "regex": "\\b(?:aw,?\\s*snap|something\\s+went\\s+wrong|page\\s+(is\\s+)?not\\s+(loading|displaying)|missing\\s+(system\\s+)?font|font\\s+(is\\s+)?required|extension\\s+(is\\s+)?(missing|required)|fix\\s+audio|audio\\s+driver|browser\\s+(is\\s+)?out\\s+of\\s+date|update\\s+required|how\\s+to\\s+fix|fix\\s+(it|this)\\b|browser\\s+(has\\s+)?crash)",
+        "nocase": true
+      }
+    },
+    "condition": "clip and keys and cmd and fix",
+    "references": [
+      "https://www.microsoft.com/en-us/security/blog/2025/08/21/think-before-you-clickfix-analyzing-the-clickfix-social-engineering-technique/",
+      "https://www.microsoft.com/en-us/security/blog/2026/02/05/clickfix-variant-crashfix-deploying-python-rat-trojan/",
+      "https://thehackernews.com/2026/01/clickfix-attacks-expand-using-fake.html"
+    ]
+  },
+  {
+    "id": "AEG-T26-CF-TERMINAL-LURE",
+    "name": "ClickFix lure targeting Windows Terminal (Win+X)",
+    "severity": "high",
+    "category": "malware",
+    "description": "Lure page that writes a command to the clipboard and instructs Win+X then I (Windows Terminal), a launch surface that evades detections written only for the Run dialog (seen in Microsoft-reported February 2026 campaigns).",
+    "mitre": [
+      "T1204.004",
+      "T1059.001"
+    ],
+    "file_types": [
+      "text",
+      "script",
+      "html",
+      "htm",
+      "hta",
+      "svg",
+      "mhtml"
+    ],
+    "strings": {
+      "clip": {
+        "regex": "\\b(?:navigator\\.clipboard\\.writeText|execCommand\\(\\s*['\\\"]copy['\\\"]|clipboardData\\.setData\\()",
+        "nocase": true
+      },
+      "winx": {
+        "regex": "\\bWin(dows)?\\s*(key)?\\s*\\+\\s*X\\b",
+        "nocase": true
+      },
+      "term": {
+        "regex": "\\b(?:Windows\\s+Terminal|Terminal\\s*\\(\\s*Admin\\s*\\)|PowerShell\\s*\\(\\s*Admin\\s*\\)|press\\s+I\\b)",
+        "nocase": true
+      },
+      "ps": {
+        "regex": "(?:\\b(?:powershell|pwsh|Invoke-Expression)|\\biex\\b|\\birm\\b)",
+        "nocase": true
+      }
+    },
+    "condition": "clip and winx and term and ps",
+    "references": [
+      "https://thehackernews.com/2026/03/microsoft-reveals-clickfix-campaign.html",
+      "https://www.microsoft.com/en-us/security/blog/2025/08/21/think-before-you-clickfix-analyzing-the-clickfix-social-engineering-technique/"
+    ]
+  },
+  {
+    "id": "AEG-T26-CF-FILEFIX-LURE",
+    "name": "FileFix lure (command hidden behind a fake file path)",
+    "severity": "high",
+    "category": "malware",
+    "description": "Lure page that copies a command padded with spaces and a decoy 'C:\\...' path so that, pasted into the File Explorer address bar of a 'choose file' dialog, only the harmless-looking path is visible. No file is downloaded, so Mark-of-the-Web never applies.",
+    "mitre": [
+      "T1204.004",
+      "T1059.001"
+    ],
+    "file_types": [
+      "text",
+      "script",
+      "html",
+      "htm",
+      "hta",
+      "svg",
+      "mhtml"
+    ],
+    "strings": {
+      "clip": {
+        "regex": "\\b(?:navigator\\.clipboard\\.writeText|execCommand\\(\\s*['\\\"]copy['\\\"]|clipboardData\\.setData\\()",
+        "nocase": true
+      },
+      "pad": {
+        "regex": "\\b(powershell|pwsh|cmd|mshta)[^\\r\\n]{0,500}?\\s{12,}#\\s?[A-Za-z]:\\\\{1,2}[A-Za-z]",
+        "nocase": true
+      },
+      "ui": {
+        "regex": "\\b(?:File\\s+Explorer|address\\s+bar|Choose\\s+File|Open\\s+File\\s+Explorer|Browse)",
+        "nocase": true
+      }
+    },
+    "condition": "clip and pad and ui",
+    "references": [
+      "https://www.kaspersky.com/blog/filefix-attack-windows-file-explorer/54752/",
+      "https://www.microsoft.com/en-us/security/blog/2025/08/21/think-before-you-clickfix-analyzing-the-clickfix-social-engineering-technique/"
+    ]
+  },
+  {
+    "id": "AEG-T26-CF-FINGER-PIPE",
+    "name": "finger.exe used to fetch a script (ClickFix/CrashFix)",
+    "severity": "high",
+    "category": "malware",
+    "description": "Command that pipes the output of the legacy 'finger' client to a shell, or copies finger.exe to a renamed executable. Used by KongTuke and CrashFix chains since late 2025; finger has no legitimate use on modern PCs.",
+    "mitre": [
+      "T1204.004",
+      "T1105"
+    ],
+    "file_types": [
+      "script",
+      "text",
+      "ps1",
+      "bat",
+      "cmd",
+      "vbs",
+      "js",
+      "hta",
+      "reg",
+      "wsf",
+      "pyw",
+      "mof",
+      "html",
+      "htm"
+    ],
+    "strings": {
+      "fin": {
+        "regex": "\\bfinger(\\.exe)?\\s+[\\w.\\-]{1,64}@[\\w.\\-:]{3,128}",
+        "nocase": true
+      },
+      "pipe": {
+        "regex": "\\|\\s*(cmd|powershell|pwsh)",
+        "nocase": true
+      },
+      "copy": {
+        "regex": "\\bcopy\\s+[^\\r\\n]{0,80}finger\\.exe[^\\r\\n]{0,80}\\.exe",
+        "nocase": true
+      }
+    },
+    "condition": "(fin and pipe) or copy",
+    "references": [
+      "https://www.microsoft.com/en-us/security/blog/2026/02/05/clickfix-variant-crashfix-deploying-python-rat-trojan/",
+      "https://redcanary.com/threat-detection-report/threats/kongtuke/"
+    ]
+  },
+  {
+    "id": "AEG-T26-CF-NSLOOKUP-STAGER",
+    "name": "nslookup used as a DNS payload stager",
+    "severity": "medium",
+    "category": "malware",
+    "description": "Command that queries an attacker-chosen DNS server with nslookup, filters the 'Name:' answer and pipes it to a shell (DNS-based ClickFix variant reported by Microsoft in February 2026).",
+    "mitre": [
+      "T1204.004",
+      "T1071.004"
+    ],
+    "file_types": [
+      "script",
+      "text",
+      "ps1",
+      "bat",
+      "cmd",
+      "vbs",
+      "js",
+      "hta",
+      "reg",
+      "wsf",
+      "pyw",
+      "mof",
+      "html",
+      "htm"
+    ],
+    "strings": {
+      "ns": {
+        "regex": "\\bnslookup(\\.exe)?\\s+(-\\w+\\s+)*[\\w.\\-]{3,100}\\s+\\d{1,3}(\\.\\d{1,3}){3}",
+        "nocase": true
+      },
+      "name": {
+        "regex": "\\b(?:findstr[^\\r\\n]{0,40}Name:|Select-String[^\\r\\n]{0,40}Name:)",
+        "nocase": true
+      },
+      "run": {
+        "regex": "(?:\\bfor\\s+/f[^\\r\\n]{0,120}nslookup|\\|\\s*(cmd|powershell|pwsh|iex))",
+        "nocase": true
+      }
+    },
+    "condition": "ns and name and run",
+    "references": [
+      "https://thehackernews.com/2026/02/microsoft-discloses-dns-based-clickfix.html"
+    ]
+  },
+  {
+    "id": "AEG-T26-CF-APPV-VBS",
+    "name": "SyncAppvPublishingServer.vbs abused to run a download command",
+    "severity": "high",
+    "category": "malware",
+    "description": "Command that abuses the signed App-V helper SyncAppvPublishingServer to run PowerShell download/execute stages (ClearFake and Amatera ClickFix chains, January 2026).",
+    "mitre": [
+      "T1218",
+      "T1059.001"
+    ],
+    "file_types": [
+      "script",
+      "text",
+      "ps1",
+      "bat",
+      "cmd",
+      "vbs",
+      "js",
+      "hta",
+      "reg",
+      "wsf",
+      "pyw",
+      "mof",
+      "html",
+      "htm",
+      "lnk"
+    ],
+    "strings": {
+      "appv": {
+        "regex": "[S]yncAppvPublishingServer",
+        "nocase": true
+      },
+      "dl": {
+        "regex": "(?:\\b(?:Invoke-Expression|DownloadString|Invoke-WebRequest|FromBase64String|https?://)|\\biex\\b|\\birm\\b|\\biwr\\b|-enc\\b)",
+        "nocase": true
+      }
+    },
+    "condition": "appv and dl",
+    "references": [
+      "https://thehackernews.com/2026/01/clickfix-attacks-expand-using-fake.html"
+    ]
+  },
+  {
+    "id": "AEG-T26-CF-IEX-IRM-RAWIP",
+    "name": "PowerShell iex(irm <raw IP>) one-liner",
+    "severity": "high",
+    "category": "malware",
+    "description": "PowerShell one-liner that downloads and immediately executes content from a raw public IP address (iex(irm 'IP:port/path' -UseBasicParsing)), the stage-one command in Google/Cloudflare fake-verification ClickFix pages.",
+    "mitre": [
+      "T1059.001",
+      "T1105"
+    ],
+    "file_types": [
+      "script",
+      "text",
+      "ps1",
+      "bat",
+      "cmd",
+      "vbs",
+      "js",
+      "hta",
+      "reg",
+      "wsf",
+      "pyw",
+      "mof",
+      "html",
+      "htm",
+      "lnk"
+    ],
+    "strings": {
+      "cradle": {
+        "regex": "\\b(iex|Invoke-Expression)\\s*\\(?\\s*\\(?\\s*(irm|iwr|Invoke-RestMethod|Invoke-WebRequest)\\s+['\\\"]?(https?://)?(?!(?:10|127|192\\.168|169\\.254|172\\.(?:1[6-9]|2\\d|3[01]))\\.)\\d{1,3}(\\.\\d{1,3}){3}(:\\d{2,5})?[/'\\\"\\s]",
+        "nocase": true
+      }
+    },
+    "condition": "cradle",
+    "references": [
+      "https://www.malwarebytes.com/blog/threat-intel/2026/07/fake-google-and-cloudflare-verification-pages-spread-multiple-malware-families"
+    ]
+  },
+  {
+    "id": "AEG-T26-CF-MSHTA-REMOTE",
+    "name": "mshta launched against a remote URL",
+    "severity": "medium",
+    "category": "malware",
+    "description": "mshta executing an HTA or script directly from an http(s) URL, including disguised double extensions such as '.hta.mp4'. Common ClickFix stage and malvertising payload runner.",
+    "mitre": [
+      "T1218.005",
+      "T1204.004"
+    ],
+    "file_types": [
+      "script",
+      "text",
+      "ps1",
+      "bat",
+      "cmd",
+      "vbs",
+      "js",
+      "hta",
+      "reg",
+      "wsf",
+      "pyw",
+      "mof",
+      "html",
+      "htm"
+    ],
+    "strings": {
+      "mshta": {
+        "regex": "\\bmshta(\\.exe)?\\s+[\\\"']?(https?:)?//[^\\s\\\"'<>]{4,300}",
+        "nocase": true
+      }
+    },
+    "condition": "mshta",
+    "references": [
+      "https://www.microsoft.com/en-us/security/blog/2025/08/21/think-before-you-clickfix-analyzing-the-clickfix-social-engineering-technique/"
+    ]
+  },
+  {
+    "id": "AEG-T26-CF-STAGE1-PROGRAMDATA",
+    "name": "ClickFix stage-one downloader artefacts (ProgramData\\Zooms, dl-callback)",
+    "severity": "high",
+    "category": "malware",
+    "description": "Script artefacts documented in July 2026 fake Google/Cloudflare verification chains: a staging folder under ProgramData named Zooms and a '/dl-callback' beacon issued by PowerShell.",
+    "mitre": [
+      "T1059.001",
+      "T1105"
+    ],
+    "file_types": [
+      "script",
+      "text",
+      "ps1",
+      "bat",
+      "cmd",
+      "vbs",
+      "js",
+      "hta",
+      "reg",
+      "wsf",
+      "pyw",
+      "mof",
+      "pe"
+    ],
+    "strings": {
+      "dir": {
+        "regex": "\\bProgramData\\\\{1,2}Zooms",
+        "nocase": true
+      },
+      "cb": {
+        "regex": "[d]l\\-callback",
+        "nocase": true
+      },
+      "net": {
+        "regex": "\\b(?:iwr|irm|Invoke-WebRequest|Invoke-RestMethod|curl|DownloadString)",
+        "nocase": true
+      }
+    },
+    "condition": "dir or (cb and net)",
+    "references": [
+      "https://www.malwarebytes.com/blog/threat-intel/2026/07/fake-google-and-cloudflare-verification-pages-spread-multiple-malware-families"
+    ]
+  },
+  {
+    "id": "AEG-T26-STEALER-ABE-BYPASS",
+    "name": "Infostealer with Chrome app-bound-encryption bypass",
+    "severity": "high",
+    "category": "malware",
+    "description": "Executable or script combining the Chrome app-bound key name (app_bound_encrypted_key) with elevation-service COM access, DevTools cookie debugging or CookieMonster memory scanning, plus crypto-wallet / messenger targeting strings. This is the technique StealC, Vidar, Lumma, MetaStealer and Phemedrone use to defeat ABE.",
+    "mitre": [
+      "T1555.003",
+      "T1539"
+    ],
+    "file_types": [
+      "pe",
+      "script"
+    ],
+    "strings": {
+      "abe": {
+        "text": "app_bound_encrypted_key",
+        "wide": true
+      },
+      "svc": {
+        "text": "GoogleChromeElevationService",
+        "wide": true
+      },
+      "clsid": {
+        "text": "{708860E0-F641-4611-8895-7D867DD3675B}",
+        "nocase": true,
+        "wide": true
+      },
+      "dbg": {
+        "text": "--remote-debugging-port",
+        "wide": true
+      },
+      "cm": {
+        "text": "CookieMonster",
+        "wide": true
+      },
+      "w1": {
+        "text": "exodus",
+        "nocase": true,
+        "wide": true
+      },
+      "w2": {
+        "text": "metamask",
+        "nocase": true,
+        "wide": true
+      },
+      "w3": {
+        "text": "\\Telegram Desktop\\tdata",
+        "nocase": true,
+        "wide": true
+      },
+      "w4": {
+        "text": "wallet.dat",
+        "nocase": true,
+        "wide": true
+      },
+      "w5": {
+        "text": "Local Storage\\leveldb",
+        "nocase": true,
+        "wide": true
+      }
+    },
+    "condition": "abe and (svc or clsid or dbg or cm) and 2 of (w1,w2,w3,w4,w5)",
+    "references": [
+      "https://www.elastic.co/security-labs/katz-and-mouse-game"
+    ]
+  },
+  {
+    "id": "AEG-T26-STEALER-CDP-COOKIES",
+    "name": "Stealer harvesting cookies through the Chrome DevTools Protocol",
+    "severity": "high",
+    "category": "malware",
+    "description": "Executable that launches a browser with remote debugging, optionally headless or off-screen, and calls Network.getAllCookies while also touching the 'Login Data' store (Phemedrone-style ABE bypass).",
+    "mitre": [
+      "T1539",
+      "T1555.003"
+    ],
+    "file_types": [
+      "pe"
+    ],
+    "strings": {
+      "api": {
+        "text": "Network.getAllCookies",
+        "wide": true
+      },
+      "dbg": {
+        "text": "--remote-debugging-port",
+        "wide": true
+      },
+      "login": {
+        "text": "Login Data",
+        "wide": true
+      },
+      "hide": {
+        "regex": "--window-position=-\\d+|--headless",
+        "nocase": true
+      }
+    },
+    "condition": "api and dbg and login",
+    "references": [
+      "https://www.elastic.co/security-labs/katz-and-mouse-game"
+    ]
+  },
+  {
+    "id": "AEG-T26-STEALER-VIDAR-DEADDROP",
+    "name": "Stealer resolving C2 from Steam profile and Telegram pages",
+    "severity": "high",
+    "category": "malware",
+    "description": "Executable that embeds Steam community profile and Telegram channel URLs next to browser-credential store names, the dead-drop C2 resolution pattern used by Vidar.",
+    "mitre": [
+      "T1102",
+      "T1555.003"
+    ],
+    "file_types": [
+      "pe"
+    ],
+    "strings": {
+      "steam": {
+        "text": "steamcommunity.com/profiles/",
+        "nocase": true,
+        "wide": true
+      },
+      "tg": {
+        "text": "t.me/",
+        "nocase": true,
+        "wide": true
+      },
+      "cred": {
+        "regex": "\\b(?:Login Data|logins\\.json|key4\\.db|cookies\\.sqlite)",
+        "nocase": true
+      }
+    },
+    "condition": "steam and tg and cred",
+    "references": [
+      "https://www.trendmicro.com/en_gb/research/25/j/soc-agentic-siem/how-vidar-stealer-2-upgrades-infostealer-capabilities.html"
+    ]
+  },
+  {
+    "id": "AEG-T26-STEALER-TELEGRAM-EXFIL",
+    "name": "Stealer exfiltrating browser/wallet data to a Telegram bot",
+    "severity": "high",
+    "category": "malware",
+    "description": "Program that references the Telegram Bot API sendDocument method together with the names of browser credential, cookie or wallet stores it archives and uploads.",
+    "mitre": [
+      "T1567",
+      "T1555.003"
+    ],
+    "file_types": [
+      "pe",
+      "script"
+    ],
+    "strings": {
+      "bot": {
+        "text": "api.telegram.org/bot",
+        "nocase": true,
+        "wide": true
+      },
+      "doc": {
+        "text": "sendDocument",
+        "wide": true
+      },
+      "store": {
+        "regex": "\\b(?:Login Data|logins\\.json|cookies\\.sqlite|key4\\.db|wallet\\.dat|Web Data)",
+        "nocase": true
+      }
+    },
+    "condition": "bot and doc and store",
+    "references": [
+      "https://www.malwarebytes.com/blog/threat-intel/2026/07/fake-google-and-cloudflare-verification-pages-spread-multiple-malware-families"
+    ]
+  },
+  {
+    "id": "AEG-T26-PUP-AMBER-ALBATROSS",
+    "name": "Amber Albatross installer arguments (--safetorun / --channel)",
+    "severity": "medium",
+    "category": "pup",
+    "description": "Installer or Pyarmor-protected PyInstaller payload that requires the --safetorun and --channel=<hex> arguments. Red Canary's most prevalent 2025 threat: PUP 'app store' and fake PDF-tool installers with stealer-like recon.",
+    "mitre": [
+      "T1204.002",
+      "T1027"
+    ],
+    "file_types": [
+      "pe",
+      "script",
+      "text",
+      "other"
+    ],
+    "strings": {
+      "safe": {
+        "text": "--safetorun"
+      },
+      "chan": {
+        "regex": "--channel=[0-9a-f]{8,}",
+        "nocase": true
+      }
+    },
+    "condition": "safe and chan",
+    "references": [
+      "https://redcanary.com/threat-detection-report/threats/amber-albatross/"
+    ]
+  },
+  {
+    "id": "AEG-T26-JUSTASKJACKY-INSTALLER",
+    "name": "JustAskJacky AI-helper / manual-reader trojan installer",
+    "severity": "high",
+    "category": "malware",
+    "description": "Installer or script carrying the lure names of JustAskJacky, a trojan posing as an AI chatbot or manual reader that runs obfuscated Node.js beacons with remote eval(). Signed InnoSetup installers, often revoked certificates.",
+    "mitre": [
+      "T1204.002",
+      "T1059.007",
+      "T1053.005"
+    ],
+    "file_types": [
+      "pe",
+      "script",
+      "ps1",
+      "bat",
+      "cmd"
+    ],
+    "strings": {
+      "n1": {
+        "text": "GoAskBobby",
+        "nocase": true,
+        "wide": true
+      },
+      "n2": {
+        "text": "CheckWithGilbert",
+        "nocase": true,
+        "wide": true
+      },
+      "n3": {
+        "text": "JustAskJacky",
+        "nocase": true,
+        "wide": true
+      },
+      "n4": {
+        "text": "AskBettyHow",
+        "nocase": true,
+        "wide": true
+      },
+      "n5": {
+        "text": "ManualReaderPro",
+        "nocase": true,
+        "wide": true
+      },
+      "n6": {
+        "text": "allmanualsreader",
+        "nocase": true,
+        "wide": true
+      },
+      "n7": {
+        "text": "openmymanual",
+        "nocase": true,
+        "wide": true
+      }
+    },
+    "condition": "any of them",
+    "references": [
+      "https://redcanary.com/threat-detection-report/threats/justaskjacky/"
+    ]
+  },
+  {
+    "id": "AEG-T26-NODE-TASK-IMPLANT",
+    "name": "Scheduled task running Node.js/Deno script from a user-writable folder",
+    "severity": "medium",
+    "category": "malware",
+    "description": "Script that registers a scheduled task running node or deno against a JavaScript file in AppData, ProgramData, Public or Temp: the persistence pattern of JustAskJacky, TonRAT and Deno-based RATs.",
+    "mitre": [
+      "T1053.005",
+      "T1059.007"
+    ],
+    "file_types": [
+      "script",
+      "text",
+      "ps1",
+      "bat",
+      "cmd",
+      "vbs",
+      "js",
+      "hta",
+      "reg",
+      "wsf",
+      "pyw",
+      "mof",
+      "pe"
+    ],
+    "strings": {
+      "task": {
+        "regex": "\\b(?:schtasks|Register-ScheduledTask|New-ScheduledTaskAction)",
+        "nocase": true
+      },
+      "node": {
+        "regex": "\\b(node|deno)(\\.exe)?[\\\"']?\\s+[\\\"']?[^\\r\\n]{0,160}(AppData|ProgramData|Users\\\\Public|%TEMP%|\\$env:TEMP)[^\\r\\n]{0,200}\\.(js|mjs|cjs|ts)\\b",
+        "nocase": true
+      }
+    },
+    "condition": "task and node",
+    "references": [
+      "https://redcanary.com/threat-detection-report/threats/justaskjacky/",
+      "https://www.microsoft.com/en-us/security/blog/2026/06/25/photo-zip-campaign-targeting-hospitality-industry-delivers-node-js-implant-persistent-access/"
+    ]
+  },
+  {
+    "id": "AEG-T26-PYRAT-MODELORAT",
+    "name": "ModeloRAT / portable-Python implant persistence",
+    "severity": "high",
+    "category": "malware",
+    "description": "Script artefacts of the CrashFix payload: a bundled WinPython running pythonw against modes.py or udp.pyw, persistence through a Run key or a task named SoftwareProtection that fires every few minutes.",
+    "mitre": [
+      "T1059.006",
+      "T1053.005",
+      "T1547.001"
+    ],
+    "file_types": [
+      "script",
+      "text",
+      "ps1",
+      "bat",
+      "cmd",
+      "vbs",
+      "js",
+      "hta",
+      "reg",
+      "wsf",
+      "pyw",
+      "mof",
+      "pe"
+    ],
+    "strings": {
+      "modes": {
+        "regex": "\\bmodes\\.py\\b",
+        "nocase": true
+      },
+      "pyw": {
+        "regex": "\\bpythonw(\\.exe)?\\b",
+        "nocase": true
+      },
+      "udp": {
+        "regex": "\\budp\\.pyw\\b",
+        "nocase": true
+      },
+      "wpy": {
+        "regex": "\\bWPy64-\\d{4,6}",
+        "nocase": true
+      },
+      "swp": {
+        "regex": "/tn\\s+[\\\"']?SoftwareProtection[\\\"']?(\\s|$)",
+        "nocase": true
+      },
+      "pers": {
+        "regex": "\\b(?:schtasks|CurrentVersion\\\\Run)",
+        "nocase": true
+      }
+    },
+    "condition": "(modes and pyw) or (udp and (pers or pyw)) or (wpy and pyw and pers) or (swp and pers and (pyw or udp))",
+    "references": [
+      "https://www.microsoft.com/en-us/security/blog/2026/02/05/clickfix-variant-crashfix-deploying-python-rat-trojan/"
+    ]
+  },
+  {
+    "id": "AEG-T26-EXT-CRASHFIX-IOC",
+    "name": "CrashFix fake uBlock Origin Lite extension indicators",
+    "severity": "high",
+    "category": "malware",
+    "description": "Files referencing the extension ID or tracking domain of the malicious uBlock Origin Lite clone that crashes the browser and then serves a ClickFix 'repair' command (Microsoft, February 2026).",
+    "mitre": [
+      "T1176.001",
+      "T1204.004"
+    ],
+    "file_types": [
+      "any"
+    ],
+    "strings": {
+      "id": {
+        "regex": "[c]pcdkmjddocikjdkbbeiaafnpdbdafmi",
+        "nocase": true
+      },
+      "dom": {
+        "regex": "[n]exsnield\\.com",
+        "nocase": true
+      }
+    },
+    "condition": "any of them",
+    "references": [
+      "https://www.microsoft.com/en-us/security/blog/2026/02/05/clickfix-variant-crashfix-deploying-python-rat-trojan/"
+    ]
+  },
+  {
+    "id": "AEG-T26-EXT-COOKIE-POLLING",
+    "name": "Browser extension script polling and exfiltrating cookies",
+    "severity": "medium",
+    "category": "malware",
+    "description": "Extension background script that enumerates cookies with cookies.getAll, on a timer, and sends them over the network. Matches the session-hijacking extensions reported by Socket in 2026; some legitimate cookie-sync tools behave similarly, so verify the extension.",
+    "mitre": [
+      "T1539",
+      "T1176.001"
+    ],
+    "file_types": [
+      "script",
+      "js",
+      "text"
+    ],
+    "strings": {
+      "get": {
+        "regex": "\\b(chrome|browser)\\.cookies\\.getAll\\s*\\(",
+        "nocase": true
+      },
+      "timer": {
+        "regex": "\\b(?:setInterval\\s*\\(|(chrome|browser)\\.alarms\\.create)",
+        "nocase": true
+      },
+      "net": {
+        "regex": "\\b(?:fetch\\s*\\(|XMLHttpRequest|navigator\\.sendBeacon|new\\s+WebSocket)",
+        "nocase": true
+      }
+    },
+    "condition": "get and timer and net",
+    "references": [
+      "https://thehackernews.com/2026/01/five-malicious-chrome-extensions.html"
+    ]
+  },
+  {
+    "id": "AEG-T26-EXT-MANIFEST-COOKIES-NATIVE",
+    "name": "Extension manifest combining cookie access, all-site access and native/debugger channels",
+    "severity": "low",
+    "category": "browser",
+    "description": "manifest.json requesting cookies, access to all sites and either nativeMessaging or debugger. The June 2026 session-theft campaign used a native messaging host to run PowerShell. Audit-level signal: password managers also use nativeMessaging.",
+    "mitre": [
+      "T1176.001",
+      "T1539"
+    ],
+    "file_types": [
+      "text",
+      "json"
+    ],
+    "strings": {
+      "mv": {
+        "regex": "\\\"manifest_version\\\"",
+        "nocase": true
+      },
+      "ck": {
+        "regex": "\\\"cookies\\\"",
+        "nocase": true
+      },
+      "allsites": {
+        "regex": "\\\"<all_urls>\\\"|\\\"\\*://\\*/\\*\\\"|\\\"https?://\\*/\\*\\\"",
+        "nocase": true
+      },
+      "nat": {
+        "regex": "\\\"nativeMessaging\\\"",
+        "nocase": true
+      },
+      "dbg": {
+        "regex": "\\\"debugger\\\"",
+        "nocase": true
+      }
+    },
+    "condition": "mv and ck and allsites and (nat or dbg)",
+    "references": [
+      "https://www.malwarebytes.com/blog/news/2026/06/malware-steals-chrome-session-cookies-to-take-over-your-accounts"
+    ]
+  },
+  {
+    "id": "AEG-T26-EXT-FORCELIST-SCRIPT",
+    "name": "Script silently force-installing a browser extension via policy",
+    "severity": "medium",
+    "category": "browser",
+    "description": "PowerShell/batch/registry script that writes the Chrome or Edge ExtensionInstallForcelist policy while hiding its window or downloading content. Malware uses this so the extension looks administrator-managed.",
+    "mitre": [
+      "T1176.001",
+      "T1112"
+    ],
+    "file_types": [
+      "script",
+      "text",
+      "ps1",
+      "bat",
+      "cmd",
+      "vbs",
+      "js",
+      "hta",
+      "reg",
+      "wsf",
+      "pyw",
+      "mof"
+    ],
+    "strings": {
+      "fl": {
+        "regex": "[E]xtensionInstallForcelist",
+        "nocase": true
+      },
+      "pol": {
+        "regex": "\\bPolicies[\\\\/]+(Google[\\\\/]+Chrome|Microsoft[\\\\/]+Edge)",
+        "nocase": true
+      },
+      "wr": {
+        "regex": "\\b(?:New-ItemProperty|Set-ItemProperty|reg(\\.exe)?\\s+add|Windows Registry Editor)",
+        "nocase": true
+      },
+      "stealth": {
+        "regex": "(?:\\b(?:FromBase64String|DownloadFile|DownloadString|Invoke-WebRequest)|-w(indowstyle)?\\s+hidden|-enc\\b|\\birm\\b|\\biwr\\b)",
+        "nocase": true
+      }
+    },
+    "condition": "fl and pol and wr and stealth",
+    "references": [
+      "https://www.malwarebytes.com/blog/news/2026/06/malware-steals-chrome-session-cookies-to-take-over-your-accounts"
+    ]
+  },
+  {
+    "id": "AEG-T26-NATIVEMSG-SCRIPT-HOST",
+    "name": "Native messaging host manifest that launches a shell or script",
+    "severity": "medium",
+    "category": "browser",
+    "description": "Browser native-messaging host manifest whose path points at PowerShell, cmd or a script file instead of a compiled helper, letting an extension execute local code (used in the June 2026 Chrome session-cookie campaign).",
+    "mitre": [
+      "T1176.001",
+      "T1059.001"
+    ],
+    "file_types": [
+      "text",
+      "json"
+    ],
+    "strings": {
+      "orig": {
+        "regex": "\\\"allowed_(origins|extensions)\\\"",
+        "nocase": true
+      },
+      "stdio": {
+        "regex": "\\\"type\\\"\\s*:\\s*\\\"stdio\\\"",
+        "nocase": true
+      },
+      "path": {
+        "regex": "\\\"path\\\"\\s*:\\s*\\\"[^\\\"]*((powershell|pwsh|cmd)(\\.exe)?|\\.(bat|cmd|ps1|vbs|js))\\\"",
+        "nocase": true
+      }
+    },
+    "condition": "orig and stdio and path",
+    "references": [
+      "https://www.malwarebytes.com/blog/news/2026/06/malware-steals-chrome-session-cookies-to-take-over-your-accounts"
+    ]
+  },
+  {
+    "id": "AEG-T26-LOADER-RESILOADER",
+    "name": "ResiLoader / StealC chain markers",
+    "severity": "high",
+    "category": "malware",
+    "description": "Executable carrying the AtLorenBase marker used by the msys-crypto DLL side-loading loader that unpacks StealC and kills security processes, or its documented C2 domain (Malwarebytes, July 2026).",
+    "mitre": [
+      "T1574.001",
+      "T1685"
+    ],
+    "file_types": [
+      "pe",
+      "script",
+      "text"
+    ],
+    "strings": {
+      "mk": {
+        "text": "AtLorenBase",
+        "wide": true
+      },
+      "c2": {
+        "regex": "[c]ompletstep\\.com",
+        "nocase": true
+      }
+    },
+    "condition": "any of them",
+    "references": [
+      "https://www.malwarebytes.com/blog/threat-intel/2026/07/fake-google-and-cloudflare-verification-pages-spread-multiple-malware-families"
+    ]
+  },
+  {
+    "id": "AEG-T26-ETHERHIDING-JS",
+    "name": "JavaScript resolving payloads from blockchain smart contracts (EtherHiding)",
+    "severity": "medium",
+    "category": "malware",
+    "description": "Script combining an eth_call JSON-RPC request to a public chain endpoint with eval and base64 decoding, used by ClearFake and malicious npm packages to fetch the next stage from a smart contract.",
+    "mitre": [
+      "T1102",
+      "T1059.007"
+    ],
+    "file_types": [
+      "script",
+      "js",
+      "text"
+    ],
+    "strings": {
+      "call": {
+        "regex": "\\beth_call",
+        "nocase": true
+      },
+      "rpc": {
+        "regex": "\\b(?:bsc-dataseed|bsc-testnet|binance\\.org|infura\\.io|publicnode\\.com|llamarpc\\.com|getblock\\.io|nodereal\\.io|ankr\\.com)",
+        "nocase": true
+      },
+      "ev": {
+        "regex": "\\beval\\s*\\(",
+        "nocase": true
+      },
+      "b64": {
+        "regex": "(?:\\b(?:FromBase64String|Buffer\\.from\\([^)]{0,60}base64)|\\batob\\s*\\()",
+        "nocase": true
+      }
+    },
+    "condition": "call and rpc and ev and b64",
+    "references": [
+      "https://thehackernews.com/2026/01/clickfix-attacks-expand-using-fake.html",
+      "https://www.csa.gov.sg/alerts-and-advisories/advisories/ad-2026-009/"
+    ]
+  },
+  {
+    "id": "AEG-T26-JS-ZEROWIDTH-DECODE",
+    "name": "JavaScript decoding hidden zero-width characters into code",
+    "severity": "medium",
+    "category": "malware",
+    "description": "Script that holds zero-width space/non-joiner characters (raw or as \\u200b / \\u200c escapes), decodes them (binary parseInt or fromCharCode) and evaluates the result. Technique of the Tampered Chef Electron trojans.",
+    "mitre": [
+      "T1027",
+      "T1059.007"
+    ],
+    "file_types": [
+      "script",
+      "js",
+      "text"
+    ],
+    "strings": {
+      "za": {
+        "hex": "E2 80 8B"
+      },
+      "zb": {
+        "hex": "E2 80 8C"
+      },
+      "ea": {
+        "regex": "\\\\u200b",
+        "nocase": true
+      },
+      "eb": {
+        "regex": "\\\\u200c",
+        "nocase": true
+      },
+      "dec": {
+        "regex": "\\b(?:String\\.fromCharCode|parseInt\\s*\\([^)]{0,60},\\s*2\\s*\\))",
+        "nocase": true
+      },
+      "ev": {
+        "regex": "(?:\\b(?:new\\s+Function\\s*\\(|vm\\.run(InNewContext|InThisContext)|child_process)|\\beval\\s*\\()",
+        "nocase": true
+      }
+    },
+    "condition": "((za and zb) or (ea and eb)) and dec and ev",
+    "references": [
+      "https://redcanary.com/threat-detection-report/threats/tampered-chef/"
+    ]
+  },
+  {
+    "id": "AEG-T26-SMARTLOADER-LAUNCHER",
+    "name": "SmartLoader/FakeGit one-line batch launcher for a renamed LuaJIT",
+    "severity": "medium",
+    "category": "malware",
+    "description": "One-line .bat/.cmd that detaches a renamed LuaJIT interpreter (loader, selector, unit, load, compiler, util, luajit, boot) against an obfuscated Lua payload stored as .txt or .log. Delivered in ZIPs from fake GitHub repositories (game cheats, mod menus, AI and developer tools); about two thirds of URLhaus online URLs on 2026-10-15 were raw.githubusercontent.com ZIPs tagged SmartLoader.",
+    "mitre": [
+      "T1204.002",
+      "T1059.003"
+    ],
+    "file_types": [
+      "bat",
+      "cmd",
+      "script",
+      "text"
+    ],
+    "strings": {
+      "launch": {
+        "regex": "(?m)^\\s*(@echo\\s+off\\s*[\\r\\n]+\\s*)?start\\s+(/b\\s+)?[\\\"']?(loader|selector|unit|load|compiler|util|luajit|boot)\\.exe[\\\"']?\\s+[\\\"']?[\\w.\\-]{1,40}\\.(txt|log)[\\\"']?\\s*$",
+        "nocase": true
+      }
+    },
+    "condition": "launch",
+    "references": [
+      "https://hexastrike.com/resources/blog/threat-intelligence/cloned-loaded-and-stolen-how-109-fake-github-repositories-delivered-smartloader-and-stealc/"
+    ]
+  },
+  {
+    "id": "AEG-T26-SMARTLOADER-LUA-STAGE",
+    "name": "Lua stage using FFI to hide its console, allocate memory or resolve C2 from a blockchain contract",
+    "severity": "high",
+    "category": "malware",
+    "description": "Lua script that loads the FFI library, declares Win32 prototypes (GetConsoleWindow, ShowWindow, VirtualAlloc/CreateThread) or queries a Polygon contract with eth_call to learn its C2 address. Second stage of SmartLoader that delivers StealC, Rhadamanthys or Lumma.",
+    "mitre": [
+      "T1059",
+      "T1102",
+      "T1055"
+    ],
+    "file_types": [
+      "text",
+      "lua",
+      "script",
+      "txt",
+      "log"
+    ],
+    "strings": {
+      "ffi": {
+        "regex": "\\bffi\\.cdef",
+        "nocase": true
+      },
+      "con": {
+        "regex": "[G]etConsoleWindow",
+        "nocase": true
+      },
+      "show": {
+        "regex": "[S]howWindow",
+        "nocase": true
+      },
+      "alloc": {
+        "regex": "\\b(?:VirtualAlloc|CreateThread|NtAllocateVirtualMemory)",
+        "nocase": true
+      },
+      "call": {
+        "regex": "[e]th_call",
+        "nocase": true
+      },
+      "drpc": {
+        "regex": "[d]rpc\\.org",
+        "nocase": true
+      },
+      "addr": {
+        "regex": "[0]x1823A9a0Ec8e0C25dD957D0841e3D41a4474bAdc",
+        "nocase": true
+      },
+      "sel": {
+        "regex": "[0]x3bc5de30",
+        "nocase": true
+      }
+    },
+    "condition": "addr or (ffi and con and show and alloc) or (ffi and call and (drpc or sel))",
+    "references": [
+      "https://hexastrike.com/resources/blog/threat-intelligence/cloned-loaded-and-stolen-how-109-fake-github-repositories-delivered-smartloader-and-stealc/"
+    ]
+  },
+  {
+    "id": "AEG-T26-SMARTLOADER-SCHTASK",
+    "name": "Scheduled task running a renamed interpreter from LocalAppData against a .txt/.log payload",
+    "severity": "high",
+    "category": "malware",
+    "description": "schtasks /create whose action is an .exe under LocalAppData followed by a .txt or .log argument, or one of the decoy task names seen in the April 2026 SmartLoader/StealC campaign (two daily tasks, one cached copy and one that re-fetches the payload from GitHub).",
+    "mitre": [
+      "T1053.005",
+      "T1036.005"
+    ],
+    "file_types": [
+      "script",
+      "text",
+      "ps1",
+      "bat",
+      "cmd",
+      "vbs",
+      "js",
+      "hta",
+      "reg",
+      "wsf",
+      "pyw",
+      "mof"
+    ],
+    "strings": {
+      "create": {
+        "regex": "\\bschtasks(\\.exe)?\\s+/create",
+        "nocase": true
+      },
+      "tr": {
+        "regex": "/tr\\s+[\\\"']?[^\\r\\n]{0,200}(LOCALAPPDATA|AppData[\\\\]+Local)[^\\r\\n]{0,200}\\.exe[\\\"']?\\s+[\\\"']?[^\\r\\n]{0,200}\\.(txt|log)\\b",
+        "nocase": true
+      },
+      "n1": {
+        "regex": "[A]udioManager_ODM3",
+        "nocase": true
+      },
+      "n2": {
+        "regex": "[O]fficeClickToRunTask_7d7757",
+        "nocase": true
+      }
+    },
+    "condition": "n1 or n2 or (create and tr)",
+    "references": [
+      "https://hexastrike.com/resources/blog/threat-intelligence/cloned-loaded-and-stolen-how-109-fake-github-repositories-delivered-smartloader-and-stealc/"
+    ]
+  },
+  {
+    "id": "AEG-T26-DEFENDER-EXCL-BROAD",
+    "name": "Script excluding broad paths or executable types from Microsoft Defender",
+    "severity": "high",
+    "category": "malware",
+    "description": "Add-MpPreference / Set-MpPreference call that excludes a drive root, Users, ProgramData, Temp, AppData, or whole extensions such as .exe. Used by ClickFix, SEO-poisoning and RAT chains so the payload is never scanned.",
+    "mitre": [
+      "T1685"
+    ],
+    "file_types": [
+      "script",
+      "text",
+      "ps1",
+      "bat",
+      "cmd",
+      "vbs",
+      "js",
+      "hta",
+      "reg",
+      "wsf",
+      "pyw",
+      "mof"
+    ],
+    "strings": {
+      "cmd": {
+        "regex": "\\b(Add|Set)-MpPreference\\s[^\\r\\n]{0,120}-Exclusion(Path|Process|Extension|IpAddress)",
+        "nocase": true
+      },
+      "path": {
+        "regex": "-Exclusion(Path|Process)\\s+(@\\()?\\s*['\\\"]?(\\$env:(TEMP|APPDATA|LOCALAPPDATA|PUBLIC|USERPROFILE|ProgramData)|%(TEMP|APPDATA|LOCALAPPDATA|PUBLIC|USERPROFILE|PROGRAMDATA)%|[A-Za-z]:\\\\?['\\\",\\s)]|[A-Za-z]:\\\\(Users|ProgramData|Windows\\\\Temp|Temp)\\\\?\\*?['\\\",\\s)]|[^\\s'\\\"]*\\\\AppData\\\\(Local|Roaming)(\\\\Temp)?\\\\?['\\\",\\s)])",
+        "nocase": true
+      },
+      "ext": {
+        "regex": "-ExclusionExtension\\s+(@\\()?\\s*['\\\"]?\\.?(exe|dll|ps1|bat|vbs|js|scr|zip)\\b",
+        "nocase": true
+      }
+    },
+    "condition": "cmd and (path or ext)",
+    "references": [
+      "https://thehackernews.com/2026/03/microsoft-reveals-clickfix-campaign.html",
+      "https://thehackernews.com/2026/07/seo-poisoned-software-sites-abuse.html",
+      "https://attack.mitre.org/techniques/T1685/"
+    ]
+  },
+  {
+    "id": "AEG-T26-DEFENDER-EXCL-REG",
+    "name": "Script writing Microsoft Defender exclusions directly in the registry",
+    "severity": "high",
+    "category": "malware",
+    "description": "Registry commands or .reg content targeting Windows Defender\\Exclusions\\Paths/Extensions/Processes, an alternative to Add-MpPreference that avoids PowerShell logging.",
+    "mitre": [
+      "T1685",
+      "T1112"
+    ],
+    "file_types": [
+      "script",
+      "text",
+      "ps1",
+      "bat",
+      "cmd",
+      "vbs",
+      "js",
+      "hta",
+      "reg",
+      "wsf",
+      "pyw",
+      "mof"
+    ],
+    "strings": {
+      "key": {
+        "regex": "\\bWindows\\s+Defender[\\\\]+Exclusions[\\\\]+(Paths|Extensions|Processes)",
+        "nocase": true
+      },
+      "wr": {
+        "regex": "\\b(?:reg(\\.exe)?\\s+add|New-ItemProperty|Set-ItemProperty|Windows Registry Editor)",
+        "nocase": true
+      }
+    },
+    "condition": "key and wr",
+    "references": [
+      "https://attack.mitre.org/techniques/T1685/"
+    ]
+  },
+  {
+    "id": "AEG-T26-DEFENDER-DISABLE",
+    "name": "Script that turns off Microsoft Defender protection",
+    "severity": "high",
+    "category": "malware",
+    "description": "Commands disabling real-time/behaviour monitoring, setting DisableAntiSpyware, uninstalling the Defender feature or stopping WinDefend/Sense. Ransomware, miners and crack installers run these before dropping payloads.",
+    "mitre": [
+      "T1685"
+    ],
+    "file_types": [
+      "script",
+      "text",
+      "ps1",
+      "bat",
+      "cmd",
+      "vbs",
+      "js",
+      "hta",
+      "reg",
+      "wsf",
+      "pyw",
+      "mof"
+    ],
+    "strings": {
+      "mp": {
+        "regex": "\\bSet-MpPreference\\s[^\\r\\n]{0,200}-Disable(RealtimeMonitoring|BehaviorMonitoring|IOAVProtection|ScriptScanning|BlockAtFirstSeen|IntrusionPreventionSystem)\\s+(\\$true|1)",
+        "nocase": true
+      },
+      "reg": {
+        "regex": "(?:\\b(?:DisableAntiSpyware['\\\"\\s]+(/t\\s+REG_DWORD\\s+)?/d\\s+1|DisableAntiSpyware\\s*[=:,]\\s*(1\\b|0x1|dword:00000001))|-Name\\s+DisableAntiSpyware\\s+-Value\\s+1)",
+        "nocase": true
+      },
+      "feat": {
+        "regex": "\\bUninstall-WindowsFeature\\s+(-Name\\s+)?Windows-Defender",
+        "nocase": true
+      },
+      "sc": {
+        "regex": "\\bsc(\\.exe)?\\s+(stop|config|delete)\\s+(WinDefend|Sense|WdNisSvc|WdFilter)\\b",
+        "nocase": true
+      }
+    },
+    "condition": "any of them",
+    "references": [
+      "https://thehackernews.com/2026/03/54-edr-killers-use-byovd-to-exploit-34.html",
+      "https://learn.microsoft.com/en-us/defender-endpoint/attack-surface-reduction-rules-reference"
+    ]
+  },
+  {
+    "id": "AEG-T26-AMSI-BYPASS",
+    "name": "PowerShell AMSI bypass",
+    "severity": "high",
+    "category": "malware",
+    "description": "Script that sets amsiInitFailed through reflection, or reflects into AmsiUtils / patches AmsiScanBuffer so later stages run unscanned.",
+    "mitre": [
+      "T1685"
+    ],
+    "file_types": [
+      "script",
+      "text",
+      "ps1",
+      "bat",
+      "cmd",
+      "vbs",
+      "js",
+      "hta",
+      "reg",
+      "wsf",
+      "pyw",
+      "mof"
+    ],
+    "strings": {
+      "fail": {
+        "regex": "[a]msiInitFailed",
+        "nocase": true
+      },
+      "utils": {
+        "regex": "[S]ystem\\.Management\\.Automation\\.AmsiUtils",
+        "nocase": true
+      },
+      "ref": {
+        "regex": "\\[Ref\\]\\.Assembly\\.GetType",
+        "nocase": true
+      },
+      "scan": {
+        "regex": "[A]msiScanBuffer",
+        "nocase": true
+      },
+      "patch": {
+        "regex": "\\b(?:VirtualProtect|WriteProcessMemory|Marshal\\]::Copy|Marshal\\]::WriteInt32)",
+        "nocase": true
+      }
+    },
+    "condition": "fail or (utils and ref) or (scan and patch)",
+    "references": [
+      "https://attack.mitre.org/techniques/T1685/",
+      "https://www.huntress.com/blog/malicious-browser-extention-crashfix-kongtuke"
+    ]
+  },
+  {
+    "id": "AEG-T26-ETW-TAMPER-SCRIPT",
+    "name": "Script disabling .NET or native ETW tracing",
+    "severity": "high",
+    "category": "malware",
+    "description": "PowerShell/script that flips the EventProvider m_enabled field or patches EtwEventWrite/NtTraceEvent to blind event tracing used by EDR.",
+    "mitre": [
+      "T1685"
+    ],
+    "file_types": [
+      "script",
+      "text",
+      "ps1",
+      "bat",
+      "cmd",
+      "vbs",
+      "js",
+      "hta",
+      "reg",
+      "wsf",
+      "pyw",
+      "mof"
+    ],
+    "strings": {
+      "ep": {
+        "regex": "[S]ystem\\.Diagnostics\\.Eventing\\.EventProvider",
+        "nocase": true
+      },
+      "me": {
+        "regex": "[m]_enabled",
+        "nocase": true
+      },
+      "etw": {
+        "regex": "\\b(?:EtwEventWrite|NtTraceEvent)",
+        "nocase": true
+      },
+      "patch": {
+        "regex": "(?:\\b(?:VirtualProtect|Marshal\\]::Copy|WriteProcessMemory)|\\[Byte\\[\\]\\]\\s*\\(?\\s*0xC3)",
+        "nocase": true
+      }
+    },
+    "condition": "(ep and me) or (etw and patch)",
+    "references": [
+      "https://attack.mitre.org/techniques/T1685/"
+    ]
+  },
+  {
+    "id": "AEG-T26-SCHTASK-FREQUENT-USERDIR",
+    "name": "Scheduled task that runs a script host from a user-writable folder",
+    "severity": "high",
+    "category": "malware",
+    "description": "schtasks /create registering a task whose action lives in AppData, ProgramData, Public or Temp and is a script host or interpreter, run every few minutes or hidden/encoded. Matches the RAT persistence reported by Kaspersky (every two minutes) and Microsoft (every five minutes).",
+    "mitre": [
+      "T1053.005"
+    ],
+    "file_types": [
+      "script",
+      "text",
+      "ps1",
+      "bat",
+      "cmd",
+      "vbs",
+      "js",
+      "hta",
+      "reg",
+      "wsf",
+      "pyw",
+      "mof"
+    ],
+    "strings": {
+      "create": {
+        "regex": "\\bschtasks(\\.exe)?\\s+/create",
+        "nocase": true
+      },
+      "freq": {
+        "regex": "/sc\\s+minute\\b[^\\r\\n]{0,60}/mo\\s+[1-9]\\b|/mo\\s+[1-9]\\b[^\\r\\n]{0,60}/sc\\s+minute\\b",
+        "nocase": true
+      },
+      "dir": {
+        "regex": "/tr\\s+[\\\"']?[^\\r\\n]{0,200}(AppData|ProgramData|\\\\Users\\\\Public|%TEMP%|%APPDATA%|\\\\Temp\\\\)",
+        "nocase": true
+      },
+      "host": {
+        "regex": "(?:\\b(?:powershell|pwsh|wscript|cscript|mshta|pythonw?|rundll32|regsvr32|cmd(\\.exe)?\\s+/c)|\\bnode\\b)",
+        "nocase": true
+      },
+      "stealth": {
+        "regex": "(?:\\bFromBase64String|-w(indowstyle)?\\s+hidden|-enc\\b|/rl\\s+highest)",
+        "nocase": true
+      }
+    },
+    "condition": "create and dir and host and (freq or stealth)",
+    "references": [
+      "https://thehackernews.com/2026/07/seo-poisoned-software-sites-abuse.html",
+      "https://www.microsoft.com/en-us/security/blog/2026/02/05/clickfix-variant-crashfix-deploying-python-rat-trojan/"
+    ]
+  },
+  {
+    "id": "AEG-T26-RUNKEY-INTERPRETER",
+    "name": "Run/RunOnce autostart launching an interpreter or hidden PowerShell",
+    "severity": "medium",
+    "category": "malware",
+    "description": "Script adding a Run or RunOnce value that starts pythonw, node, deno, wscript, cscript or mshta from a user folder, or hidden/encoded PowerShell. Seen with ModeloRAT, TonRAT and Deno RAT chains.",
+    "mitre": [
+      "T1547.001"
+    ],
+    "file_types": [
+      "script",
+      "text",
+      "ps1",
+      "bat",
+      "cmd",
+      "vbs",
+      "js",
+      "hta",
+      "reg",
+      "wsf",
+      "pyw",
+      "mof"
+    ],
+    "strings": {
+      "run": {
+        "regex": "\\b(?:reg(\\.exe)?\\s+add\\s+[^\\r\\n]{0,10}HK(CU|LM)[\\\\]+Software[\\\\]+Microsoft[\\\\]+Windows[\\\\]+CurrentVersion[\\\\]+Run(Once)?\\b|(Set|New)-ItemProperty[^\\r\\n]{0,160}CurrentVersion[\\\\]+Run(Once)?\\b)",
+        "nocase": true
+      },
+      "interp": {
+        "regex": "\\b(pythonw?|node|deno|wscript|cscript|mshta)(\\.exe)?[\\\"']?\\s+[\\\"']?[^\\r\\n]{0,160}(AppData|ProgramData|Public|Temp)",
+        "nocase": true
+      },
+      "ps": {
+        "regex": "\\bpowershell(\\.exe)?\\s+[^\\r\\n]{0,60}(-w(indowstyle)?\\s+hidden|-enc(odedcommand)?\\b|-nop\\b)",
+        "nocase": true
+      }
+    },
+    "condition": "run and (interp or ps)",
+    "references": [
+      "https://www.microsoft.com/en-us/security/blog/2026/02/05/clickfix-variant-crashfix-deploying-python-rat-trojan/",
+      "https://www.microsoft.com/en-us/security/blog/2026/06/25/photo-zip-campaign-targeting-hospitality-industry-delivers-node-js-implant-persistent-access/"
+    ]
+  },
+  {
+    "id": "AEG-T26-WMI-EVENT-PERSIST",
+    "name": "WMI permanent event subscription persistence",
+    "severity": "high",
+    "category": "malware",
+    "description": "Script or MOF defining an __EventFilter bound to a CommandLineEventConsumer/ActiveScriptEventConsumer, a fileless persistence mechanism that Microsoft ships an ASR rule for.",
+    "mitre": [
+      "T1546.003"
+    ],
+    "file_types": [
+      "script",
+      "text",
+      "ps1",
+      "bat",
+      "cmd",
+      "vbs",
+      "js",
+      "hta",
+      "reg",
+      "wsf",
+      "pyw",
+      "mof"
+    ],
+    "strings": {
+      "flt": {
+        "regex": "\\b__[E]ventFilter",
+        "nocase": true
+      },
+      "cons": {
+        "regex": "\\b(?:CommandLineEventConsumer|ActiveScriptEventConsumer)",
+        "nocase": true
+      },
+      "bind": {
+        "regex": "\\b__[F]ilterToConsumerBinding",
+        "nocase": true
+      }
+    },
+    "condition": "(flt and cons) or (cons and bind)",
+    "references": [
+      "https://learn.microsoft.com/en-us/defender-endpoint/attack-surface-reduction-rules-reference",
+      "https://attack.mitre.org/techniques/T1546/003/"
+    ]
+  },
+  {
+    "id": "AEG-T26-COM-HIJACK-REG",
+    "name": "Per-user COM class hijack pointing at a script or user-folder DLL",
+    "severity": "medium",
+    "category": "malware",
+    "description": "Registry commands or .reg content that create HKCU\\Software\\Classes\\CLSID\\{...}\\InprocServer32/LocalServer32/TreatAs/ScriptletURL entries pointing at AppData, ProgramData, Temp, Public, scrobj.dll or an .sct file.",
+    "mitre": [
+      "T1546.015"
+    ],
+    "file_types": [
+      "script",
+      "text",
+      "ps1",
+      "bat",
+      "cmd",
+      "vbs",
+      "js",
+      "hta",
+      "reg",
+      "wsf",
+      "pyw",
+      "mof"
+    ],
+    "strings": {
+      "cls": {
+        "regex": "\\bClasses[\\\\]+CLSID[\\\\]+\\{[0-9A-Fa-f-]{36}\\}[\\\\]+(InprocServer32|LocalServer32|TreatAs|ScriptletURL)",
+        "nocase": true
+      },
+      "hive": {
+        "regex": "\\b(?:HKCU|HKEY_CURRENT_USER)",
+        "nocase": true
+      },
+      "wr": {
+        "regex": "\\b(?:reg(\\.exe)?\\s+add|New-ItemProperty|Set-ItemProperty|New-Item\\b|Windows Registry Editor)",
+        "nocase": true
+      },
+      "tgt": {
+        "regex": "(?:\\b(?:AppData|ProgramData|scrobj\\.dll)|[\\\\]Temp[\\\\]|[\\\\]Users[\\\\]Public|\\.sct\\b)",
+        "nocase": true
+      }
+    },
+    "condition": "cls and hive and wr and tgt",
+    "references": [
+      "https://attack.mitre.org/techniques/T1546/015/"
+    ]
+  },
+  {
+    "id": "AEG-T26-UAC-BYPASS-REG-HIJACK",
+    "name": "UAC bypass through ms-settings / mscfile shell\\open\\command hijack",
+    "severity": "high",
+    "category": "malware",
+    "description": "Registry edit of Classes\\ms-settings or mscfile \\shell\\open\\command (DelegateExecute) so fodhelper, computerdefaults or eventvwr launch an attacker command with elevated rights.",
+    "mitre": [
+      "T1548.002"
+    ],
+    "file_types": [
+      "script",
+      "text",
+      "ps1",
+      "bat",
+      "cmd",
+      "vbs",
+      "js",
+      "hta",
+      "reg",
+      "wsf",
+      "pyw",
+      "mof"
+    ],
+    "strings": {
+      "key": {
+        "regex": "\\b(ms-settings|mscfile)[\\\\]+shell[\\\\]+open[\\\\]+command",
+        "nocase": true
+      },
+      "wr": {
+        "regex": "\\b(?:reg(\\.exe)?\\s+add|New-Item\\b|Set-ItemProperty|New-ItemProperty|Windows Registry Editor)",
+        "nocase": true
+      },
+      "deleg": {
+        "regex": "\\bDelegateExecute",
+        "nocase": true
+      },
+      "bin": {
+        "regex": "\\b(?:fodhelper|computerdefaults|eventvwr|sdclt)",
+        "nocase": true
+      }
+    },
+    "condition": "key and wr and (deleg or bin)",
+    "references": [
+      "https://attack.mitre.org/techniques/T1548/002/"
+    ]
+  },
+  {
+    "id": "AEG-T26-UAC-BYPASS-CMSTPLUA",
+    "name": "UAC bypass via the ICMLuaUtil / CMSTPLUA COM elevation moniker",
+    "severity": "high",
+    "category": "malware",
+    "description": "Executable or script referencing ICMLuaUtil, the CMSTPLUA CLSID or the Elevation:Administrator!new: moniker. ResiLoader and several ransomware families use it to elevate silently.",
+    "mitre": [
+      "T1548.002"
+    ],
+    "file_types": [
+      "pe",
+      "script"
+    ],
+    "strings": {
+      "iface": {
+        "text": "ICMLuaUtil",
+        "wide": true
+      },
+      "clsid": {
+        "text": "3E5FC7F9-9A51-4367-9063-A120244FBEC7",
+        "nocase": true,
+        "wide": true
+      },
+      "mon": {
+        "text": "Elevation:Administrator!new:",
+        "nocase": true,
+        "wide": true
+      }
+    },
+    "condition": "2 of (iface,clsid,mon)",
+    "references": [
+      "https://www.malwarebytes.com/blog/threat-intel/2026/07/fake-google-and-cloudflare-verification-pages-spread-multiple-malware-families"
+    ]
+  },
+  {
+    "id": "AEG-T26-BITS-NOTIFY-PERSIST",
+    "name": "BITS job with a notify command line",
+    "severity": "medium",
+    "category": "malware",
+    "description": "bitsadmin creating a job that downloads a remote file and runs a command on completion (SetNotifyCmdLine), a long-standing download and persistence trick.",
+    "mitre": [
+      "T1197"
+    ],
+    "file_types": [
+      "script",
+      "text",
+      "ps1",
+      "bat",
+      "cmd",
+      "vbs",
+      "js",
+      "hta",
+      "reg",
+      "wsf",
+      "pyw",
+      "mof"
+    ],
+    "strings": {
+      "create": {
+        "regex": "\\bbitsadmin(\\.exe)?\\s+/create",
+        "nocase": true
+      },
+      "notify": {
+        "regex": "/SetNotifyCmdLine",
+        "nocase": true
+      },
+      "add": {
+        "regex": "/addfile\\s+https?://",
+        "nocase": true
+      }
+    },
+    "condition": "(create and notify) or (notify and add)",
+    "references": [
+      "https://attack.mitre.org/techniques/T1197/"
+    ]
+  },
+  {
+    "id": "AEG-T26-UAC-DISABLE",
+    "name": "Script weakening UAC or remote token filtering",
+    "severity": "medium",
+    "category": "malware",
+    "description": "Registry commands that set ConsentPromptBehaviorAdmin or EnableLUA to 0 or LocalAccountTokenFilterPolicy to 1, observed in fake-software-site RAT chains that 'disable UAC prompts'.",
+    "mitre": [
+      "T1112",
+      "T1548.002"
+    ],
+    "file_types": [
+      "script",
+      "text",
+      "ps1",
+      "bat",
+      "cmd",
+      "vbs",
+      "js",
+      "hta",
+      "reg",
+      "wsf",
+      "pyw",
+      "mof"
+    ],
+    "strings": {
+      "wr": {
+        "regex": "\\b(?:reg(\\.exe)?\\s+add|Set-ItemProperty|New-ItemProperty)",
+        "nocase": true
+      },
+      "uac": {
+        "regex": "\\b(?:ConsentPromptBehaviorAdmin[^\\r\\n]{0,60}(/d\\s+0\\b|-Value\\s+0\\b)|EnableLUA[^\\r\\n]{0,60}(/d\\s+0\\b|-Value\\s+0\\b)|LocalAccountTokenFilterPolicy[^\\r\\n]{0,60}(/d\\s+1\\b|-Value\\s+1\\b))",
+        "nocase": true
+      }
+    },
+    "condition": "wr and uac",
+    "references": [
+      "https://thehackernews.com/2026/07/seo-poisoned-software-sites-abuse.html"
+    ]
+  },
+  {
+    "id": "AEG-T26-SAFEMODE-REBOOT",
+    "name": "Script rebooting into Safe Mode",
+    "severity": "high",
+    "category": "malware",
+    "description": "bcdedit forcing safeboot followed by a restart. Used to run encryptors or EDR killers while security tools are not loaded; Microsoft ships an ASR rule against it.",
+    "mitre": [
+      "T1688"
+    ],
+    "file_types": [
+      "script",
+      "text",
+      "ps1",
+      "bat",
+      "cmd",
+      "vbs",
+      "js",
+      "hta",
+      "reg",
+      "wsf",
+      "pyw",
+      "mof"
+    ],
+    "strings": {
+      "bcd": {
+        "regex": "\\bbcdedit(\\.exe)?\\s+/set\\s+(\\{\\w+\\}\\s+)?safeboot\\s+(minimal|network)",
+        "nocase": true
+      },
+      "reboot": {
+        "regex": "\\b(?:shutdown(\\.exe)?\\s+/r\\b|Restart-Computer)",
+        "nocase": true
+      }
+    },
+    "condition": "bcd and reboot",
+    "references": [
+      "https://learn.microsoft.com/en-us/defender-endpoint/attack-surface-reduction-rules-reference",
+      "https://thehackernews.com/2026/03/54-edr-killers-use-byovd-to-exploit-34.html"
+    ]
+  },
+  {
+    "id": "AEG-T26-PS-DOWNLOAD-IEX-HIDDEN",
+    "name": "Hidden-window PowerShell download-and-execute",
+    "severity": "high",
+    "category": "malware",
+    "description": "PowerShell that downloads text and passes it to Invoke-Expression in a hidden window. Official installer one-liners (uv, Scoop, Chocolatey) do not hide the window.",
+    "mitre": [
+      "T1059.001",
+      "T1105"
+    ],
+    "file_types": [
+      "script",
+      "text",
+      "ps1",
+      "bat",
+      "cmd",
+      "vbs",
+      "js",
+      "hta",
+      "reg",
+      "wsf",
+      "pyw",
+      "mof",
+      "lnk"
+    ],
+    "strings": {
+      "dl": {
+        "regex": "(?:\\b(?:DownloadString|DownloadFile|Invoke-WebRequest|Invoke-RestMethod)|\\biwr\\b|\\birm\\b)",
+        "nocase": true
+      },
+      "iex": {
+        "regex": "(?:\\bInvoke-Expression|\\biex\\b)",
+        "nocase": true
+      },
+      "hid": {
+        "regex": "-w(indowstyle)?\\s+(h(idden)?|1)\\b",
+        "nocase": true
+      }
+    },
+    "condition": "dl and iex and hid",
+    "references": [
+      "https://www.microsoft.com/en-us/security/blog/2025/08/21/think-before-you-clickfix-analyzing-the-clickfix-social-engineering-technique/"
+    ]
+  },
+  {
+    "id": "AEG-T26-EDR-KILLER-SCRIPT",
+    "name": "Script killing or deleting many security product processes and services",
+    "severity": "high",
+    "category": "ransomware",
+    "description": "taskkill / sc / net stop / Stop-Service commands aimed at several named security products (Defender, SentinelOne, CrowdStrike, Bitdefender, ESET, Kaspersky, Sophos, Cylance, Elastic, Malwarebytes, Avast, Tanium). ESET counts script-based killers among ransomware affiliates' pre-encryption tooling.",
+    "mitre": [
+      "T1685",
+      "T1489"
+    ],
+    "file_types": [
+      "script",
+      "text",
+      "ps1",
+      "bat",
+      "cmd",
+      "vbs",
+      "js",
+      "hta",
+      "reg",
+      "wsf",
+      "pyw",
+      "mof"
+    ],
+    "strings": {
+      "kill": {
+        "regex": "(?:\\b(?:taskkill(\\.exe)?\\s+[^\\r\\n]{0,30}/im|net\\s+stop|Stop-Service|Stop-Process\\s+-Name|Remove-Service)|\\bsc(\\.exe)?\\s+(stop|delete|config)\\b)",
+        "nocase": true
+      },
+      "n1": {
+        "regex": "\\bMsMpEng",
+        "nocase": true
+      },
+      "n2": {
+        "regex": "\\bSentinelAgent",
+        "nocase": true
+      },
+      "n3": {
+        "regex": "\\bCSFalconService",
+        "nocase": true
+      },
+      "n4": {
+        "regex": "\\bbdservicehost",
+        "nocase": true
+      },
+      "n5": {
+        "regex": "\\bekrn(\\.exe)?\\b",
+        "nocase": true
+      },
+      "n6": {
+        "regex": "\\bavp\\.exe\\b",
+        "nocase": true
+      },
+      "n7": {
+        "regex": "\\bSAVService",
+        "nocase": true
+      },
+      "n8": {
+        "regex": "\\bCylanceSvc",
+        "nocase": true
+      },
+      "n9": {
+        "regex": "\\belastic-endpoint",
+        "nocase": true
+      },
+      "n10": {
+        "regex": "\\bMBAMService",
+        "nocase": true
+      },
+      "n11": {
+        "regex": "\\bAvastSvc",
+        "nocase": true
+      },
+      "n12": {
+        "regex": "\\bTaniumClient",
+        "nocase": true
+      }
+    },
+    "condition": "kill and 3 of (n1,n2,n3,n4,n5,n6,n7,n8,n9,n10,n11,n12)",
+    "references": [
+      "https://thehackernews.com/2026/03/54-edr-killers-use-byovd-to-exploit-34.html"
+    ]
+  },
+  {
+    "id": "AEG-T26-BYOVD-SC-CREATE",
+    "name": "Kernel driver service created from a user-writable path (BYOVD)",
+    "severity": "high",
+    "category": "ransomware",
+    "description": "sc create ... binPath=<temp/user path>\\*.sys type=kernel, the exact loader pattern shown in LOLDrivers entries for abused vulnerable or malicious drivers, used by EDR killers.",
+    "mitre": [
+      "T1068",
+      "T1543.003"
+    ],
+    "file_types": [
+      "script",
+      "text",
+      "ps1",
+      "bat",
+      "cmd",
+      "vbs",
+      "js",
+      "hta",
+      "reg",
+      "wsf",
+      "pyw",
+      "mof"
+    ],
+    "strings": {
+      "create": {
+        "regex": "\\bsc(\\.exe)?\\s+create\\s+\\S+\\s+binPath=\\s*[\\\"']?[^\\r\\n]{0,200}\\.sys[\\\"']?\\s+type=\\s*(kernel|filesys)",
+        "nocase": true
+      },
+      "dir": {
+        "regex": "\\bbinPath=\\s*[\\\"']?[^\\r\\n]{0,120}(\\\\Temp\\\\|AppData|ProgramData|\\\\Users\\\\Public|Downloads|%TEMP%)",
+        "nocase": true
+      },
+      "start": {
+        "regex": "\\bsc(\\.exe)?\\s+start\\b",
+        "nocase": true
+      }
+    },
+    "condition": "create and dir",
+    "references": [
+      "https://www.loldrivers.io/",
+      "https://thehackernews.com/2026/03/54-edr-killers-use-byovd-to-exploit-34.html"
+    ]
+  },
+  {
+    "id": "AEG-T26-RANSOM-INHIBIT-RECOVERY",
+    "name": "Script combining several backup/recovery destruction commands",
+    "severity": "high",
+    "category": "ransomware",
+    "description": "Two or more of: vssadmin delete shadows or resize shadowstorage, wmic shadowcopy delete, PowerShell Win32_Shadowcopy removal (as in the CISA Akira advisory), bcdedit recoveryenabled no, wbadmin delete, reagentc /disable.",
+    "mitre": [
+      "T1490"
+    ],
+    "file_types": [
+      "script",
+      "text",
+      "ps1",
+      "bat",
+      "cmd",
+      "vbs",
+      "js",
+      "hta",
+      "reg",
+      "wsf",
+      "pyw",
+      "mof"
+    ],
+    "strings": {
+      "a": {
+        "regex": "\\bvssadmin(\\.exe)?\\s+delete\\s+shadows",
+        "nocase": true
+      },
+      "b": {
+        "regex": "\\bwmic(\\.exe)?\\s+shadowcopy\\s+delete",
+        "nocase": true
+      },
+      "c": {
+        "regex": "\\b(?:Get-(Wmi|Cim)Object\\s+Win32_Shadowcopy[^\\r\\n]{0,60}(Remove-(Wmi|Cim)Object|\\.Delete\\(\\))|Get-CimInstance\\s+Win32_ShadowCopy[^\\r\\n]{0,60}Remove-CimInstance)",
+        "nocase": true
+      },
+      "d": {
+        "regex": "\\bvssadmin(\\.exe)?\\s+resize\\s+shadowstorage[^\\r\\n]{0,80}/maxsize=(401MB|unbounded)",
+        "nocase": true
+      },
+      "e": {
+        "regex": "\\bbcdedit(\\.exe)?\\s+/set\\s+(\\{\\w+\\}\\s+)?(recoveryenabled\\s+no|bootstatuspolicy\\s+ignoreallfailures)",
+        "nocase": true
+      },
+      "f": {
+        "regex": "\\bwbadmin(\\.exe)?\\s+delete\\s+(catalog|systemstatebackup|backup)",
+        "nocase": true
+      },
+      "g": {
+        "regex": "\\breagentc(\\.exe)?\\s+/disable",
+        "nocase": true
+      }
+    },
+    "condition": "2 of them",
+    "references": [
+      "https://www.cisa.gov/news-events/cybersecurity-advisories/aa24-109a",
+      "https://attack.mitre.org/techniques/T1490/"
+    ]
+  },
+  {
+    "id": "AEG-T26-RANSOM-NOTE-DOUBLE-EXTORT",
+    "name": "Double-extortion ransom note text",
+    "severity": "high",
+    "category": "ransomware",
+    "description": "Text or HTML note that combines a Tor onion address, a claim that data was stolen/exfiltrated, a threat to publish or sell it, decryption/recovery language and a negotiation or chat channel.",
+    "mitre": [
+      "T1486",
+      "T1657"
+    ],
+    "file_types": [
+      "text",
+      "html",
+      "htm",
+      "hta"
+    ],
+    "strings": {
+      "onion": {
+        "regex": "\\.onion\\b",
+        "nocase": true
+      },
+      "stolen": {
+        "regex": "\\b(?:(downloaded|exfiltrated|stolen|copied)\\s+(your\\s+)?(data|files|documents|information)|(your|all)\\s+(data|files|documents)\\s+(has|have|had|was|were)\\s+(been\\s+)?(stolen|exfiltrated|encrypted))",
+        "nocase": true
+      },
+      "leak": {
+        "regex": "\\b(publish|leak|release|sell|disclose)[^\\r\\n]{0,60}(data|files|information|documents)",
+        "nocase": true
+      },
+      "dec": {
+        "regex": "\\b(?:(decrypt|decryption|recover(y)?)\\s+(tool|key|your\\s+(files|data))|decryptor)",
+        "nocase": true
+      },
+      "chat": {
+        "regex": "\\b(?:tor\\s+browser|torproject\\.org|TOX\\s+ID|qtox|chat\\s+with\\s+us|negotiat)",
+        "nocase": true
+      }
+    },
+    "condition": "onion and dec and stolen and (leak or chat)",
+    "references": [
+      "https://www.cisa.gov/news-events/cybersecurity-advisories/aa24-109a"
+    ]
+  },
+  {
+    "id": "AEG-T26-MINER-WALLET-POOL",
+    "name": "Cryptominer configuration or launcher (Monero wallet, pool, miner flags)",
+    "severity": "high",
+    "category": "malware",
+    "description": "Script, config or binary pairing a Monero wallet address with a known mining pool domain or miner command-line flags (--donate-level, --coin monero, rx/0). Cryptojackers are often dropped by cracked-software installers.",
+    "mitre": [
+      "T1496"
+    ],
+    "file_types": [
+      "script",
+      "text",
+      "pe",
+      "other",
+      "json"
+    ],
+    "strings": {
+      "wal": {
+        "regex": "\\b[48][0-9AB][1-9A-HJ-NP-Za-km-z]{93}\\b"
+      },
+      "pool": {
+        "regex": "\\b(?:moneroocean\\.stream|supportxmr\\.com|minexmr\\.com|nanopool\\.org|hashvault\\.pro|c3pool\\.com|xmrpool\\.eu|2miners\\.com|herominers\\.com|monerohash\\.com)",
+        "nocase": true
+      },
+      "flags": {
+        "regex": "--donate-level|--cpu-priority|--max-cpu-usage|--coin[= ]monero|--randomx|\\\"rx/0\\\"|-a\\s+rx/0",
+        "nocase": true
+      }
+    },
+    "condition": "2 of (wal,pool,flags)",
+    "references": [
+      "https://www.microsoft.com/en-us/security/blog/2025/08/21/think-before-you-clickfix-analyzing-the-clickfix-social-engineering-technique/"
+    ]
+  },
+  {
+    "id": "AEG-T26-LNK-PS-ENCODED-DOWNLOAD",
+    "name": "Shortcut launching encoded or downloading PowerShell",
+    "severity": "high",
+    "category": "malware",
+    "description": "Windows shortcut whose target arguments run PowerShell with an encoded command or FromBase64String, a download cradle combined with Invoke-Expression, or a hidden window combined with a download/execute call. Delivery format of the June 2026 'photo ZIP' campaign (IMG-<digits>.png.lnk).",
+    "mitre": [
+      "T1204.002",
+      "T1059.001"
+    ],
+    "file_types": [
+      "lnk"
+    ],
+    "strings": {
+      "ps": {
+        "text": "powershell",
+        "nocase": true,
+        "wide": true
+      },
+      "m1": {
+        "text": "EncodedCommand",
+        "nocase": true,
+        "wide": true
+      },
+      "m2": {
+        "text": "FromBase64String",
+        "nocase": true,
+        "wide": true
+      },
+      "m3": {
+        "text": "DownloadString",
+        "nocase": true,
+        "wide": true
+      },
+      "m4": {
+        "text": "Invoke-WebRequest",
+        "nocase": true,
+        "wide": true
+      },
+      "m5": {
+        "text": "Invoke-Expression",
+        "nocase": true,
+        "wide": true
+      },
+      "m6": {
+        "text": "WindowStyle Hidden",
+        "nocase": true,
+        "wide": true
+      },
+      "m7": {
+        "text": "https://",
+        "nocase": true,
+        "wide": true
+      },
+      "m8": {
+        "text": " -enc ",
+        "nocase": true,
+        "wide": true
+      },
+      "i1": {
+        "text": "iex(",
+        "nocase": true,
+        "wide": true
+      },
+      "i2": {
+        "text": "iex (",
+        "nocase": true,
+        "wide": true
+      },
+      "i3": {
+        "text": "| iex",
+        "nocase": true,
+        "wide": true
+      }
+    },
+    "condition": "ps and (m1 or m2 or m8 or (m6 and (m3 or m4 or m5 or i1 or i2 or i3)) or ((m3 or m4) and (m5 or i1 or i2 or i3)))",
+    "references": [
+      "https://www.microsoft.com/en-us/security/blog/2026/06/25/photo-zip-campaign-targeting-hospitality-industry-delivers-node-js-implant-persistent-access/"
+    ]
+  },
+  {
+    "id": "AEG-T26-LNK-LOLBIN-REMOTE",
+    "name": "Shortcut running a LOLBin against a remote URL",
+    "severity": "high",
+    "category": "malware",
+    "description": "Shortcut whose target runs mshta, curl, certutil or bitsadmin with an http(s) URL.",
+    "mitre": [
+      "T1204.002",
+      "T1218.005"
+    ],
+    "file_types": [
+      "lnk"
+    ],
+    "strings": {
+      "mshta": {
+        "text": "mshta",
+        "nocase": true,
+        "wide": true
+      },
+      "curl": {
+        "text": "curl",
+        "nocase": true,
+        "wide": true
+      },
+      "certutil": {
+        "text": "certutil",
+        "nocase": true,
+        "wide": true
+      },
+      "bits": {
+        "text": "bitsadmin",
+        "nocase": true,
+        "wide": true
+      },
+      "u1": {
+        "text": "http://",
+        "nocase": true,
+        "wide": true
+      },
+      "u2": {
+        "text": "https://",
+        "nocase": true,
+        "wide": true
+      }
+    },
+    "condition": "any of (mshta,curl,certutil,bits) and any of (u1,u2)",
+    "references": [
+      "https://www.microsoft.com/en-us/security/blog/2025/08/21/think-before-you-clickfix-analyzing-the-clickfix-social-engineering-technique/"
+    ]
+  },
+  {
+    "id": "AEG-T26-HTA-DOWNLOADER",
+    "name": "HTA application that runs commands or downloads files",
+    "severity": "high",
+    "category": "malware",
+    "description": "HTML Application using WScript.Shell/Shell.Application to Run or Exec a command, with PowerShell, XMLHTTP / ADODB.Stream download objects or string obfuscation.",
+    "mitre": [
+      "T1218.005",
+      "T1059.005"
+    ],
+    "file_types": [
+      "hta",
+      "text",
+      "script"
+    ],
+    "strings": {
+      "hta": {
+        "regex": "<hta:application",
+        "nocase": true
+      },
+      "sh": {
+        "regex": "\\b(?:WScript\\.Shell|Shell\\.Application)",
+        "nocase": true
+      },
+      "run": {
+        "regex": "\\.(Run|Exec)\\s*\\(",
+        "nocase": true
+      },
+      "cmd": {
+        "regex": "\\b(?:powershell|cmd(\\.exe)?\\s*/c|rundll32)",
+        "nocase": true
+      },
+      "dl": {
+        "regex": "\\b(?:MSXML2\\.(Server)?XMLHTTP|Microsoft\\.XMLHTTP|WinHttp\\.WinHttpRequest|ADODB\\.Stream|URLDownloadToFile)",
+        "nocase": true
+      },
+      "obf": {
+        "regex": "(?:\\b(?:fromCharCode|unescape\\(|atob\\()|\\bchr\\()",
+        "nocase": true
+      }
+    },
+    "condition": "hta and sh and run and (cmd or dl or obf)",
+    "references": [
+      "https://www.microsoft.com/en-us/security/blog/2025/08/21/think-before-you-clickfix-analyzing-the-clickfix-social-engineering-technique/"
+    ]
+  },
+  {
+    "id": "AEG-T26-WSH-DOWNLOADER",
+    "name": "JScript/VBScript downloader that saves and runs a file",
+    "severity": "high",
+    "category": "malware",
+    "description": "Windows Script Host script that fetches content with XMLHTTP/WinHttp, writes it with ADODB.Stream and executes it through WScript.Shell. SocGholish-, Gootloader- and ClickFix-stage scripts use this shape.",
+    "mitre": [
+      "T1059.005",
+      "T1059.007",
+      "T1105"
+    ],
+    "file_types": [
+      "script",
+      "vbs",
+      "js",
+      "wsf",
+      "text"
+    ],
+    "strings": {
+      "http": {
+        "regex": "\\b(?:MSXML2\\.(Server)?XMLHTTP|Microsoft\\.XMLHTTP|WinHttp\\.WinHttpRequest(\\.5\\.1)?)",
+        "nocase": true
+      },
+      "stream": {
+        "regex": "\\bADODB\\.Stream",
+        "nocase": true
+      },
+      "sh": {
+        "regex": "\\b(?:WScript\\.Shell|Shell\\.Application)",
+        "nocase": true
+      },
+      "run": {
+        "regex": "\\.(Run|Exec|ShellExecute)\\s*\\(",
+        "nocase": true
+      }
+    },
+    "condition": "http and stream and sh and run",
+    "references": [
+      "https://redcanary.com/threat-detection-report/threats/socgholish/",
+      "https://redcanary.com/threat-detection-report/threats/kongtuke/"
+    ]
+  },
+  {
+    "id": "AEG-T26-MSBUILD-INLINE-TASK",
+    "name": "MSBuild project with an inline task that downloads, loads or injects code",
+    "severity": "high",
+    "category": "malware",
+    "description": "MSBuild project/targets file with a CodeTaskFactory/RoslynCodeTaskFactory inline task that uses VirtualAlloc, Assembly.Load, FromBase64String, DownloadString or launches a process. MSBuild.exe run from AppData was used in a 2026 ClickFix chain.",
+    "mitre": [
+      "T1127.001"
+    ],
+    "file_types": [
+      "text",
+      "xml",
+      "csproj",
+      "proj",
+      "targets",
+      "script"
+    ],
+    "strings": {
+      "ut": {
+        "regex": "<UsingTask",
+        "nocase": true
+      },
+      "fac": {
+        "regex": "(Roslyn)?CodeTaskFactory",
+        "nocase": true
+      },
+      "bad": {
+        "regex": "\\b(?:VirtualAlloc|WriteProcessMemory|Assembly\\.Load|FromBase64String|DownloadString|System\\.Diagnostics\\.Process\\.Start|new\\s+ProcessStartInfo)",
+        "nocase": true
+      }
+    },
+    "condition": "ut and fac and bad",
+    "references": [
+      "https://thehackernews.com/2026/03/microsoft-reveals-clickfix-campaign.html"
+    ]
+  },
+  {
+    "id": "AEG-T26-NPM-INSTALL-HOOK-DOWNLOAD",
+    "name": "package.json install hook that downloads or evals code",
+    "severity": "medium",
+    "category": "malware",
+    "description": "preinstall/install/postinstall script that calls curl, wget, PowerShell, certutil, node -e, eval or pipes to a shell. The Shai-Hulud worm family and many typosquats abuse lifecycle hooks; legitimate packages normally run a local script or node-gyp.",
+    "mitre": [
+      "T1195.002",
+      "T1059"
+    ],
+    "file_types": [
+      "json",
+      "text"
+    ],
+    "strings": {
+      "dl": {
+        "regex": "\\\"(preinstall|install|postinstall)\\\"\\s*:\\s*\\\"[^\\\"\\r\\n]{0,400}\\b(curl|wget|Invoke-WebRequest|iwr|certutil|bitsadmin|mshta|powershell|bash\\s+-c|sh\\s+-c)\\b[^\\\"\\r\\n]{0,400}\\\"",
+        "nocase": true
+      },
+      "ev": {
+        "regex": "\\\"(preinstall|install|postinstall)\\\"\\s*:\\s*\\\"[^\\\"\\r\\n]{0,300}(node\\s+-e\\b|\\beval\\b|base64|\\|\\s*(sh|bash)\\b)",
+        "nocase": true
+      }
+    },
+    "condition": "dl or ev",
+    "references": [
+      "https://www.cisa.gov/news-events/alerts/2025/09/23/widespread-supply-chain-compromise-impacting-npm-ecosystem",
+      "https://www.csa.gov.sg/alerts-and-advisories/advisories/ad-2026-009/"
+    ]
+  },
+  {
+    "id": "AEG-T26-NPM-WORM-CREDENTIAL-SWEEP",
+    "name": "Script that harvests npm/GitHub/cloud tokens and republishes packages",
+    "severity": "high",
+    "category": "malware",
+    "description": "JavaScript that reads .npmrc and cloud/GitHub token variables, talks to the npm publish API and exfiltrates to webhook.site, or carries the 'Shai-Hulud: Here We Go Again' repository marker. Behaviour of the Shai-Hulud self-replicating npm worm described by CISA.",
+    "mitre": [
+      "T1195.002",
+      "T1552.001",
+      "T1567"
+    ],
+    "file_types": [
+      "script",
+      "js",
+      "mjs",
+      "cjs"
+    ],
+    "strings": {
+      "rc": {
+        "regex": "\\.[n]pmrc",
+        "nocase": true
+      },
+      "pub": {
+        "regex": "\\b(?:npm\\s+publish|registry\\.npmjs\\.org/-/)",
+        "nocase": true
+      },
+      "hook": {
+        "regex": "[w]ebhook\\.site",
+        "nocase": true
+      },
+      "tok": {
+        "regex": "\\b(?:GITHUB_TOKEN|NPM_TOKEN|AWS_SECRET_ACCESS_KEY|AWS_ACCESS_KEY_ID|ghp_)",
+        "nocase": true
+      },
+      "mark": {
+        "regex": "[S]hai\\-Hulud:\\ Here\\ We\\ Go\\ Again",
+        "nocase": true
+      }
+    },
+    "condition": "mark or (rc and pub and tok and hook)",
+    "references": [
+      "https://www.cisa.gov/news-events/alerts/2025/09/23/widespread-supply-chain-compromise-impacting-npm-ecosystem",
+      "https://www.csa.gov.sg/alerts-and-advisories/advisories/ad-2026-009/"
+    ]
+  },
+  {
+    "id": "AEG-T26-NPM-CHAINDROP-IOC",
+    "name": "Network indicators from the 2026 Keyv/ChainDrop npm compromise",
+    "severity": "high",
+    "category": "malware",
+    "description": "Files referencing domains listed in Singapore CSA advisory AD-2026-009 for the self-propagating npm package compromise (exfiltration and mirror domains).",
+    "mitre": [
+      "T1195.002",
+      "T1567"
+    ],
+    "file_types": [
+      "script",
+      "js",
+      "mjs",
+      "cjs",
+      "json",
+      "text",
+      "py"
+    ],
+    "strings": {
+      "d1": {
+        "regex": "[n]pm\\-cache\\.com",
+        "nocase": true
+      },
+      "d2": {
+        "regex": "[p]ypi\\-get\\.com",
+        "nocase": true
+      },
+      "d3": {
+        "regex": "[j]s\\-mirror\\.com",
+        "nocase": true
+      }
+    },
+    "condition": "any of them",
+    "references": [
+      "https://www.csa.gov.sg/alerts-and-advisories/advisories/ad-2026-009/"
+    ]
+  },
+  {
+    "id": "AEG-T26-PYPI-SETUP-EXEC",
+    "name": "setup.py that executes decoded or downloaded code on install",
+    "severity": "high",
+    "category": "malware",
+    "description": "setup.py that calls exec/eval on base64/zlib-decoded or network-fetched data, or shells out to PowerShell/curl from a custom install command. Typical of malicious PyPI packages targeting developers.",
+    "mitre": [
+      "T1195.002",
+      "T1059.006"
+    ],
+    "file_types": [
+      "py",
+      "script"
+    ],
+    "strings": {
+      "st": {
+        "regex": "\\b(?:setuptools|distutils)",
+        "nocase": true
+      },
+      "exec": {
+        "regex": "\\b(exec|eval)\\s*\\(\\s*(base64\\.b64decode|zlib\\.decompress|codecs\\.decode|bytes\\.fromhex|requests\\.get\\([^)]{0,200}\\)\\.(text|content)|urllib\\.request\\.urlopen\\([^)]{0,200}\\)\\.read\\(\\))",
+        "nocase": true
+      },
+      "sub": {
+        "regex": "\\bsubprocess\\.(Popen|run|call|check_output)\\s*\\(\\s*\\[?\\s*[\\\"'](powershell|cmd|curl|wget|bash|sh)\\b",
+        "nocase": true
+      },
+      "cls": {
+        "regex": "\\b(?:cmdclass|class\\s+\\w+\\(\\s*(install|develop|egg_info)\\s*\\))",
+        "nocase": true
+      }
+    },
+    "condition": "st and (exec or (sub and cls))",
+    "references": [
+      "https://www.csa.gov.sg/alerts-and-advisories/advisories/ad-2026-009/"
+    ]
+  },
+  {
+    "id": "AEG-T26-WEBSHELL-PHP-DYNAMIC",
+    "name": "PHP web shell executing request input",
+    "severity": "high",
+    "category": "malware",
+    "description": "PHP file that passes request parameters (optionally base64/gzip/rot13 decoded) to eval, assert, system, shell_exec, passthru, exec, popen or proc_open.",
+    "mitre": [
+      "T1505.003"
+    ],
+    "file_types": [
+      "script",
+      "text",
+      "php"
+    ],
+    "strings": {
+      "php": {
+        "regex": "<\\?php",
+        "nocase": true
+      },
+      "exec": {
+        "regex": "\\b(eval|assert|system|passthru|shell_exec|exec|popen|proc_open|pcntl_exec)\\s*\\(\\s*(base64_decode\\s*\\(\\s*|gzinflate\\s*\\(\\s*base64_decode\\s*\\(\\s*|str_rot13\\s*\\(\\s*)?\\$_(POST|REQUEST|GET|COOKIE)\\s*\\[",
+        "nocase": true
+      }
+    },
+    "condition": "php and exec",
+    "references": [
+      "https://learn.microsoft.com/en-us/defender-endpoint/attack-surface-reduction-rules-reference",
+      "https://attack.mitre.org/techniques/T1505/003/"
+    ]
+  },
+  {
+    "id": "AEG-T26-WEBSHELL-ASPX-PROCESS",
+    "name": "ASPX web shell running commands or loading code from request data",
+    "severity": "high",
+    "category": "malware",
+    "description": "ASP.NET page that reads a request parameter and starts a process, calls cmd/PowerShell or loads a base64 assembly.",
+    "mitre": [
+      "T1505.003"
+    ],
+    "file_types": [
+      "script",
+      "text",
+      "aspx",
+      "ashx"
+    ],
+    "strings": {
+      "page": {
+        "regex": "<%@\\s*Page\\s+Language\\s*=\\s*[\\\"']?(C#|VB|Jscript)",
+        "nocase": true
+      },
+      "req": {
+        "regex": "\\bRequest(\\.Form|\\.QueryString|\\.Item)?\\s*[\\[(]\\s*[\\\"'][^\\\"']{1,30}[\\\"']\\s*[\\])]",
+        "nocase": true
+      },
+      "proc": {
+        "regex": "(?:\\b(?:Process\\.Start|ProcessStartInfo|cmd\\.exe|powershell)|\\bEval\\s*\\()",
+        "nocase": true
+      },
+      "asm": {
+        "regex": "\\b(?:Convert\\.FromBase64String|Assembly\\.Load)",
+        "nocase": true
+      }
+    },
+    "condition": "page and req and (proc or asm)",
+    "references": [
+      "https://learn.microsoft.com/en-us/defender-endpoint/attack-surface-reduction-rules-reference",
+      "https://attack.mitre.org/techniques/T1505/003/"
+    ]
+  },
+  {
+    "id": "AEG-T26-ONENOTE-EMBEDDED-SCRIPT",
+    "name": "OneNote file embedding an executable or script",
+    "severity": "medium",
+    "category": "malware",
+    "description": "OneNote (.one) file containing a FileDataStoreObject plus an embedded PE header, script host or batch content. Microsoft blocks the common embedded types by default since 2023, but the format remains a delivery vector (Emotet, QakBot, AsyncRAT campaigns).",
+    "mitre": [
+      "T1204.002",
+      "T1566.001"
+    ],
+    "file_types": [
+      "one"
+    ],
+    "strings": {
+      "fds": {
+        "hex": "E7 16 E3 BD 65 26 11 45 A4 C4 8D 4D 0B 7A 9E AC"
+      },
+      "mz": {
+        "text": "This program cannot be run in DOS mode"
+      },
+      "wsh": {
+        "regex": "\\b(?:WScript\\.Shell|powershell|mshta|cmd(\\.exe)?\\s*/c)",
+        "nocase": true
+      },
+      "bat": {
+        "regex": "@echo\\s+off",
+        "nocase": true
+      }
+    },
+    "condition": "fds and (mz or wsh or bat)",
+    "references": [
+      "https://yaraify.abuse.ch/yarahub/"
+    ]
+  }
+]

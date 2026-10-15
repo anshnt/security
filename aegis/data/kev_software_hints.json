@@ -1,0 +1,631 @@
+{
+  "_comment": [
+    "CISA Known Exploited Vulnerabilities (KEV) hints for commonly installed consumer software.",
+    "Generated from https://www.cisa.gov/sites/default/files/feeds/known_exploited_vulnerabilities.json - every CVE below",
+    "was read from that feed; nothing was typed by hand. KEV carries no version ranges, so these are prioritisation hints",
+    "('this product family has actively exploited CVEs, keep it patched'), not version checks. Use aegis/data/",
+    "vulnerable_software.json for version rules. KEV data is US-government work (public domain in the US).",
+    "Fields: name_regex = case-insensitive match on the installed program's display name (software scanner);",
+    "recent_cves = up to 8 most recently added KEV entries for the product; kev_entries_total = all KEV entries."
+  ],
+  "source": {
+    "url": "https://www.cisa.gov/sites/default/files/feeds/known_exploited_vulnerabilities.json",
+    "catalog_version": "2026.10.15",
+    "date_released": "2026-10-15T17:00:11.2795Z",
+    "catalog_count": 1746
+  },
+  "products": [
+    {
+      "id": "chrome",
+      "name": "Google Chrome / Chromium",
+      "name_regex": "^google chrome|^chromium",
+      "os_component": false,
+      "kev_entries_total": 71,
+      "kev_ransomware_known": 0,
+      "kev_last_added": "2026-09-09",
+      "recent_cves": [
+        {
+          "cve": "CVE-2026-87491",
+          "date_added": "2026-09-09",
+          "kev_product": "Chromium V8",
+          "name": "Google Chromium V8 Out of Bounds Write Vulnerability",
+          "known_ransomware_campaign_use": "Unknown",
+          "nvd": "https://nvd.nist.gov/vuln/detail/CVE-2026-87491"
+        },
+        {
+          "cve": "CVE-2026-85046",
+          "date_added": "2026-09-04",
+          "kev_product": "Chromium V8",
+          "name": "Google Chromium V8 Type Confusion Vulnerability",
+          "known_ransomware_campaign_use": "Unknown",
+          "nvd": "https://nvd.nist.gov/vuln/detail/CVE-2026-85046"
+        },
+        {
+          "cve": "CVE-2026-11645",
+          "date_added": "2026-06-09",
+          "kev_product": "Chromium V8",
+          "name": "Google Chromium V8 Out-of-Bounds Read and Write Vulnerability",
+          "known_ransomware_campaign_use": "Unknown",
+          "nvd": "https://nvd.nist.gov/vuln/detail/CVE-2026-11645"
+        },
+        {
+          "cve": "CVE-2026-3910",
+          "date_added": "2026-03-13",
+          "kev_product": "Chromium V8",
+          "name": "Google Chromium V8 Improper Restriction of Operations Within the Bounds of a Memory Buffer Vulnerability",
+          "known_ransomware_campaign_use": "Unknown",
+          "nvd": "https://nvd.nist.gov/vuln/detail/CVE-2026-3910"
+        },
+        {
+          "cve": "CVE-2026-2441",
+          "date_added": "2026-02-17",
+          "kev_product": "Chromium",
+          "name": "Google Chromium CSS Use-After-Free Vulnerability",
+          "known_ransomware_campaign_use": "Unknown",
+          "nvd": "https://nvd.nist.gov/vuln/detail/CVE-2026-2441"
+        },
+        {
+          "cve": "CVE-2025-14174",
+          "date_added": "2025-12-12",
+          "kev_product": "Chromium",
+          "name": "Google Chromium Out of Bounds Memory Access Vulnerability",
+          "known_ransomware_campaign_use": "Unknown",
+          "nvd": "https://nvd.nist.gov/vuln/detail/CVE-2025-14174"
+        },
+        {
+          "cve": "CVE-2025-13223",
+          "date_added": "2025-11-19",
+          "kev_product": "Chromium V8",
+          "name": "Google Chromium V8 Type Confusion Vulnerability",
+          "known_ransomware_campaign_use": "Unknown",
+          "nvd": "https://nvd.nist.gov/vuln/detail/CVE-2025-13223"
+        },
+        {
+          "cve": "CVE-2025-10585",
+          "date_added": "2025-09-23",
+          "kev_product": "Chromium V8",
+          "name": "Google Chromium V8 Type Confusion Vulnerability",
+          "known_ransomware_campaign_use": "Unknown",
+          "nvd": "https://nvd.nist.gov/vuln/detail/CVE-2025-10585"
+        }
+      ],
+      "advice": "Update Chrome (Settings > About Chrome) and restart it. Chromium engine bugs in CISA KEV were exploited in the wild before patches shipped; the same engine bugs affect Edge, Brave, Opera and Vivaldi."
+    },
+    {
+      "id": "edge",
+      "name": "Microsoft Edge",
+      "name_regex": "^microsoft edge($| \\()",
+      "os_component": false,
+      "kev_entries_total": 4,
+      "kev_ransomware_known": 1,
+      "kev_last_added": "2022-03-28",
+      "recent_cves": [
+        {
+          "cve": "CVE-2017-0037",
+          "date_added": "2022-03-28",
+          "kev_product": "Edge and Internet Explorer",
+          "name": "Microsoft Edge and Internet Explorer Type Confusion Vulnerability",
+          "known_ransomware_campaign_use": "Unknown",
+          "nvd": "https://nvd.nist.gov/vuln/detail/CVE-2017-0037"
+        },
+        {
+          "cve": "CVE-2016-7201",
+          "date_added": "2022-03-28",
+          "kev_product": "Edge",
+          "name": "Microsoft Edge Memory Corruption Vulnerability",
+          "known_ransomware_campaign_use": "Unknown",
+          "nvd": "https://nvd.nist.gov/vuln/detail/CVE-2016-7201"
+        },
+        {
+          "cve": "CVE-2016-7200",
+          "date_added": "2022-03-28",
+          "kev_product": "Edge",
+          "name": "Microsoft Edge Memory Corruption Vulnerability",
+          "known_ransomware_campaign_use": "Unknown",
+          "nvd": "https://nvd.nist.gov/vuln/detail/CVE-2016-7200"
+        },
+        {
+          "cve": "CVE-2020-0878",
+          "date_added": "2021-11-03",
+          "kev_product": "Edge and Internet Explorer",
+          "name": "Microsoft Edge and Internet Explorer Memory Corruption Vulnerability",
+          "known_ransomware_campaign_use": "Known",
+          "nvd": "https://nvd.nist.gov/vuln/detail/CVE-2020-0878"
+        }
+      ],
+      "advice": "Edge updates itself; open edge://settings/help to force the update and restart. Chromium bugs also apply to Edge."
+    },
+    {
+      "id": "firefox",
+      "name": "Mozilla Firefox / Thunderbird",
+      "name_regex": "^mozilla (firefox|thunderbird)",
+      "os_component": false,
+      "kev_entries_total": 13,
+      "kev_ransomware_known": 1,
+      "kev_last_added": "2025-10-06",
+      "recent_cves": [
+        {
+          "cve": "CVE-2010-3765",
+          "date_added": "2025-10-06",
+          "kev_product": "Multiple Products",
+          "name": "Mozilla Multiple Products Remote Code Execution Vulnerability",
+          "known_ransomware_campaign_use": "Unknown",
+          "nvd": "https://nvd.nist.gov/vuln/detail/CVE-2010-3765"
+        },
+        {
+          "cve": "CVE-2024-9680",
+          "date_added": "2024-10-15",
+          "kev_product": "Firefox",
+          "name": "Mozilla Firefox Use-After-Free Vulnerability",
+          "known_ransomware_campaign_use": "Known",
+          "nvd": "https://nvd.nist.gov/vuln/detail/CVE-2024-9680"
+        },
+        {
+          "cve": "CVE-2016-9079",
+          "date_added": "2023-06-22",
+          "kev_product": "Firefox, Firefox ESR, and Thunderbird",
+          "name": "Mozilla Firefox, Firefox ESR, and Thunderbird Use-After-Free Vulnerability",
+          "known_ransomware_campaign_use": "Unknown",
+          "nvd": "https://nvd.nist.gov/vuln/detail/CVE-2016-9079"
+        },
+        {
+          "cve": "CVE-2015-4495",
+          "date_added": "2022-05-25",
+          "kev_product": "Firefox",
+          "name": "Mozilla Firefox Security Feature Bypass Vulnerability",
+          "known_ransomware_campaign_use": "Unknown",
+          "nvd": "https://nvd.nist.gov/vuln/detail/CVE-2015-4495"
+        },
+        {
+          "cve": "CVE-2019-11708",
+          "date_added": "2022-05-23",
+          "kev_product": "Firefox and Thunderbird",
+          "name": "Mozilla Firefox and Thunderbird Sandbox Escape Vulnerability",
+          "known_ransomware_campaign_use": "Unknown",
+          "nvd": "https://nvd.nist.gov/vuln/detail/CVE-2019-11708"
+        },
+        {
+          "cve": "CVE-2019-11707",
+          "date_added": "2022-05-23",
+          "kev_product": "Firefox and Thunderbird",
+          "name": "Mozilla Firefox and Thunderbird Type Confusion Vulnerability",
+          "known_ransomware_campaign_use": "Unknown",
+          "nvd": "https://nvd.nist.gov/vuln/detail/CVE-2019-11707"
+        },
+        {
+          "cve": "CVE-2013-1690",
+          "date_added": "2022-03-28",
+          "kev_product": "Firefox and Thunderbird",
+          "name": "Mozilla Firefox and Thunderbird Denial-of-Service Vulnerability",
+          "known_ransomware_campaign_use": "Unknown",
+          "nvd": "https://nvd.nist.gov/vuln/detail/CVE-2013-1690"
+        },
+        {
+          "cve": "CVE-2022-26486",
+          "date_added": "2022-03-07",
+          "kev_product": "Firefox",
+          "name": "Mozilla Firefox Use-After-Free Vulnerability",
+          "known_ransomware_campaign_use": "Unknown",
+          "nvd": "https://nvd.nist.gov/vuln/detail/CVE-2022-26486"
+        }
+      ],
+      "advice": "Update Firefox/Thunderbird from the Help > About dialog and restart."
+    },
+    {
+      "id": "acrobat",
+      "name": "Adobe Acrobat / Reader",
+      "name_regex": "adobe (acrobat|reader)",
+      "os_component": false,
+      "kev_entries_total": 24,
+      "kev_ransomware_known": 2,
+      "kev_last_added": "2026-05-20",
+      "recent_cves": [
+        {
+          "cve": "CVE-2009-3459",
+          "date_added": "2026-05-20",
+          "kev_product": "Acrobat and Reader",
+          "name": "Adobe Acrobat and Reader Heap-Based Buffer Overflow Vulnerability",
+          "known_ransomware_campaign_use": "Unknown",
+          "nvd": "https://nvd.nist.gov/vuln/detail/CVE-2009-3459"
+        },
+        {
+          "cve": "CVE-2026-34621",
+          "date_added": "2026-04-13",
+          "kev_product": "Acrobat and Reader",
+          "name": "Adobe Acrobat and Reader Prototype Pollution Vulnerability",
+          "known_ransomware_campaign_use": "Unknown",
+          "nvd": "https://nvd.nist.gov/vuln/detail/CVE-2026-34621"
+        },
+        {
+          "cve": "CVE-2020-9715",
+          "date_added": "2026-04-13",
+          "kev_product": "Acrobat",
+          "name": "Adobe Acrobat Use-After-Free Vulnerability",
+          "known_ransomware_campaign_use": "Unknown",
+          "nvd": "https://nvd.nist.gov/vuln/detail/CVE-2020-9715"
+        },
+        {
+          "cve": "CVE-2023-21608",
+          "date_added": "2023-10-10",
+          "kev_product": "Acrobat and Reader",
+          "name": "Adobe Acrobat and Reader Use-After-Free Vulnerability",
+          "known_ransomware_campaign_use": "Unknown",
+          "nvd": "https://nvd.nist.gov/vuln/detail/CVE-2023-21608"
+        },
+        {
+          "cve": "CVE-2023-26369",
+          "date_added": "2023-09-14",
+          "kev_product": "Acrobat and Reader",
+          "name": "Adobe Acrobat and Reader Out-of-Bounds Write Vulnerability",
+          "known_ransomware_campaign_use": "Unknown",
+          "nvd": "https://nvd.nist.gov/vuln/detail/CVE-2023-26369"
+        },
+        {
+          "cve": "CVE-2018-4990",
+          "date_added": "2022-06-08",
+          "kev_product": "Acrobat and Reader",
+          "name": "Adobe Acrobat and Reader Double Free Vulnerability",
+          "known_ransomware_campaign_use": "Unknown",
+          "nvd": "https://nvd.nist.gov/vuln/detail/CVE-2018-4990"
+        },
+        {
+          "cve": "CVE-2011-2462",
+          "date_added": "2022-06-08",
+          "kev_product": "Reader and Acrobat",
+          "name": "Adobe Reader and Acrobat Universal 3D Memory Corruption Vulnerability",
+          "known_ransomware_campaign_use": "Unknown",
+          "nvd": "https://nvd.nist.gov/vuln/detail/CVE-2011-2462"
+        },
+        {
+          "cve": "CVE-2010-2883",
+          "date_added": "2022-06-08",
+          "kev_product": "Acrobat and Reader",
+          "name": "Adobe Acrobat and Reader Stack-Based Buffer Overflow Vulnerability",
+          "known_ransomware_campaign_use": "Unknown",
+          "nvd": "https://nvd.nist.gov/vuln/detail/CVE-2010-2883"
+        }
+      ],
+      "advice": "Update through Help > Check for Updates. Prefer a browser or the built-in viewer for untrusted PDFs."
+    },
+    {
+      "id": "winrar",
+      "name": "WinRAR / UnRAR",
+      "name_regex": "^winrar|^unrar",
+      "os_component": false,
+      "kev_entries_total": 5,
+      "kev_ransomware_known": 4,
+      "kev_last_added": "2025-12-09",
+      "recent_cves": [
+        {
+          "cve": "CVE-2025-6218",
+          "date_added": "2025-12-09",
+          "kev_product": "WinRAR",
+          "name": "RARLAB WinRAR Path Traversal Vulnerability",
+          "known_ransomware_campaign_use": "Unknown",
+          "nvd": "https://nvd.nist.gov/vuln/detail/CVE-2025-6218"
+        },
+        {
+          "cve": "CVE-2025-8088",
+          "date_added": "2025-08-12",
+          "kev_product": "WinRAR",
+          "name": "RARLAB WinRAR Path Traversal Vulnerability",
+          "known_ransomware_campaign_use": "Known",
+          "nvd": "https://nvd.nist.gov/vuln/detail/CVE-2025-8088"
+        },
+        {
+          "cve": "CVE-2023-38831",
+          "date_added": "2023-08-24",
+          "kev_product": "WinRAR",
+          "name": "RARLAB WinRAR Code Execution Vulnerability",
+          "known_ransomware_campaign_use": "Known",
+          "nvd": "https://nvd.nist.gov/vuln/detail/CVE-2023-38831"
+        },
+        {
+          "cve": "CVE-2022-30333",
+          "date_added": "2022-08-09",
+          "kev_product": "UnRAR",
+          "name": "RARLAB UnRAR Directory Traversal Vulnerability",
+          "known_ransomware_campaign_use": "Known",
+          "nvd": "https://nvd.nist.gov/vuln/detail/CVE-2022-30333"
+        },
+        {
+          "cve": "CVE-2018-20250",
+          "date_added": "2022-02-15",
+          "kev_product": "WinRAR",
+          "name": "WinRAR Absolute Path Traversal Vulnerability",
+          "known_ransomware_campaign_use": "Known",
+          "nvd": "https://nvd.nist.gov/vuln/detail/CVE-2018-20250"
+        }
+      ],
+      "advice": "Update WinRAR to the latest release; WinRAR flaws have been used with ransomware-linked phishing archives."
+    },
+    {
+      "id": "7zip",
+      "name": "7-Zip",
+      "name_regex": "^7-?zip",
+      "os_component": false,
+      "kev_entries_total": 1,
+      "kev_ransomware_known": 0,
+      "kev_last_added": "2025-02-06",
+      "recent_cves": [
+        {
+          "cve": "CVE-2025-0411",
+          "date_added": "2025-02-06",
+          "kev_product": "7-Zip",
+          "name": "7-Zip Mark of the Web Bypass Vulnerability",
+          "known_ransomware_campaign_use": "Unknown",
+          "nvd": "https://nvd.nist.gov/vuln/detail/CVE-2025-0411"
+        }
+      ],
+      "advice": "Update 7-Zip to the latest release (7zip.org); it does not auto-update."
+    },
+    {
+      "id": "notepadpp",
+      "name": "Notepad++",
+      "name_regex": "^notepad\\+\\+",
+      "os_component": false,
+      "kev_entries_total": 1,
+      "kev_ransomware_known": 0,
+      "kev_last_added": "2026-02-12",
+      "recent_cves": [
+        {
+          "cve": "CVE-2025-15556",
+          "date_added": "2026-02-12",
+          "kev_product": "Notepad++",
+          "name": "Notepad++ Download of Code Without Integrity Check Vulnerability",
+          "known_ransomware_campaign_use": "Unknown",
+          "nvd": "https://nvd.nist.gov/vuln/detail/CVE-2025-15556"
+        }
+      ],
+      "advice": "Update Notepad++ from the project's official site; it can be abused through its updater and plugin mechanism."
+    },
+    {
+      "id": "office",
+      "name": "Microsoft Office / Outlook",
+      "name_regex": "^microsoft (office|365|outlook)",
+      "os_component": false,
+      "kev_entries_total": 42,
+      "kev_ransomware_known": 4,
+      "kev_last_added": "2026-04-14",
+      "recent_cves": [
+        {
+          "cve": "CVE-2009-0238",
+          "date_added": "2026-04-14",
+          "kev_product": "Office",
+          "name": "Microsoft Office Remote Code Execution",
+          "known_ransomware_campaign_use": "Unknown",
+          "nvd": "https://nvd.nist.gov/vuln/detail/CVE-2009-0238"
+        },
+        {
+          "cve": "CVE-2026-21514",
+          "date_added": "2026-02-10",
+          "kev_product": "Office",
+          "name": "Microsoft Office Word Reliance on Untrusted Inputs in a Security Decision Vulnerability",
+          "known_ransomware_campaign_use": "Unknown",
+          "nvd": "https://nvd.nist.gov/vuln/detail/CVE-2026-21514"
+        },
+        {
+          "cve": "CVE-2026-21509",
+          "date_added": "2026-01-26",
+          "kev_product": "Office",
+          "name": "Microsoft Office Security Feature Bypass Vulnerability",
+          "known_ransomware_campaign_use": "Unknown",
+          "nvd": "https://nvd.nist.gov/vuln/detail/CVE-2026-21509"
+        },
+        {
+          "cve": "CVE-2009-0556",
+          "date_added": "2026-01-07",
+          "kev_product": "Office",
+          "name": "Microsoft Office PowerPoint Code Injection Vulnerability",
+          "known_ransomware_campaign_use": "Unknown",
+          "nvd": "https://nvd.nist.gov/vuln/detail/CVE-2009-0556"
+        },
+        {
+          "cve": "CVE-2007-0671",
+          "date_added": "2025-08-12",
+          "kev_product": "Office",
+          "name": "Microsoft Office Excel Remote Code Execution Vulnerability",
+          "known_ransomware_campaign_use": "Unknown",
+          "nvd": "https://nvd.nist.gov/vuln/detail/CVE-2007-0671"
+        },
+        {
+          "cve": "CVE-2024-21413",
+          "date_added": "2025-02-06",
+          "kev_product": "Office Outlook",
+          "name": "Microsoft Outlook Improper Input Validation Vulnerability",
+          "known_ransomware_campaign_use": "Unknown",
+          "nvd": "https://nvd.nist.gov/vuln/detail/CVE-2024-21413"
+        },
+        {
+          "cve": "CVE-2023-36563",
+          "date_added": "2023-10-10",
+          "kev_product": "WordPad",
+          "name": "Microsoft WordPad Information Disclosure Vulnerability",
+          "known_ransomware_campaign_use": "Unknown",
+          "nvd": "https://nvd.nist.gov/vuln/detail/CVE-2023-36563"
+        },
+        {
+          "cve": "CVE-2023-36761",
+          "date_added": "2023-09-12",
+          "kev_product": "Word",
+          "name": "Microsoft Word Information Disclosure Vulnerability",
+          "known_ransomware_campaign_use": "Unknown",
+          "nvd": "https://nvd.nist.gov/vuln/detail/CVE-2023-36761"
+        }
+      ],
+      "advice": "Run Office Update (File > Account > Update Options > Update Now). Keep Outlook current; opening a crafted email can be enough."
+    },
+    {
+      "id": "java",
+      "name": "Oracle Java",
+      "name_regex": "^java( \\(tm\\))?( se)?|oracle java|java\\(tm\\)",
+      "os_component": false,
+      "kev_entries_total": 13,
+      "kev_ransomware_known": 6,
+      "kev_last_added": "2023-05-12",
+      "recent_cves": [
+        {
+          "cve": "CVE-2016-3427",
+          "date_added": "2023-05-12",
+          "kev_product": "Java SE and JRockit",
+          "name": "Oracle Java SE and JRockit Unspecified Vulnerability",
+          "known_ransomware_campaign_use": "Unknown",
+          "nvd": "https://nvd.nist.gov/vuln/detail/CVE-2016-3427"
+        },
+        {
+          "cve": "CVE-2013-2423",
+          "date_added": "2022-05-25",
+          "kev_product": "Java Runtime Environment (JRE)",
+          "name": "Oracle JRE Unspecified Vulnerability",
+          "known_ransomware_campaign_use": "Unknown",
+          "nvd": "https://nvd.nist.gov/vuln/detail/CVE-2013-2423"
+        },
+        {
+          "cve": "CVE-2013-0431",
+          "date_added": "2022-05-25",
+          "kev_product": "Java Runtime Environment (JRE)",
+          "name": "Oracle JRE Sandbox Bypass Vulnerability",
+          "known_ransomware_campaign_use": "Known",
+          "nvd": "https://nvd.nist.gov/vuln/detail/CVE-2013-0431"
+        },
+        {
+          "cve": "CVE-2013-0422",
+          "date_added": "2022-05-25",
+          "kev_product": "Java Runtime Environment (JRE)",
+          "name": "Oracle JRE Remote Code Execution Vulnerability",
+          "known_ransomware_campaign_use": "Known",
+          "nvd": "https://nvd.nist.gov/vuln/detail/CVE-2013-0422"
+        },
+        {
+          "cve": "CVE-2010-0840",
+          "date_added": "2022-05-25",
+          "kev_product": "Java Runtime Environment (JRE)",
+          "name": "Oracle JRE Unspecified Vulnerability",
+          "known_ransomware_campaign_use": "Unknown",
+          "nvd": "https://nvd.nist.gov/vuln/detail/CVE-2010-0840"
+        },
+        {
+          "cve": "CVE-2013-2465",
+          "date_added": "2022-03-28",
+          "kev_product": "Java SE",
+          "name": "Oracle Java SE Unspecified Vulnerability",
+          "known_ransomware_campaign_use": "Known",
+          "nvd": "https://nvd.nist.gov/vuln/detail/CVE-2013-2465"
+        },
+        {
+          "cve": "CVE-2012-5076",
+          "date_added": "2022-03-28",
+          "kev_product": "Java SE",
+          "name": "Oracle Java SE Sandbox Bypass Vulnerability",
+          "known_ransomware_campaign_use": "Unknown",
+          "nvd": "https://nvd.nist.gov/vuln/detail/CVE-2012-5076"
+        },
+        {
+          "cve": "CVE-2015-4902",
+          "date_added": "2022-03-03",
+          "kev_product": "Java SE",
+          "name": "Oracle Java SE Integrity Check Vulnerability",
+          "known_ransomware_campaign_use": "Unknown",
+          "nvd": "https://nvd.nist.gov/vuln/detail/CVE-2015-4902"
+        }
+      ],
+      "advice": "Uninstall Java if nothing needs it; otherwise install the current release from java.com or the vendor."
+    },
+    {
+      "id": "wps",
+      "name": "WPS Office",
+      "name_regex": "wps office",
+      "os_component": false,
+      "kev_entries_total": 1,
+      "kev_ransomware_known": 0,
+      "kev_last_added": "2024-09-03",
+      "recent_cves": [
+        {
+          "cve": "CVE-2024-7262",
+          "date_added": "2024-09-03",
+          "kev_product": "WPS Office",
+          "name": "Kingsoft WPS Office Path Traversal Vulnerability",
+          "known_ransomware_campaign_use": "Unknown",
+          "nvd": "https://nvd.nist.gov/vuln/detail/CVE-2024-7262"
+        }
+      ],
+      "advice": "Update WPS Office or remove it if unused."
+    },
+    {
+      "id": "windows",
+      "name": "Microsoft Windows (patch level, not an installed program)",
+      "name_regex": "^$",
+      "os_component": true,
+      "kev_entries_total": 178,
+      "kev_ransomware_known": 49,
+      "kev_last_added": "2026-10-13",
+      "recent_cves": [
+        {
+          "cve": "CVE-2026-96951",
+          "date_added": "2026-10-13",
+          "kev_product": "Windows",
+          "name": "Microsoft Windows Command Injection Vulnerability",
+          "known_ransomware_campaign_use": "Unknown",
+          "nvd": "https://nvd.nist.gov/vuln/detail/CVE-2026-96951"
+        },
+        {
+          "cve": "CVE-2026-85880",
+          "date_added": "2026-09-08",
+          "kev_product": "Windows",
+          "name": "Microsoft Windows Heap-Based Buffer Overflow Vulnerability",
+          "known_ransomware_campaign_use": "Unknown",
+          "nvd": "https://nvd.nist.gov/vuln/detail/CVE-2026-85880"
+        },
+        {
+          "cve": "CVE-2026-81963",
+          "date_added": "2026-09-08",
+          "kev_product": "Windows",
+          "name": "Microsoft Windows Link Following Vulnerability",
+          "known_ransomware_campaign_use": "Unknown",
+          "nvd": "https://nvd.nist.gov/vuln/detail/CVE-2026-81963"
+        },
+        {
+          "cve": "CVE-2026-68820",
+          "date_added": "2026-08-11",
+          "kev_product": "Windows Ancillary Function Driver for WinSock",
+          "name": "Microsoft Windows Ancillary Function Driver for WinSock Use-After-Free Vulnerability",
+          "known_ransomware_campaign_use": "Unknown",
+          "nvd": "https://nvd.nist.gov/vuln/detail/CVE-2026-68820"
+        },
+        {
+          "cve": "CVE-2008-4250",
+          "date_added": "2026-05-20",
+          "kev_product": "Windows",
+          "name": "Microsoft Windows Buffer Overflow Vulnerability",
+          "known_ransomware_campaign_use": "Unknown",
+          "nvd": "https://nvd.nist.gov/vuln/detail/CVE-2008-4250"
+        },
+        {
+          "cve": "CVE-2026-32202",
+          "date_added": "2026-04-28",
+          "kev_product": "Windows",
+          "name": "Microsoft Windows Protection Mechanism Failure Vulnerability",
+          "known_ransomware_campaign_use": "Unknown",
+          "nvd": "https://nvd.nist.gov/vuln/detail/CVE-2026-32202"
+        },
+        {
+          "cve": "CVE-2025-60710",
+          "date_added": "2026-04-13",
+          "kev_product": "Windows",
+          "name": "Microsoft Windows Link Following Vulnerability",
+          "known_ransomware_campaign_use": "Known",
+          "nvd": "https://nvd.nist.gov/vuln/detail/CVE-2025-60710"
+        },
+        {
+          "cve": "CVE-2023-36424",
+          "date_added": "2026-04-13",
+          "kev_product": "Windows",
+          "name": "Microsoft Windows Out-of-Bounds Read Vulnerability",
+          "known_ransomware_campaign_use": "Unknown",
+          "nvd": "https://nvd.nist.gov/vuln/detail/CVE-2023-36424"
+        }
+      ],
+      "advice": "Install the latest cumulative update (Settings > Windows Update). Aegis's system audit reports the OS patch level."
+    }
+  ]
+}
