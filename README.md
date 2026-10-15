@@ -35,9 +35,11 @@ score. Use it from the command line or the desktop GUI.
 
 ### Option A: packaged executable
 
-1. Download `aegis-windows` from the GitHub Actions artifacts or the Releases page, or build it with
-   `scripts\build_windows.ps1`.
-2. Open **PowerShell as Administrator**:
+1. Download `aegis-<version>-windows-x64.zip` from the
+   [Releases page](https://github.com/anshnt/security/releases) and check it against `SHA256SUMS.txt`.
+   You can also build it yourself with `scripts\build_windows.ps1`. The executables are not code-signed,
+   so SmartScreen may warn on first run.
+2. Extract the zip, then open **PowerShell as Administrator** in that folder:
 
 ```powershell
 .\aegis.exe update            # fetch latest threat intelligence
@@ -47,7 +49,7 @@ score. Use it from the command line or the desktop GUI.
 .\aegis-gui.exe               # desktop app
 ```
 
-3. Optional: run `scripts\install_windows.ps1` as Administrator. It installs Aegis to
+3. Optional: run `install_windows.ps1` (in the zip, or `scripts\` in the source tree) as Administrator. It installs Aegis to
    `C:\Program Files\Aegis` and creates scheduled tasks for real-time protection at logon, a daily quick
    scan and signature updates every 6 hours.
 

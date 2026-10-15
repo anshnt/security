@@ -20,6 +20,11 @@ param(
 
 $ErrorActionPreference = "Stop"
 
+# Release zip layout: the exes sit next to this script. Source tree layout: ..\dist.
+if (-not $PSBoundParameters.ContainsKey("SourceDir") -and (Test-Path (Join-Path $PSScriptRoot "aegis.exe"))) {
+    $SourceDir = $PSScriptRoot
+}
+
 $identity = [Security.Principal.WindowsIdentity]::GetCurrent()
 if (-not ([Security.Principal.WindowsPrincipal]$identity).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) {
     Write-Error "Run this script from an elevated (Administrator) PowerShell."
