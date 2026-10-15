@@ -38,7 +38,7 @@ def test_baseline_created_with_hashes(cfg, tree):
     b = fim.create_baseline(cfg, [tree])
     saved = json.loads((cfg.home / "integrity_baseline.json").read_text())
     assert saved["roots"] == [str(tree)] and b["count"] == 4
-    entry = saved["files"][str(tree / "etc" / "hosts")]
+    entry = saved["files"][fim._key(tree / "etc" / "hosts")]
     assert len(entry["sha256"]) == 64 and entry["size"] == len("127.0.0.1 localhost\n")
     assert fim.compare_baseline(cfg) == []
 

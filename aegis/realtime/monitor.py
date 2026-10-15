@@ -1075,7 +1075,7 @@ class RansomwareGuard:
         self.io = IOTracker()
         self.canaries = CanaryManager(monitor.config, canary_dirs, state_path) if monitor.config.ransomware_canaries else None
         self.suspended: Dict[int, Culprit] = {}
-        self._last_burst = 0.0
+        self._last_burst = float("-inf")  # monotonic() counts from boot: 0.0 would mute bursts right after startup
         self._sample_tokens = 40.0
         self._sample_ts = time.monotonic()
 

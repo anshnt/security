@@ -276,7 +276,11 @@ def test_ransomware_guard_canary_event(cfg, tmp_path):
     mon.start()
     try:
         canary = next(Path(p) for p in mon.ransomware.canaries.paths() if p.endswith(".docx"))
-        canary.write_bytes(b"\x00garbage-encrypted-content" * 50)
+        # Rewrite in place (as ransomware does). Opening a *hidden* file with "wb"
+        # (CREATE_ALWAYS) is refused by Windows, so use r+b and truncate.
+        with open(canary, "r+b") as fh:
+            fh.write(b"\x00garbage-encrypted-content" * 50)
+            fh.truncate()
         assert wait_for(lambda: any(e.rule_id == "AEG-RANSOM-CANARY" for e in events))
     finally:
         mon.stop()
@@ -358,6 +362,18 @@ def test_ransomware_guard_burst_event(cfg, tmp_path):
     assert burst[0].evidence["files_changed"] == 40
     g.tick()  # detector was reset + cooldown: no duplicate
     assert len([e for e in events if e.rule_id == "AEG-RANSOM-BURST"]) == 1
+
+
+def test_ransomware_burst_fires_right_after_boot(cfg, monkeypatch):
+    """time.monotonic() counts from boot; the burst cooldown must not swallow the
+    first burst on a freshly started machine (e.g. ransomware launched at logon)."""
+    monkeypatch.setattr(M.time, "monotonic", lambda: 5.0)
+    mon, events = make_monitor(cfg, components=(), canary_dirs=[])
+    g = mon.ransomware
+    for i in range(40):
+        g.on_fs_event("renamed", f"/u/Documents/f{i}.docx.locked", f"/u/Documents/f{i}.docx")
+    g.tick()
+    assert [e.rule_id for e in events].count("AEG-RANSOM-BURST") == 1
 
 
 def test_io_tracker_deltas_and_window():

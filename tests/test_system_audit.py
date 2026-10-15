@@ -499,6 +499,10 @@ def test_find_nopasswd_all():
     assert [h["principal"] for h in hits] == ["bob", "%wheel"]
 
 
+posix_only = pytest.mark.skipif(os.name == "nt", reason="POSIX permission bits (chmod) don't exist on Windows")
+
+
+@posix_only
 def test_find_world_writable(tmp_path):
     d = tmp_path / "etc"
     (d / "sub").mkdir(parents=True)
@@ -513,6 +517,7 @@ def test_find_world_writable(tmp_path):
     assert sa.find_world_writable(str(tmp_path / "missing")) is None
 
 
+@posix_only
 def test_suid_detection(tmp_path):
     bad = tmp_path / "backdoor"
     bad.write_text("#!/bin/sh\n")
