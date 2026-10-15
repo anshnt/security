@@ -3,7 +3,12 @@
 Downloads public abuse.ch and community feeds into ``config.signatures_dir``.
 Each feed is validated before it replaces the previous copy (temp file +
 ``os.replace``), so a failed or truncated download never destroys a working
-database. Results and timestamps are recorded in ``update_state.json``."""
+database. Results and timestamps are recorded in ``update_state.json``.
+
+abuse.ch (MalwareBazaar, URLhaus, Feodo) asks users to register for a free
+Auth-Key (config ``abusech_auth_key`` / env ``AEGIS_ABUSECH_KEY``), which is sent
+when set, and its terms restrict free use to non-commercial purposes - commercial
+deployments may need a subscription. See docs/FEEDS.md."""
 
 from __future__ import annotations
 
@@ -72,6 +77,41 @@ def _valid_ext_ids(text: str) -> int:
     return sum(1 for ln in _data_lines(text) if _EXT_ID.match(ln.split()[0].lower()))
 
 
+_DRIVER_LINE = re.compile(r"^[0-9a-f]{64}\t\S")
+
+
+def _valid_driver_lines(text: str) -> int:
+    return sum(1 for line in text.splitlines() if _DRIVER_LINE.match(line))
+
+
+def loldrivers_to_tsv(raw: bytes) -> bytes:
+    """LOLDrivers drivers.json -> ``sha256<TAB>label`` lines (the format of
+    aegis/data/vulnerable_drivers.txt that the drivers scanner loads)."""
+    doc = json.loads(raw.decode("utf-8", "replace"))
+    rows: Dict[str, str] = {}
+
+    def clean(v: Any) -> str:
+        return re.sub(r"[\t\r\n]+", " ", str(v)).strip()
+
+    for e in doc if isinstance(doc, list) else []:
+        if not isinstance(e, dict):
+            continue
+        cat = "MalDriver" if str(e.get("Category", "")).lower() == "malicious" else "VulnDriver"
+        cves = e.get("CVE") or e.get("CVEs") or []
+        cves = [clean(c) for c in ([cves] if isinstance(cves, str) else cves) if re.fullmatch(r"CVE-\d{4}-\d{4,7}", clean(c))]
+        tag = (e.get("Tags") or [""])[0] if isinstance(e.get("Tags"), list) else ""
+        for smp in e.get("KnownVulnerableSamples") or []:
+            if not isinstance(smp, dict):
+                continue
+            h = str(smp.get("SHA256") or "").strip().lower()
+            if not _SHA256.match(h):
+                continue
+            cand = [clean(x) for x in (smp.get("OriginalFilename"), smp.get("Filename"), tag) if x]
+            name = next((c for c in cand if c.lower().endswith(".sys")), cand[0] if cand else "unknown.sys")
+            rows.setdefault(h, f"LOLDrivers.{cat}: {name}" + (f" [{','.join(cves[:3])}]" if cves else ""))
+    return ("\n".join(f"{h}\t{rows[h]}" for h in sorted(rows)) + "\n").encode("utf-8")
+
+
 @dataclass
 class Feed:
     name: str
@@ -82,18 +122,25 @@ class Feed:
     auth: bool = True  # send Auth-Key when configured (abuse.ch)
     description: str = ""
     max_shrink: float = 0.0  # reject if new count < max_shrink * previous count (0 = off)
+    transform: Optional[Callable[[bytes], bytes]] = None  # convert the download before validation
+    allow_empty: bool = False  # a currently-empty feed is OK: keep the previous copy, report 0
 
 
 FEEDS: List[Feed] = [
     Feed("malwarebazaar", "https://bazaar.abuse.ch/export/txt/sha256/recent/", "malwarebazaar_recent.txt",
          _valid_sha256, 100, description="MalwareBazaar recent malware SHA-256 hashes"),
+    # Feodo Tracker has published (near-)empty datasets since 2026-03 (docs/FEEDS.md); an empty
+    # list is not an error - the previous copy is kept.
     Feed("feodo", "https://feodotracker.abuse.ch/downloads/ipblocklist.txt", "feodo_ipblocklist.txt",
-         _valid_ip, 1, description="Feodo Tracker botnet C2 IP blocklist"),
+         _valid_ip, 1, description="Feodo Tracker botnet C2 IP blocklist", allow_empty=True),
     Feed("urlhaus", "https://urlhaus.abuse.ch/downloads/hostfile/", "urlhaus_hosts.txt",
          _valid_hosts, 10, description="URLhaus malware-distribution hosts"),
     Feed("malicious_extensions", "https://codeberg.org/palant/malicious-extensions-list/raw/branch/main/list.txt",
          "malicious_extensions.txt", _valid_ext_ids, 20, auth=False, max_shrink=0.5,
          description="Known malicious browser extension IDs (Wladimir Palant)"),
+    Feed("loldrivers", "https://www.loldrivers.io/api/drivers.json", "vulnerable_drivers.txt",
+         _valid_driver_lines, 500, auth=False, max_shrink=0.5, transform=loldrivers_to_tsv,
+         description="LOLDrivers vulnerable/malicious Windows driver hashes (BYOVD, Apache-2.0)"),
 ]
 
 
@@ -169,8 +216,13 @@ def update_feed(feed: Feed, directory: Path, auth_key: str = "") -> Dict[str, An
     """Download + validate + atomically install one text feed."""
     headers = {"Auth-Key": auth_key} if (auth_key and feed.auth) else {}
     raw = _request(feed.url, headers)
+    if feed.transform:
+        raw = feed.transform(raw)
     text = raw.decode("utf-8", errors="replace")
     count = feed.validate(text)
+    if count == 0 and feed.allow_empty:
+        return {"count": 0, "bytes": len(raw), "sha256": hashlib.sha256(raw).hexdigest(),
+                "note": "feed is currently empty upstream; previous copy kept"}
     if count < feed.min_count:
         raise ValueError(f"feed looks invalid: only {count} valid entries (expected at least {feed.min_count})")
     if feed.max_shrink:
@@ -211,8 +263,15 @@ def update_yara_forge(directory: Path) -> Dict[str, Any]:
     """Install the YARA Forge 'core' ruleset into <directory>/yara/ (needs yara-python)."""
     import yara  # type: ignore
 
-    url = _resolve_yara_forge_url(os.environ.get("GITHUB_TOKEN", ""))
-    raw = _request(url, timeout=180)
+    # The /releases/latest/download/ redirect is the verified, keyless path (the API is
+    # rate-limited and blocked on some networks), so try it first.
+    url = YARA_FORGE_FALLBACK
+    try:
+        raw = _request(url, timeout=180)
+    except Exception as exc:
+        log.info("direct YARA Forge download failed (%s); asking the GitHub API", exc)
+        url = _resolve_yara_forge_url(os.environ.get("GITHUB_TOKEN", ""))
+        raw = _request(url, timeout=180)
     try:
         zf = zipfile.ZipFile(io.BytesIO(raw))
     except zipfile.BadZipFile as exc:

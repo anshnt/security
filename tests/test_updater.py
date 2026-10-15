@@ -50,7 +50,14 @@ def route(monkeypatch, table, seen=None):
     monkeypatch.setattr("urllib.request.urlopen", fake)
 
 
-GOOD = {"bazaar.abuse.ch": SHA, "feodotracker": IPS, "urlhaus.abuse.ch": HOSTS, "malicious-extensions-list": EXT}
+LOLDRIVERS = json.dumps(
+    [{"Category": "vulnerable driver", "CVE": ["CVE-2019-16098"], "Tags": ["RTCore64.sys"],
+      "KnownVulnerableSamples": [{"SHA256": f"{i:064x}", "OriginalFilename": "RTCore64.sys"} for i in range(1, 501)]},
+     {"Category": "malicious", "Tags": ["evil.sys"],
+      "KnownVulnerableSamples": [{"SHA256": f"{i:064x}", "Filename": "evil.sys"} for i in range(1000, 1100)]
+      + [{"SHA256": "not-a-hash"}]}])
+GOOD = {"bazaar.abuse.ch": SHA, "feodotracker": IPS, "urlhaus.abuse.ch": HOSTS, "malicious-extensions-list": EXT,
+        "loldrivers.io": LOLDRIVERS}
 
 
 @pytest.fixture(autouse=True)
@@ -64,7 +71,8 @@ def test_all_feeds_update_and_state_written(tmp_path, monkeypatch):
     route(monkeypatch, GOOD, seen)
     res = updater.update_signatures(cfg)
     assert {k: v["ok"] for k, v in res.items() if k != "yara_forge"} == {
-        "malwarebazaar": True, "feodo": True, "urlhaus": True, "malicious_extensions": True}
+        "malwarebazaar": True, "feodo": True, "urlhaus": True, "malicious_extensions": True, "loldrivers": True}
+    assert res["loldrivers"]["count"] == 600
     assert res["malwarebazaar"]["count"] == 150 and res["feodo"]["count"] == 2 and res["urlhaus"]["count"] == 30
     assert res["malicious_extensions"]["count"] == 59
     assert (cfg.signatures_dir / "malwarebazaar_recent.txt").read_text() == SHA
@@ -235,3 +243,27 @@ def test_yara_skipped_without_yara_python(tmp_path, monkeypatch):
     route(monkeypatch, GOOD)
     res = updater.update_signatures(make_config(tmp_path))
     assert res["yara_forge"]["ok"] is False and res["yara_forge"].get("skipped") is True
+
+
+def test_loldrivers_converted_to_driver_scanner_format(tmp_path, monkeypatch):
+    from aegis.scanners.drivers import load_vulnerable_driver_hashes
+
+    cfg = make_config(tmp_path)
+    route(monkeypatch, GOOD)
+    updater.update_signatures(cfg)
+    lines = (cfg.signatures_dir / "vulnerable_drivers.txt").read_text().splitlines()
+    assert len(lines) == 600 and all(len(ln.split("\t")[0]) == 64 for ln in lines)
+    assert f"{1:064x}\tLOLDrivers.VulnDriver: RTCore64.sys [CVE-2019-16098]" in lines
+    assert f"{1000:064x}\tLOLDrivers.MalDriver: evil.sys" in lines
+    hashes = load_vulnerable_driver_hashes([cfg.signatures_dir], base=tmp_path / "missing.txt")
+    assert len(hashes) == 600
+
+
+def test_empty_upstream_feed_keeps_previous_copy(tmp_path, monkeypatch):
+    """Feodo Tracker has been publishing empty lists; that must not wipe the old copy or count as failure."""
+    cfg = make_config(tmp_path)
+    (cfg.signatures_dir / "feodo_ipblocklist.txt").write_text(IPS)
+    route(monkeypatch, dict(GOOD, feodotracker="# Feodo Tracker: datasets currently empty\n"))
+    res = updater.update_signatures(cfg)
+    assert res["feodo"]["ok"] and res["feodo"]["count"] == 0
+    assert (cfg.signatures_dir / "feodo_ipblocklist.txt").read_text() == IPS
