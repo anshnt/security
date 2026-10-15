@@ -478,7 +478,8 @@ def build_parser() -> argparse.ArgumentParser:
     s = sub.add_parser("scan", help="run a scan (quick | full | audit | custom)")
     s.add_argument("profile", nargs="?", default="quick", choices=["quick", "full", "audit", "custom"])
     s.add_argument("--path", action="append", help="file or folder to scan (repeatable)")
-    s.add_argument("--scanners", help="comma-separated scanners: files,processes,persistence,browser,network,system_audit,software,secrets")
+    s.add_argument("--scanners", help="comma-separated scanners: files,processes,persistence,browser,network,"
+                   "system_audit,software,secrets,eventlog,drivers,sideload,usb,email,memory (see `aegis info`)")
     s.add_argument("--exclude", action="append", help="path prefix or glob to skip (repeatable)")
     s.add_argument("--deep", action="store_true", help="content-scan every file type, not only risky ones")
     s.add_argument("--no-cache", action="store_true", help="ignore the clean-file cache")

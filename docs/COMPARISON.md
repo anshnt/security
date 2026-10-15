@@ -25,6 +25,12 @@ be honest, because a security tool that overstates what it does is a risk in its
 | Network exposure (C2 IP feeds, risky ports, hosts/proxy/DNS hijack, rogue root CAs) | ✅ | 🟡 | 🟡 | ✅ 💲 | 🟡 TCPView | ❌ | ❌ |
 | Windows hardening audit (Defender, firewall, UAC, SMBv1, RDP/NLA, BitLocker, LSA, WDigest, OS EOL...) | ✅ | 🟡 (Security Center) | ❌ | 🟡 vulnerability scan 💲 | ❌ | ❌ | ❌ |
 | Vulnerable / end-of-life software detection | ✅ | 🟡 (Defender for Endpoint 💲) | ❌ | 🟡 💲 | ❌ | ❌ | ❌ |
+| Windows event-log threat hunting (log clearing, new admins, RDP brute force, Defender tampering, malicious script blocks) | ✅ | 🟡 (Defender for Endpoint 💲) | ❌ | 🟡 EDR 💲 | ❌ | ❌ | ❌ |
+| Vulnerable / malicious driver detection (BYOVD, LOLDrivers) + driver blocklist & HVCI checks | ✅ | 🟡 (blocklist only) | ❌ | 🟡 | ❌ | ❌ | ❌ |
+| DLL side-loading detection | ✅ heuristic | ✅ | 🟡 | ✅ | ❌ | ❌ | ❌ |
+| Process memory scanning (YARA) | ✅ user-mode | ✅ | ✅ | ✅ | ❌ | ❌ | ❌ |
+| Email attachment & sender-spoofing analysis (.eml, Outlook cache, Thunderbird) | ✅ | 🟡 | ❌ | ✅ 💲 | ❌ | ❌ | 🟡 |
+| USB / removable-media threats (autorun, shortcut virus) | ✅ | ✅ | ✅ | ✅ | ❌ | ❌ | ❌ |
 | Exposed secrets / seed phrases / plaintext credentials on disk | ✅ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ |
 | Phishing / malicious URL checker | ✅ (offline heuristics + URLhaus + optional Safe Browsing) | ✅ SmartScreen | ✅ 💲 | ✅ | ❌ | ❌ | ❌ |
 | Password breach check (HIBP k-anonymity) | ✅ | ✅ (Edge) | ❌ | ✅ 💲 | ❌ | ❌ | ❌ |
@@ -38,7 +44,7 @@ be honest, because a security tool that overstates what it does is a risk in its
 | CLI + exit codes for automation / RMM | ✅ | 🟡 PowerShell | 🟡 💲 | 🟡 💲 | ✅ | ❌ | ✅ |
 | Open source, auditable, no telemetry | ✅ | ❌ | ❌ | ❌ | ❌ (free, closed) | ❌ | ✅ |
 | Linux / macOS support | 🟡 best-effort | 🟡 💲 | ✅ (mac) | ✅ | ❌ | ❌ | ✅ |
-| Kernel driver / minifilter, exploit mitigation, memory scanning | ❌ (roadmap) | ✅ | ✅ | ✅ | ❌ | ❌ | ❌ |
+| Kernel driver / minifilter, exploit mitigation, kernel-level memory protection | ❌ (roadmap) | ✅ | ✅ | ✅ | ❌ | ❌ | ❌ |
 | Cloud ML / global telemetry network | ❌ | ✅ | ✅ | ✅ | ❌ | ❌ | ❌ |
 | Price | Free | Free (built in) | Free / 💲 | 💲 | Free | Free | Free |
 
@@ -67,7 +73,7 @@ be honest, because a security tool that overstates what it does is a risk in its
 | Kernel-mode file-system minifilter | Blocks a file *before* it executes; Aegis's user-mode guard reacts within about 1–2 s of the write | Rust/C minifilter driver (needs an EV code-signing certificate and Microsoft attestation signing) |
 | AMSI provider | Inspects de-obfuscated PowerShell, VBA and JS in memory | COM AMSI provider DLL that feeds the existing rule engine |
 | ETW-based behaviour monitoring | Precise process, registry and network telemetry without polling | ETW consumer (Microsoft-Windows-Kernel-Process / Threat-Intelligence where permitted) |
-| Memory scanning | Catches fileless and reflectively loaded payloads | YARA scanning of process memory regions (yara-python `pid=`) |
+| Kernel-assisted memory scanning | Aegis already YARA-scans process memory from user mode; a driver could also see protected processes and catch payloads the moment they unpack | Pair the existing memory scanner with the minifilter/ETW work above |
 | Cloud reputation / ML at scale | Zero-day detection through prevalence and ML | Optional self-hosted reputation server; MalwareBazaar, ThreatFox and URLhaus integration |
 | Exploit mitigation / web filtering | Stops drive-by and phishing at the network layer | DNS-level blocklist (hosts or local resolver) driven by URLhaus |
 | Independent lab certification (AV-TEST, AV-Comparatives) | Third-party proof of detection rates | Not applicable until the engine ships a kernel component |

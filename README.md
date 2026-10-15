@@ -26,7 +26,7 @@ score. Use it from the command line or the desktop GUI.
 | **Software** | PUP/adware/scareware detection (AdwCleaner-style) and vulnerable/EOL software (WinRAR CVE-2025-8088, 7-Zip CVE-2025-0411, PuTTY CVE-2024-31497, Flash, old browsers, Office EOL, and more) |
 | **Secrets** | Plaintext passwords files, crypto seed phrases, wallet files, cloud/API tokens, unencrypted SSH keys, saved RDP/FileZilla credentials, unattend.xml passwords. All values are masked in reports |
 | **Real-time protection** | A file guard (scan on write, auto-quarantine), a process guard (new-process analysis, optional kill), a ransomware guard (hidden canary files plus mass-modification detection that suspends the culprit), a persistence guard (alerts on new autoruns and hosts changes) and desktop notifications |
-| **Threat hunting** *(in progress)* | Windows event-log hunting (log clearing, new admins, RDP password-guessing success, suspicious service/task installs, Defender tampering, malicious PowerShell script blocks), vulnerable/abused kernel drivers (BYOVD) + Microsoft driver blocklist & memory-integrity checks, DLL side-loading, risky USB drives, malicious email attachments & spoofed senders, YARA memory scanning |
+| **Threat hunting** | Windows event-log hunting (log clearing, new admins, RDP password-guessing success, suspicious service/task installs, Defender tampering, malicious PowerShell script blocks), vulnerable/abused kernel drivers (BYOVD) + Microsoft driver blocklist & memory-integrity checks, DLL side-loading, risky USB drives, malicious email attachments & spoofed senders, YARA memory scanning |
 | **Tools** | Phishing/URL checker (lookalike domains, homoglyphs, brand impersonation, URLhaus, optional Google Safe Browsing), password strength and breach check (HIBP k-anonymity), deep file analysis, file integrity monitoring, threat-intel updater |
 | **Remediation** | Quarantine/restore, kill process, remove registry autoruns, disable tasks/services, remove WMI persistence, clean hosts file, apply hardening fixes. Every change is backed up |
 | **Reporting** | Security score and grade, HTML/JSON/CSV/TXT reports, MITRE ATT&CK mapping, scripting exit codes |
@@ -111,6 +111,15 @@ Exit codes: `0` means clean, `1` means findings at or above `--fail-on` (default
 | system_audit | ✅ | ✅ | ✅ | BitLocker, Defender exclusions |
 | software | ✅ | ✅ | ✅ | – |
 | secrets | ✅ | ✅ | ✅ | – |
+| eventlog | ✅ | – | – | ✅ Security log |
+| drivers | ✅ | – | – | some driver files |
+| sideload | ✅ | ✅ | ✅ | – |
+| usb | ✅ | ✅ | ✅ | device history |
+| email | ✅ | ✅ | ✅ | – |
+| memory | ✅ | ✅ | ✅ | other users' processes |
+
+The `full` profile runs every scanner. A threat-hunting pass on its own:
+`aegis scan custom --scanners eventlog,drivers,sideload,usb,email,memory`.
 
 ## Testing
 
@@ -119,9 +128,11 @@ pip install -e .[dev]
 pytest -q
 ```
 
-The test suite builds malware-like samples at runtime, using EICAR and synthetic PE/script/document
-files, so the repository never contains live malware. CI runs on Ubuntu and Windows and builds the
-Windows executables.
+The suite (about 1,170 tests) builds malware-like samples at runtime, using EICAR and synthetic
+PE/script/document/email files, so the repository never contains live malware. CI runs it on Ubuntu
+and Windows, builds the Windows executables, and then runs the packaged `aegis.exe` end to end on a
+live Windows machine (audit, quick scan and threat-hunting scanners), failing on any internal scanner
+error. The HTML/JSON reports from that run are uploaded as a build artifact.
 
 ## Documentation
 

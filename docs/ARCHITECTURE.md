@@ -35,7 +35,8 @@
 * **Scanner**: a plugin that registers itself with `@register` and yields findings and checks from
   `run(ctx)`. To add one, drop a module into `aegis/scanners/` and list it in `base.load_all()`.
 * **Profiles** (`core/engine.py`): `quick` runs processes, persistence, hot-spot files, browser and
-  network. `full` adds every drive, system audit, software and secrets. `audit` runs configuration checks only.
+  network. `full` adds every drive, system audit, software, secrets and the threat-hunting scanners (eventlog,
+  drivers, sideload, usb, email, memory). `audit` runs configuration checks only.
 * **Signatures** (`core/signatures.py`): bundled data in `aegis/data` is merged with downloaded feeds in
   `<data>/signatures`. If a feed update fails, the previous file is kept.
 * **Data directory**: `%ProgramData%\Aegis` when running as admin, `%LOCALAPPDATA%\Aegis` otherwise
