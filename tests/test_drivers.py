@@ -364,8 +364,9 @@ def test_scanner_when_powershell_fails_and_no_drivers(monkeypatch, ctx):
     assert inv and inv[0].status == CheckStatus.SKIP
 
 
-def test_scanner_non_windows_skips_and_is_registered(ctx):
-    out = list(dr.DriverScanner().run(ctx))  # the test host is not Windows
+def test_scanner_non_windows_skips_and_is_registered(ctx, monkeypatch):
+    monkeypatch.setattr(dr, "IS_WINDOWS", False)  # exercise the non-Windows path on every CI OS
+    out = list(dr.DriverScanner().run(ctx))
     assert len(out) == 1 and out[0].status == CheckStatus.SKIP
     load_all()
     assert REGISTRY["drivers"].platforms == ("windows",)

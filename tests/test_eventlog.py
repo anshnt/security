@@ -699,6 +699,8 @@ def test_scanner_time_budget_skips_remaining_logs(monkeypatch, ctx):
     monkeypatch.setattr(el, "reg_read", RegStub({}))
     ctx.is_admin = True
     ctx.options["eventlog_budget_s"] = 1e-9
+    ticks = iter(range(10**6))  # Windows' monotonic clock is too coarse for a 1 ns budget: advance it explicitly
+    monkeypatch.setattr(el.time, "monotonic", lambda: float(next(ticks)))
     out = list(el.EventLogScanner().run(ctx))
     assert calls == []  # budget exhausted before the first query: nothing hangs, every log is reported as unreadable
     checks = {c.check_id: c for c in out if isinstance(c, CheckResult)}

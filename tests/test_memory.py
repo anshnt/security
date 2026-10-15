@@ -238,6 +238,7 @@ def test_scanner_end_to_end_with_fake_rules(monkeypatch, ctx):
     fake_procs(monkeypatch, [P(me, "pytest", exe="/usr/bin/python3"), P(4001, "evil.exe", exe=r"C:\Users\bob\Downloads\evil.exe"), P(4002, "ok.exe"),
                              P(4003, "denied.exe")])
     monkeypatch.setattr(mem, "HAVE_YARA", True)
+    monkeypatch.setattr(mem, "IS_WINDOWS", False)  # RWX heuristic is Windows-only; keep this test platform-neutral
     rules = FakeRules({4001: [FakeMatch("Meterpreter_Stager", {"description": "Meterpreter stager", "severity": "high", "scope": "memory"})],
                        4003: OSError("access denied")})
     out = list(mem.MemoryScanner().run(ctx_with(ctx, rules)))
@@ -294,6 +295,8 @@ def test_scanner_time_budget_is_reported(monkeypatch, ctx):
     rules = FakeRules()
     c = ctx_with(ctx, rules)
     c.options["memory_budget_s"] = 0.0000001
+    ticks = iter(range(10**6))  # coarse Windows clock: advance explicitly so the tiny budget is exceeded
+    monkeypatch.setattr(mem.time, "monotonic", lambda: float(next(ticks)))
     out = list(mem.MemoryScanner().run(c))
     y = [x for x in out if isinstance(x, CheckResult) and x.check_id == "AEG-MEM-YARA"][0]
     assert rules.calls == [] and y.status == CheckStatus.WARN and "time budget" in y.detail

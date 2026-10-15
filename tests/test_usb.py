@@ -39,6 +39,7 @@ def test_linux_disk_of(dev, disk):
     assert usb.linux_disk_of(dev) == disk
 
 
+@pytest.mark.skipif(os.name == "nt", reason="Linux /sys/block layout (and unprivileged symlinks)")
 def test_linux_block_removable(tmp_path):
     for name, flag in (("sdb", "1"), ("sda", "0")):
         d = tmp_path / "block" / name
@@ -258,7 +259,9 @@ def test_scanner_end_to_end_infected_and_clean(ctx, tmp_path, win_attrs):
     assert len(drive_checks) == 2
     status = {c.title: c.status for c in drive_checks}
     assert status[f"Removable drive {bad}"] == CheckStatus.FAIL and status[f"Removable drive {good}"] == CheckStatus.PASS
-    assert checks[0].check_id == "AEG-USB-AUTORUN" and checks[0].status == CheckStatus.SKIP  # not Windows
+    assert checks[0].check_id == "AEG-USB-AUTORUN"
+    if os.name != "nt":
+        assert checks[0].status == CheckStatus.SKIP  # the AutoRun policy is a Windows registry check
     assert ctx.stats["usb_drives"] == 2
     json.dumps([x.to_dict() for x in out])
 
@@ -266,7 +269,7 @@ def test_scanner_end_to_end_infected_and_clean(ctx, tmp_path, win_attrs):
 def test_scanner_no_drives(ctx, monkeypatch):
     monkeypatch.setattr(usb, "find_removable_drives", lambda *a, **k: [])
     out = list(usb.UsbScanner().run(ctx))
-    c = [x for x in out if x.check_id == "AEG-USB-DRIVES"][0]
+    c = [x for x in out if isinstance(x, CheckResult) and x.check_id == "AEG-USB-DRIVES"][0]
     assert c.status == CheckStatus.PASS and "No USB" in c.detail
 
 
