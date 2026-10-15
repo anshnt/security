@@ -108,16 +108,21 @@ jobs:
           # Task Scheduler, services, certificates, browsers... Findings are expected
           # (it's a CI box); internal scanner errors are not.
           mkdir -p e2e
-          for profile in audit quick; do
+          run_scan() {  # name, then scan arguments
+            local name="$1"; shift
             rc=0
-            ./dist/aegis.exe scan "$profile" --json --report "e2e/$profile.html" > "e2e/$profile.json" || rc=$?
-            echo "$profile exit code: $rc"
+            ./dist/aegis.exe scan "$@" --json --report "e2e/$name.html" > "e2e/$name.json" || rc=$?
+            echo "$name exit code: $rc"
             if [ "$rc" -ne 0 ] && [ "$rc" -ne 1 ]; then exit "$rc"; fi
-          done
+          }
+          run_scan audit audit
+          run_scan quick quick
+          # threat-hunting scanners: event logs, drivers, sideloading, USB, email, process memory
+          run_scan hunt custom --scanners eventlog,drivers,sideload,usb,email,memory
           python - <<'PY'
           import json, sys
           bad = False
-          for profile in ("audit", "quick"):
+          for profile in ("audit", "quick", "hunt"):
               d = json.load(open(f"e2e/{profile}.json", encoding="utf-8"))
               print(f"{profile}: score {d['score']} ({d['grade']}), scanners {d['scanners']}, counts {d['counts']}, "
                     f"checks {sum(c['status'] == 'pass' for c in d['checks'])}/{len(d['checks'])} pass, "
