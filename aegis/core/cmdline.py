@@ -288,6 +288,13 @@ def extract_executable(cmd: str) -> Optional[str]:
     return exe or None
 
 
+def first_program_name(cmd: str) -> str:
+    """Lower-case program name (no directory, no .exe) of the first token of a command line."""
+    program, _ = _first_program(cmd)
+    n = basename(program).lower() if program else ""
+    return n[:-4] if n.endswith(".exe") else n
+
+
 def script_target(cmd: str) -> Optional[str]:
     """For script hosts (wscript/cscript/mshta/powershell -File/cmd /c script/
     python/node/bash/java -jar) return the script file the command runs."""

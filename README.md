@@ -26,6 +26,7 @@ score. Use it from the command line or the desktop GUI.
 | **Software** | PUP/adware/scareware detection (AdwCleaner-style) and vulnerable/EOL software (WinRAR CVE-2025-8088, 7-Zip CVE-2025-0411, PuTTY CVE-2024-31497, Flash, old browsers, Office EOL, and more) |
 | **Secrets** | Plaintext passwords files, crypto seed phrases, wallet files, cloud/API tokens, unencrypted SSH keys, saved RDP/FileZilla credentials, unattend.xml passwords. All values are masked in reports |
 | **Real-time protection** | A file guard (scan on write, auto-quarantine), a process guard (new-process analysis, optional kill), a ransomware guard (hidden canary files plus mass-modification detection that suspends the culprit), a persistence guard (alerts on new autoruns and hosts changes) and desktop notifications |
+| **Threat hunting** *(in progress)* | Windows event-log hunting (log clearing, new admins, RDP password-guessing success, suspicious service/task installs, Defender tampering, malicious PowerShell script blocks), vulnerable/abused kernel drivers (BYOVD) + Microsoft driver blocklist & memory-integrity checks, DLL side-loading, risky USB drives, malicious email attachments & spoofed senders, YARA memory scanning |
 | **Tools** | Phishing/URL checker (lookalike domains, homoglyphs, brand impersonation, URLhaus, optional Google Safe Browsing), password strength and breach check (HIBP k-anonymity), deep file analysis, file integrity monitoring, threat-intel updater |
 | **Remediation** | Quarantine/restore, kill process, remove registry autoruns, disable tasks/services, remove WMI persistence, clean hosts file, apply hardening fixes. Every change is backed up |
 | **Reporting** | Security score and grade, HTML/JSON/CSV/TXT reports, MITRE ATT&CK mapping, scripting exit codes |
@@ -128,6 +129,7 @@ Windows executables.
 * [docs/COMPARISON.md](docs/COMPARISON.md): comparison with commercial and free tools, and the roadmap
 * [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md): how the engine works
 * [docs/RULES.md](docs/RULES.md): writing your own detection rules
+* [docs/THREAT_LANDSCAPE.md](docs/THREAT_LANDSCAPE.md): sourced 2025–2026 threat briefing and how Aegis maps to it
 
 ## Disclaimer
 
