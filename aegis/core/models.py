@@ -10,6 +10,9 @@ from enum import IntEnum
 from typing import Any, Dict, List, Optional
 
 
+GENERATOR = "Aegis Security Suite"  # marks Aegis's own reports so scans don't flag them
+
+
 class Severity(IntEnum):
     INFO = 0
     LOW = 1
@@ -152,6 +155,7 @@ class ScanResult:
 
         score, grade = security_score(self)
         return {
+            "generator": GENERATOR,
             "profile": self.profile,
             "started": self.started,
             "finished": self.finished,

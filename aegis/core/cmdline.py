@@ -580,7 +580,7 @@ RULES: List[Rule] = [
          _p(r"\bsc(?:\.exe)?\"?\s+(?:\\\\\S+\s+)?(?:create|config)\s+\S+\s+[^\n]*?binpath=\s*[\"']?[^\n]*?"
             r"(?:@UW@|cmd(?:\.exe)?\s+/[ck]|%comspec%|@PS@|mshta|wscript|cscript|rundll32)")),
     Rule("PIPE-IMPERSONATE", "Named-pipe impersonation one-liner (getsystem style)", S.HIGH, ("T1134.001",),
-         _p(r"\bcmd(?:\.exe)?\s+/c\s+echo\s+\S+\s*>\s*\\\\\.\\pipe\\")),
+         _p(r"(?:\bcmd(?:\.exe)?|%comspec%)\s+/c\s+echo\s+\S+\s*>\s*\\\\\.\\pipe\\")),
     Rule("NET-USER-ADMIN", "User added to the local Administrators group", S.HIGH, ("T1098", "T1136.001"),
          _p(r"\bnet1?(?:\.exe)?\"?\s+localgroup\s+administrators?\s+\S+\s+/add\b")),
     Rule("NET-USER-ADD", "Local user account created from the command line", S.MEDIUM, ("T1136.001",),

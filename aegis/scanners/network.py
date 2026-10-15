@@ -16,9 +16,8 @@ import os
 import re
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Dict, Iterable, List, Optional, Sequence, Set, Tuple
+from typing import Any, Dict, List, Optional, Sequence, Set, Tuple
 
-from aegis.core import cmdline as cl
 from aegis.core.models import Category, CheckResult, CheckStatus, Finding, Remediation, Severity
 from aegis.core.platform import IS_WINDOWS, as_list, powershell_json, reg_values, run, windows_dir
 from aegis.scanners.base import ScanContext, Scanner, register
@@ -314,7 +313,7 @@ IMPORTANT_DOMAINS = (
 )
 BANK_WORDS = ("bank", "paypal", "banco", "banque", "sparkasse")
 # telemetry/ads hosts people legitimately null-route; never counted as "update" domains
-_PRIVACY_BLOCK_OK = re.compile(r"telemetry|vortex|watson|settings-win|ads?\.|adservice|analytics|doubleclick|adsystem|tracking|"
+_PRIVACY_BLOCK_OK = re.compile(r"telemetry|vortex|watson|settings-win|(?<![a-z])ads?\.|adservice|analytics|doubleclick|adsystem|tracking|"
                                r"diagnostics|compat|msftncsi|activity\.windows", re.I)
 
 
@@ -558,17 +557,29 @@ DEBUG_ROOTS = re.compile(r"fiddler|mitmproxy|portswigger|burp\s*suite|burp\s*ca|
 _HEX40 = re.compile(r"^[0-9A-Fa-f]{40}$")
 
 
+_ISO_RE = re.compile(r"^(\d{4})-(\d\d)-(\d\d)[T ](\d\d):(\d\d):(\d\d)(?:\.(\d+))?\s*(Z|[+-]\d\d:?\d\d)?$")
+
+
 def parse_iso_date(value: Any) -> Optional[dt.datetime]:
+    """Naive-UTC datetime from PowerShell dates: .NET round-trip ('o', 7 fractional digits) or /Date(ms)/."""
     if not isinstance(value, str):
         return None
     m = re.match(r"/Date\((-?\d+)\)/", value)
     try:
         if m:
             return dt.datetime.fromtimestamp(int(m.group(1)) / 1000.0, dt.timezone.utc).replace(tzinfo=None)
-        v = value.replace("Z", "+00:00")
-        d = dt.datetime.fromisoformat(v[:32])
-        return d.astimezone(dt.timezone.utc).replace(tzinfo=None) if d.tzinfo else d
-    except ValueError:
+        m = _ISO_RE.match(value.strip())
+        if not m:
+            return None
+        y, mo, d, h, mi, s = (int(x) for x in m.groups()[:6])
+        base = dt.datetime(y, mo, d, h, mi, s)
+        tz = m.group(8)
+        if tz and tz != "Z":
+            sign = 1 if tz[0] == "+" else -1
+            digits = tz[1:].replace(":", "")
+            base -= sign * dt.timedelta(hours=int(digits[:2]), minutes=int(digits[2:]))
+        return base
+    except (ValueError, OverflowError, OSError):
         return None
 
 

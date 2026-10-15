@@ -19,7 +19,6 @@ from __future__ import annotations
 
 import hashlib
 import logging
-import math
 import os
 import plistlib
 import re
@@ -30,7 +29,7 @@ from typing import Any, Callable, Dict, Iterable, List, Optional, Sequence, Set,
 
 from aegis.core import cmdline as cl
 from aegis.core.models import Category, CheckResult, CheckStatus, Finding, Remediation, Severity
-from aegis.core.platform import (IS_LINUX, IS_MAC, IS_WINDOWS, as_list, powershell_json, reg_read, reg_subkeys,
+from aegis.core.platform import (IS_MAC, IS_WINDOWS, as_list, powershell_json, reg_read, reg_subkeys,
                                  reg_values, user_home, windows_dir)
 from aegis.scanners.base import ScanContext, Scanner, register
 
@@ -287,7 +286,8 @@ def assess_entry(e: Entry, sig_status: Optional[str] = None, scan_findings: Sequ
                 note = f" (Authenticode: {sig_status})" if sig_status else ""
                 reasons.append(Reason(sev, f"runs from a user-writable location: {cl.dirname(path)}{note}", "location",
                                       ["T1036", "T1204.002"]))
-        if (typ not in NO_MISSING_CHECK and not _is_unc_or_unknown(path) and not microsoft
+        svc_ok = typ != "service" or (meta.get("start") in (0, 1, 2) and not cl.is_in_windir(path))
+        if (typ not in NO_MISSING_CHECK and svc_ok and not _is_unc_or_unknown(path) and not microsoft
                 and not exists(path) and (cl.is_windows_style(path) or path.startswith("/"))):
             reasons.append(Reason(Severity.LOW, f"target file is missing: {path}", "missing"))
 
@@ -843,7 +843,7 @@ def resolve_lnks(paths: Sequence[str]) -> Dict[str, Tuple[str, str]]:
         return {}
     arr = ",".join("'" + p.replace("'", "''") + "'" for p in paths)
     script = (f"$sh=New-Object -ComObject WScript.Shell; @({arr}) | ForEach-Object {{ try {{ $l=$sh.CreateShortcut($_); "
-              "[pscustomobject]@{Path=$_;Target=$l.TargetPath;Args=$l.Arguments} } catch {} }} | ConvertTo-Json -Compress")
+              "[pscustomobject]@{Path=$_;Target=$l.TargetPath;Args=$l.Arguments} } catch {} } | ConvertTo-Json -Compress")
     try:
         return parse_lnk_json(powershell_json(script))
     except Exception:  # pragma: no cover

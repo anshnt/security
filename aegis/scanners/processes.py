@@ -23,9 +23,9 @@ import os
 import re
 import subprocess
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
-from typing import Dict, Iterable, Iterator, List, Optional, Sequence, Set, Tuple
+from typing import Dict, Iterable, List, Optional, Sequence, Set, Tuple
 
 from aegis.core import cmdline as cl
 from aegis.core.models import Category, CheckResult, CheckStatus, Finding, Remediation, Severity

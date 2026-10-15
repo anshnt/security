@@ -275,6 +275,14 @@ def scan_file(ctx: ScanContext, path: Path, cache: Optional[ScanCache] = None) -
         return []
     ctx.bump("files_scanned")
     ctx.bump("bytes_scanned", len(data))
+    if ext in ("json", "html", "htm", "csv") and kind == "text":
+        from aegis.core.report import is_aegis_report
+
+        if is_aegis_report(data, ext):  # our own report quoting evidence, not a threat
+            ctx.bump("aegis_reports_skipped")
+            if cache:
+                cache.mark_clean(spath, st, "")
+            return []
     findings = analyse_bytes(ctx, path, data, ext, spath)
 
     # Second opinions for suspicious-but-unconfirmed files.

