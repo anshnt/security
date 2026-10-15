@@ -99,6 +99,48 @@ jobs:
           echo "scan exit code: $rc"
           if [ "$rc" -ne 0 ] && [ "$rc" -ne 1 ]; then exit "$rc"; fi
 
+      - name: Real-Windows end-to-end (audit + quick scan with every scanner)
+        shell: bash
+        env:
+          AEGIS_HOME: ${{ runner.temp }}/aegis-home-e2e
+        run: |
+          # Runs the packaged exe against the live runner: registry, PowerShell, WMI,
+          # Task Scheduler, services, certificates, browsers... Findings are expected
+          # (it's a CI box); internal scanner errors are not.
+          mkdir -p e2e
+          for profile in audit quick; do
+            rc=0
+            ./dist/aegis.exe scan "$profile" --json --report "e2e/$profile.html" > "e2e/$profile.json" || rc=$?
+            echo "$profile exit code: $rc"
+            if [ "$rc" -ne 0 ] && [ "$rc" -ne 1 ]; then exit "$rc"; fi
+          done
+          python - <<'PY'
+          import json, sys
+          bad = False
+          for profile in ("audit", "quick"):
+              d = json.load(open(f"e2e/{profile}.json", encoding="utf-8"))
+              print(f"{profile}: score {d['score']} ({d['grade']}), scanners {d['scanners']}, counts {d['counts']}, "
+                    f"checks {sum(c['status'] == 'pass' for c in d['checks'])}/{len(d['checks'])} pass, "
+                    f"{d['stats'].get('duration_s')}s")
+              for f in d["findings"][:15]:
+                  print(f"   {f['severity']:<8} {f['rule_id']:<28} {f['title'][:70]}")
+              for c in d["checks"]:
+                  if c["status"] == "error":
+                      print(f"   CHECK ERROR {c['check_id']}: {c['detail'][:200]}")
+                      bad = True
+              for e in d["errors"]:
+                  print(f"   SCANNER ERROR: {e}")
+                  bad = True
+          sys.exit(1 if bad else 0)
+          PY
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: aegis-windows-e2e-reports
+          path: e2e/
+          if-no-files-found: ignore
+
       - name: Checksums
         shell: pwsh
         run: |
