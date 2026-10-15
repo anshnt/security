@@ -19,7 +19,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Sequence, Set, Tuple
 
 from aegis.core.models import Category, CheckResult, CheckStatus, Finding, Remediation, Severity
-from aegis.core.platform import IS_WINDOWS, as_list, powershell_json, reg_values, run, windows_dir
+from aegis.core.platform import IS_WINDOWS, as_list, powershell_json, reg_subkeys, reg_values, run, windows_dir
 from aegis.scanners.base import ScanContext, Scanner, register
 
 log = logging.getLogger("aegis.network")
@@ -557,6 +557,26 @@ DEBUG_ROOTS = re.compile(r"fiddler|mitmproxy|portswigger|burp\s*suite|burp\s*ca|
 _HEX40 = re.compile(r"^[0-9A-Fa-f]{40}$")
 
 
+USER_ROOT_KEY = r"Software\Microsoft\SystemCertificates\Root\Certificates"
+
+
+def classify_root_stores(certs: Sequence[Dict[str, Any]], user_thumbprints: Set[str]) -> List[Dict[str, Any]]:
+    """Cert:\\CurrentUser\\Root is a *logical* view that also shows every machine-wide
+    root, so a root Microsoft ships via Windows Update would look "user-installed".
+    Roots physically in the user's store are exactly the thumbprints under
+    HKCU\\...\\SystemCertificates\\Root\\Certificates. Re-label by that and dedupe."""
+    users = {t.upper() for t in user_thumbprints}
+    out: Dict[str, Dict[str, Any]] = {}
+    for c in certs:
+        thumb = str(c.get("Thumbprint") or "").upper()
+        if not thumb:
+            continue
+        d = dict(c)
+        d["Store"] = "CurrentUser" if thumb in users else "LocalMachine"
+        out[thumb] = d
+    return list(out.values())
+
+
 _ISO_RE = re.compile(r"^(\d{4})-(\d\d)-(\d\d)[T ](\d\d):(\d\d):(\d\d)(?:\.(\d+))?\s*(Z|[+-]\d\d:?\d\d)?$")
 
 
@@ -769,6 +789,7 @@ class NetworkScanner(Scanner):
         if IS_WINDOWS:
             try:
                 certs = [c for c in as_list(powershell_json(ROOT_SCRIPT, timeout=90)) if isinstance(c, dict)]
+                certs = classify_root_stores(certs, set(reg_subkeys("HKCU", USER_ROOT_KEY)))
                 if not certs:
                     yield _check("AEG-NET-CHK-ROOTCA", "No rogue root CAs", CheckStatus.ERROR, "could not enumerate certificate stores")
                 else:

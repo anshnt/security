@@ -211,7 +211,8 @@ def write_report(result: ScanResult, path: "str | Path", fmt: str = "") -> Path:
     if fmt not in renderers:
         raise ValueError(f"unsupported report format {fmt!r} (html, json, csv, txt)")
     p.parent.mkdir(parents=True, exist_ok=True)
-    p.write_text(renderers[fmt](result), encoding="utf-8")  # type: ignore[operator]
+    with open(p, "w", encoding="utf-8", newline="\n") as fh:  # identical bytes on every OS
+        fh.write(renderers[fmt](result))  # type: ignore[operator]
     return p
 
 
@@ -229,6 +230,7 @@ def is_aegis_report(data: bytes, ext: str) -> bool:
     cannot be used to smuggle malicious HTML/JSON past the scanner."""
     if len(data) > 64 * 1024 * 1024:
         return False
+    data = data.replace(b"\r\n", b"\n")  # tolerate reports re-saved with Windows line endings
     if ext == "json":
         if b'"generator": "Aegis Security Suite"' not in data[:200]:
             return False

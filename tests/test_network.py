@@ -303,7 +303,8 @@ def test_smb_findings():
 
 # --------------------------------------------------------------------------- scanner
 
-def test_scanner_runs_on_linux_and_emits_checks(ctx):
+def test_scanner_runs_on_linux_and_emits_checks(ctx, monkeypatch):
+    monkeypatch.setattr(nw, "IS_WINDOWS", False)  # exercise the non-Windows path on every CI OS
     out = list(nw.NetworkScanner().run(ctx))
     assert all(isinstance(o, (Finding, CheckResult)) for o in out)
     ids = {o.check_id: o for o in out if isinstance(o, CheckResult)}
@@ -331,6 +332,7 @@ def test_scanner_flags_dirty_hosts_and_bad_ip(ctx, tmp_path, monkeypatch):
 
 
 def test_scanner_clean_machine_passes(ctx, tmp_path, monkeypatch):
+    monkeypatch.setattr(nw, "IS_WINDOWS", False)  # don't read the CI host's real certs/proxy/shares
     hosts = tmp_path / "hosts"
     hosts.write_text(HOSTS_CLEAN)
     monkeypatch.setattr(nw, "hosts_path", lambda: hosts)
@@ -355,3 +357,19 @@ def test_scanner_survives_collector_errors(ctx, monkeypatch):
 def test_scanner_metadata():
     from aegis.scanners.base import REGISTRY
     assert REGISTRY["network"] is nw.NetworkScanner and nw.NetworkScanner.name == "network"
+
+
+def test_root_store_classification_uses_physical_user_store():
+    """A new Microsoft root seen through the merged Cert:\\CurrentUser view must not be
+    treated as user-installed; only thumbprints in the HKCU registry store are."""
+    import datetime as _dt
+
+    recent = (_dt.datetime.now(_dt.timezone.utc).replace(tzinfo=None) - _dt.timedelta(days=3)).strftime("%Y-%m-%dT%H:%M:%S")
+    ms = {"Store": "CurrentUser", "Subject": "CN=Microsoft Root Certificate Authority 2026", "Issuer": "same",
+          "Thumbprint": "A" * 40, "NotBefore": recent}
+    mine = {"Store": "CurrentUser", "Subject": "CN=Some Local Dev CA", "Issuer": "same",
+            "Thumbprint": "b" * 40, "NotBefore": recent}
+    certs = nw.classify_root_stores([ms, dict(ms, Store="LocalMachine"), mine], {"B" * 40})
+    assert {c["Thumbprint"].upper(): c["Store"] for c in certs} == {"A" * 40: "LocalMachine", "b".upper() * 40: "CurrentUser"}
+    ids = [f.rule_id for f in nw.rootca_findings(certs)]
+    assert ids.count("AEG-NET-ROOTCA-NEW") == 1
