@@ -741,3 +741,12 @@ def test_bootexecute_default_variants():
         assert ps.BOOT_DEFAULT.match(v), v
     for v in ("autocheck autochk * evil", "autocheck evil.exe *"):
         assert not ps.BOOT_DEFAULT.match(v), v
+
+
+def test_privilege_modifier_alone_does_not_make_a_vendor_agent_high():
+    """Real-Windows CI regression: an unsigned agent under ProgramData run by an elevated task."""
+    loc = ps.Reason(S.MEDIUM, "runs from a user-writable location", "location")
+    mod = ps.Reason(S.INFO, "runs with highest privileges", "modifier")
+    assert ps.combined_severity([loc, mod]) == S.MEDIUM
+    weak = ps.Reason(S.LOW, "name looks randomly generated", "random")
+    assert ps.combined_severity([weak, mod]) == S.MEDIUM  # weak evidence + modifier still gets a look

@@ -336,9 +336,19 @@ def combined_severity(reasons: Sequence[Reason]) -> Severity:
     # ProgramData into HIGH. Location + random name (classic dropper pattern) still stacks.
     kinds = {r.kind for r in real if r.kind not in ("missing", "modifier")
              and not (r.kind == "scan" and r.severity <= Severity.LOW)}
-    evidence_kinds = len(kinds) + (1 if kinds and any(r.kind == "modifier" for r in reasons) else 0)
-    if top < Severity.HIGH and evidence_kinds >= 2:
+    if top < Severity.HIGH and len(kinds) >= 2:
         return Severity(int(top) + 1)
+    # Modifiers (highest privileges, hidden, boot trigger, repetition) lift weak evidence to MEDIUM.
+    # They push MEDIUM to HIGH only when they show stealth (a hidden task) or stack up: an unsigned
+    # vendor agent under ProgramData that merely runs elevated is worth a look, not "very likely
+    # malicious" (seen with GitHub's own runner agents on real Windows).
+    mods = [r for r in reasons if r.kind == "modifier"]
+    if kinds and mods:
+        if top <= Severity.LOW:
+            return Severity.MEDIUM
+        stealthy = any("hidden" in r.text.lower() for r in mods)
+        if top == Severity.MEDIUM and (stealthy or len(mods) >= 2):
+            return Severity.HIGH
     return top
 
 

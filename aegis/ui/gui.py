@@ -334,8 +334,14 @@ class GuiApp:
                     arrowcolor=C["text"])
         s.configure("TProgressbar", background=C["accent"], troughcolor=C["panel2"], bordercolor=C["panel2"], thickness=8)
         s.configure("TNotebook", background=C["bg"], borderwidth=0, tabmargins=(0, 0, 0, 0))
-        s.configure("TNotebook.Tab", background=C["panel"], foreground=C["muted"], padding=(16, 8), borderwidth=0)
-        s.map("TNotebook.Tab", background=[("selected", C["panel2"])], foreground=[("selected", C["text"])])
+        # clam draws tab edges with light/dark/border colours of its own: theme them all, for every state.
+        s.configure("TNotebook.Tab", background=C["panel"], foreground=C["muted"], padding=(16, 8), borderwidth=1,
+                    bordercolor=C["border"], lightcolor=C["panel"], darkcolor=C["panel"], focuscolor=C["panel2"])
+        s.map("TNotebook.Tab",
+              background=[("selected", C["panel2"]), ("active", C["panel2"])],
+              foreground=[("selected", C["text"]), ("active", C["text"])],
+              lightcolor=[("selected", C["accent"])],
+              expand=[("selected", (0, 0, 0, 0))])
         s.configure("Vertical.TScrollbar", background=C["panel2"], troughcolor=C["panel"], bordercolor=C["panel"],
                     arrowcolor=C["muted"])
         s.configure("Treeview", background=C["panel"], fieldbackground=C["panel"], foreground=C["text"], rowheight=28,

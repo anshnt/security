@@ -611,7 +611,7 @@ def _cert_remediation(store: str, thumb: str) -> Optional[Remediation]:
 
 
 def rootca_findings(certs: Sequence[Dict[str, Any]], now: Optional[dt.datetime] = None) -> List[Finding]:
-    now = now or dt.datetime.utcnow()
+    now = now or dt.datetime.now(dt.timezone.utc).replace(tzinfo=None)  # naive UTC, like parse_iso_date()
     out: List[Finding] = []
     for c in certs:
         subject, issuer = str(c.get("Subject") or ""), str(c.get("Issuer") or "")
