@@ -45,6 +45,12 @@ def launch_command(windowless: bool = False) -> Tuple[str, List[str]]:
     """(executable, base_args) that start Aegis: the frozen exe itself, or
     `python -m aegis` (using pythonw.exe on Windows for background tasks)."""
     if getattr(sys, "frozen", False):
+        if IS_WINDOWS and windowless:
+            # aegis-gui.exe is built windowed and runs CLI commands headlessly when given
+            # arguments, so background tasks don't flash a console window at logon.
+            gui = Path(sys.executable).with_name("aegis-gui.exe")
+            if gui.exists():
+                return str(gui), []
         return sys.executable, []
     exe = sys.executable
     if IS_WINDOWS and windowless:
@@ -100,7 +106,7 @@ def windows_task_xmls(highest: Optional[bool] = None) -> Dict[str, str]:
     highest = is_admin() if highest is None else highest
     out: Dict[str, str] = {}
     for name, cli_args, trigger, desc in TASK_DEFS:
-        exe, base = launch_command(windowless=(trigger == "logon"))
+        exe, base = launch_command(windowless=True)  # no console flash for any background task
         out[name] = build_task_xml(name, exe, base + cli_args, trigger, desc, highest)
     return out
 

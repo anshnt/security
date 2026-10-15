@@ -1,0 +1,45 @@
+[build-system]
+requires = ["setuptools>=64"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "aegis-security"
+dynamic = ["version"]
+description = "Aegis Security Suite - open-source antivirus, anti-malware and threat-detection toolkit (Windows-first)"
+readme = "README.md"
+requires-python = ">=3.9"
+license = { text = "MIT" }
+keywords = ["antivirus", "anti-malware", "security", "edr", "windows", "ransomware", "forensics"]
+classifiers = [
+  "Development Status :: 4 - Beta",
+  "Environment :: Console",
+  "Intended Audience :: End Users/Desktop",
+  "Operating System :: Microsoft :: Windows",
+  "Operating System :: POSIX :: Linux",
+  "Programming Language :: Python :: 3",
+  "Topic :: Security",
+]
+dependencies = ["psutil>=5.9"]
+
+[project.optional-dependencies]
+yara = ["yara-python>=4.3"]
+dev = ["pytest>=7", "pyinstaller>=6"]
+
+[project.scripts]
+aegis = "aegis.cli:main"
+
+[project.gui-scripts]
+aegis-gui = "aegis.ui.gui:launch_gui"
+
+[tool.setuptools.dynamic]
+version = { attr = "aegis.__version__" }
+
+[tool.setuptools.packages.find]
+include = ["aegis*"]
+
+[tool.setuptools.package-data]
+aegis = ["data/*", "data/**/*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-ra"

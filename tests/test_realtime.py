@@ -483,6 +483,24 @@ def test_persistence_guard_object_entries_and_missing_collector(cfg, tmp_path):
     assert g2.tick() == []  # failures are swallowed
 
 
+def test_persistence_guard_with_scanner_entry_format(cfg, tmp_path):
+    """Entries in the persistence scanner's own dict format (remediation lives in meta)."""
+    from aegis.scanners.persistence import make_entry
+
+    mon, _ = make_monitor(cfg, components=())
+    rem = {"action": "delete_registry_value", "description": "Delete the autorun value 'Evil'",
+           "params": {"hive": "HKCU", "key": r"Software\Microsoft\Windows\CurrentVersion\Run", "value": "Evil", "view64": True}}
+    pool = []
+    g = M.PersistenceGuard(mon, collect_fn=lambda: list(pool), hosts_path=tmp_path / "nohosts")
+    assert g.tick() == []
+    pool.append(make_entry("registry_run", r"HKCU\Software\Microsoft\Windows\CurrentVersion\Run", "Evil",
+                           r"C:\Users\x\AppData\Local\Temp\evil.exe", remediation=rem))
+    out = g.tick()
+    assert len(out) == 1 and out[0].remediation.action == "delete_registry_value"
+    assert out[0].remediation.params["value"] == "Evil"
+    assert out[0].evidence["kind"] == "registry_run" and out[0].evidence["name"] == "Evil"
+
+
 # --------------------------------------------------------------------------- notifications
 
 def test_notify_rate_limiting(monkeypatch):

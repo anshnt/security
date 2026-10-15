@@ -12,7 +12,7 @@ import threading
 from pathlib import Path
 from typing import Dict, Iterable, List, Optional, Set
 
-from aegis.core.config import PACKAGE_DATA, Config
+from aegis.core.config import PACKAGE_DATA, Config, shared_signatures_dir
 from aegis.core.rules import Rule, load_rule_files
 
 log = logging.getLogger("aegis.signatures")
@@ -53,9 +53,17 @@ class SignatureDB:
         self.load()
 
     # ------------------------------------------------------------------ loading
+    def _bases(self) -> List[Path]:
+        bases = [PACKAGE_DATA]
+        shared = shared_signatures_dir()
+        if shared and shared.resolve() != self.config.signatures_dir.resolve():
+            bases.append(shared)
+        bases.append(self.config.signatures_dir)  # last wins for rule-id overrides
+        return bases
+
     def _sources(self, name: str) -> List[Path]:
         out = []
-        for base in (PACKAGE_DATA, self.config.signatures_dir):
+        for base in self._bases():
             p = base / name
             if p.exists():
                 out.append(p)
@@ -73,9 +81,10 @@ class SignatureDB:
                         self.hashes[h] = parts[1].strip() if len(parts) > 1 and parts[1].strip() else default_name
 
             rule_files: List[Path] = []
-            for base in (PACKAGE_DATA / "rules", self.config.signatures_dir / "rules"):
-                if base.is_dir():
-                    rule_files += sorted(base.glob("*.json"))
+            for base in self._bases():
+                rdir = base / "rules"
+                if rdir.is_dir():
+                    rule_files += sorted(rdir.glob("*.json"))
             self.rules = load_rule_files(rule_files)
 
             self.bad_ips.clear()
@@ -115,10 +124,15 @@ class SignatureDB:
         if not HAVE_YARA:
             return
         candidates: Dict[str, str] = {}
-        for base in (PACKAGE_DATA / "yara", self.config.signatures_dir / "yara"):
+        seen_names = set()
+        for root in reversed(self._bases()):  # most specific first; skip duplicate file names
+            base = root / "yara"
             if base.is_dir():
                 for p in sorted(base.rglob("*.yar")) + sorted(base.rglob("*.yara")):
-                    candidates[f"{base.parent.name}_{p.stem}_{len(candidates)}"] = str(p)
+                    if p.name in seen_names:
+                        continue
+                    seen_names.add(p.name)
+                    candidates[f"ns{len(candidates)}_{p.stem}"] = str(p)
         if not candidates:
             return
         # Fast path: one compile of everything (large community sets take seconds).

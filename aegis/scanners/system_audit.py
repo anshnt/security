@@ -377,9 +377,11 @@ def evaluate_os_support(build: int, edition: str = "", today: Optional[dt.date] 
     sev = Severity.CRITICAL if family in ("xp", "vista", "win7", "win8") else Severity.HIGH
     if family == "win10":
         rec = ("Upgrade to Windows 11 (Settings > Windows Update shows whether your PC is eligible). If the PC "
-               "cannot run Windows 11, replace it or switch to a supported OS; organisations can still buy "
-               "Extended Security Updates (ESU) for Windows 10 for up to three years after end of support. "
-               "Until then keep the PC off risky tasks (web browsing, email, remote access).")
+               "cannot run Windows 11, enrol it in Extended Security Updates (ESU): home users can enrol from "
+               "Settings > Windows Update (Microsoft offers free options, e.g. syncing settings with Windows Backup "
+               "or redeeming Microsoft Rewards points, or a one-time fee); organisations can buy ESU for up to "
+               "three years. Otherwise replace the PC or switch to a supported OS, and until then keep it off "
+               "risky tasks (web browsing, email, remote access).")
         detail = (f"{name} (build {build_txt}) reached end of support on {eol.isoformat()} ({ago} days ago): it no "
                   f"longer receives free security updates unless the device is enrolled in ESU.{note_txt}")
     elif family == "win11":

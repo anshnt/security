@@ -998,7 +998,7 @@ class ScanPage(Page):
         stamp = dt.datetime.now().strftime("%Y%m%d-%H%M")
         path = self.app.filedialog.asksaveasfilename(
             title="Export report", defaultextension=".html", initialfile=f"aegis-report-{stamp}.html",
-            filetypes=[("HTML report", "*.html"), ("JSON", "*.json"), ("Text", "*.txt")])
+            filetypes=[("HTML report", "*.html"), ("JSON", "*.json"), ("CSV", "*.csv"), ("Text", "*.txt")])
         if not path:
             return
 

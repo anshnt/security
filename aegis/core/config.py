@@ -38,6 +38,16 @@ def data_home() -> Path:
     return base
 
 
+def shared_signatures_dir() -> Optional[Path]:
+    """Machine-wide signature directory maintained by the elevated update task
+    (%ProgramData%\\Aegis\\signatures). Non-admin sessions (e.g. the GUI) read it
+    in addition to their own, so they benefit from scheduled updates."""
+    if not IS_WINDOWS or not os.environ.get("ProgramData"):
+        return None
+    p = Path(os.environ["ProgramData"]) / "Aegis" / "signatures"
+    return p if p.is_dir() else None
+
+
 @dataclass
 class Config:
     # Scanning

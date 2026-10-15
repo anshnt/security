@@ -572,6 +572,13 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def main(argv: Optional[List[str]] = None) -> int:
+    import os
+
+    # Windowed builds (aegis-gui.exe running background tasks) have no console streams.
+    if sys.stdout is None:
+        sys.stdout = open(os.devnull, "w", encoding="utf-8")
+    if sys.stderr is None:
+        sys.stderr = open(os.devnull, "w", encoding="utf-8")
     parser = build_parser()
     args = parser.parse_args(argv)
     if not getattr(args, "command", None):

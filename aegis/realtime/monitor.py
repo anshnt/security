@@ -1267,10 +1267,19 @@ class ProcessGuard:
                         info[key] = fn()
                     except (psutil.Error, OSError):
                         info[key] = "" if key != "cmdline" else []
+            info["parent_name"] = info["parent_exe"] = info["parent_cmdline"] = ""
             try:
-                info["parent_name"] = psutil.Process(info["ppid"]).name()
+                parent = psutil.Process(info["ppid"])
+                # PID-reuse guard: a real parent started before its child
+                if parent.create_time() <= info["create_time"] + 1.0:
+                    info["parent_name"] = parent.name()
+                    for key, fn in (("parent_exe", parent.exe), ("parent_cmdline", lambda: " ".join(parent.cmdline()))):
+                        try:
+                            info[key] = fn()
+                        except (psutil.Error, OSError):
+                            pass
             except (psutil.Error, OSError):
-                info["parent_name"] = ""
+                pass
             return info
         except (psutil.Error, OSError):
             return None
@@ -1331,37 +1340,55 @@ class ProcessGuard:
             from aegis.scanners.files import scan_file as fn  # type: ignore[assignment]
         return list(fn(self.monitor.context(), Path(exe)))  # type: ignore[misc]
 
-    def _external(self, info: Dict[str, Any]) -> Optional[List[Finding]]:
-        """Use the processes scanner's per-process logic when it exposes it."""
+    def _scanner_findings(self, info: Dict[str, Any]) -> Optional[List[Finding]]:
+        """Reuse the processes scanner's per-process logic (masquerading, suspicious parent/child
+        chains, command-line rules, deleted images). Returns None if that module is unavailable."""
         try:
-            from aegis.scanners.processes import evaluate_process  # type: ignore
+            from aegis.scanners import processes as P
         except Exception:
             return None
         try:
-            params = inspect.signature(evaluate_process).parameters
-            avail = {"ctx": self.monitor.context(), "context": self.monitor.context(), "info": info, "pid": info["pid"],
-                     "proc": None, "process": None, "name": info["name"], "exe": info["exe"],
-                     "cmdline": " ".join(info["cmdline"]), "cmd": " ".join(info["cmdline"]), "ppid": info["ppid"]}
-            import psutil
+            ev = getattr(P, "evaluate_process", None)
+            if callable(ev):  # explicit single-process entry point, if the scanner offers one
+                import psutil
 
-            try:
-                avail["proc"] = avail["process"] = psutil.Process(info["pid"])
-            except psutil.Error:
+                params = inspect.signature(ev).parameters
+                cmd = " ".join(info["cmdline"])
+                avail = {"ctx": self.monitor.context(), "context": self.monitor.context(), "info": info, "pid": info["pid"],
+                         "proc": psutil.Process(info["pid"]), "process": psutil.Process(info["pid"]), "name": info["name"],
+                         "exe": info["exe"], "cmdline": cmd, "cmd": cmd, "ppid": info["ppid"]}
+                if all(k in avail for k, p in params.items() if p.default is inspect.Parameter.empty):
+                    res = ev(**{k: avail[k] for k in params if k in avail})
+                    return [f for f in (res or []) if isinstance(f, Finding)]
+            proc_cls = getattr(P, "ProcInfo", None)
+            if proc_cls is None:
                 return None
-            kwargs = {k: avail[k] for k in params if k in avail}
-            if len(kwargs) < len([p for p in params.values() if p.default is inspect.Parameter.empty]):
-                return None
-            res = evaluate_process(**kwargs)
-            return [f for f in (res or []) if isinstance(f, Finding)]
+            join = getattr(P, "_join_cmdline", None)
+            cmd = join(info["cmdline"]) if callable(join) else " ".join(info["cmdline"])
+            proc = proc_cls(pid=info["pid"], name=info["name"], ppid=info["ppid"], exe=info.get("exe", ""), cmdline=cmd,
+                            username=info.get("username", "") or "", create_time=info.get("create_time", 0.0),
+                            parent_name=info.get("parent_name", ""), parent_cmdline=info.get("parent_cmdline", ""),
+                            parent_exe=info.get("parent_exe", ""))
+            out: List[Finding] = []
+            for fname in ("masquerade_findings", "chain_findings", "cmdline_findings", "deleted_exe_findings"):
+                fn = getattr(P, fname, None)
+                if not callable(fn):
+                    continue
+                try:
+                    out += [f for f in fn([proc], skip={os.getpid()}) if f.severity >= Severity.MEDIUM]
+                except Exception as exc:
+                    log.debug("%s failed: %s", fname, exc)
+            return out
         except Exception as exc:
-            log.debug("evaluate_process unavailable: %s", exc)
+            log.debug("processes scanner unavailable: %s", exc)
             return None
 
     def evaluate(self, info: Dict[str, Any]) -> List[Finding]:
-        findings = self._external(info) if self.analyse_fn is None and self.scan_fn is None else None
-        cmd = " ".join(info.get("cmdline") or [])
         exe = info.get("exe") or ""
-        if findings is None:
+        cmd = " ".join(info.get("cmdline") or [])
+        injected = self.analyse_fn is not None or self.scan_fn is not None
+        findings = None if injected else self._scanner_findings(info)
+        if findings is None:  # fall back to the shared command-line rules
             findings = []
             for hit in self._analyse(cmd):
                 rule_id, title, sev, mitre, matched = hit[:5]
@@ -1375,7 +1402,7 @@ class ProcessGuard:
                     Remediation("kill_process", {"pid": info["pid"], "path": exe, "quarantine": False},
                                 f"Terminate {info.get('name')} (pid {info['pid']})"),
                     "realtime", list(mitre or [])))
-            findings += self._scan_exe(exe)
+        findings = list(findings) + self._scan_exe(exe)  # hash / rules / heuristics on the image itself
         for f in findings:
             f.scanner = f.scanner or "realtime"
             f.evidence.setdefault("pid", info["pid"])
@@ -1436,12 +1463,19 @@ def _pick(entry: Any, keys: Sequence[str]) -> str:
 
 
 def normalise_entry(entry: Any) -> Dict[str, Any]:
-    """Adapt whatever `collect_entries()` returns (dict or object) to a flat dict."""
-    d = {"kind": _pick(entry, _KIND_KEYS), "name": _pick(entry, _NAME_KEYS),
-         "location": _pick(entry, _LOC_KEYS), "command": _pick(entry, _CMD_KEYS)}
+    """Adapt whatever `collect_entries()` returns (the persistence scanner's dicts, or any
+    object with similar attributes) to a flat dict."""
+    d: Dict[str, Any] = {"kind": _pick(entry, _KIND_KEYS), "name": _pick(entry, _NAME_KEYS),
+                         "location": _pick(entry, _LOC_KEYS), "command": _pick(entry, _CMD_KEYS), "raw": entry}
     d["key"] = "|".join(d[k] for k in ("kind", "location", "name", "command")).lower()
     rem = entry.get("remediation") if isinstance(entry, dict) else getattr(entry, "remediation", None)
-    d["remediation"] = rem if isinstance(rem, Remediation) else None
+    if not isinstance(rem, Remediation):
+        meta = entry.get("meta") if isinstance(entry, dict) else getattr(entry, "meta", None)
+        rd = meta.get("remediation") if isinstance(meta, dict) else None  # persistence scanner's format
+        rem = Remediation(rd["action"], dict(rd.get("params", {})), rd.get("description", "")) \
+            if isinstance(rd, dict) and rd.get("action") else None
+    d["remediation"] = rem
+    d["enabled"] = entry.get("enabled", True) if isinstance(entry, dict) else getattr(entry, "enabled", True)
     return d
 
 
@@ -1516,7 +1550,7 @@ class PersistenceGuard:
 
     def _new_entry_finding(self, d: Dict[str, Any]) -> Finding:
         cmd = d["command"]
-        sev = Severity.MEDIUM
+        sev = Severity.MEDIUM if d.get("enabled", True) else Severity.LOW
         hits: List[str] = []
         mitre = ["T1547"]
         try:
@@ -1524,16 +1558,17 @@ class PersistenceGuard:
 
             for h in analyse_command_line(cmd):
                 if Severity.parse(h[2]) >= Severity.MEDIUM:
-                    sev = Severity.HIGH
+                    sev = max(sev, Severity.HIGH)
                     hits.append(str(h[1]))
                     mitre += list(h[3] or [])
         except Exception:
             pass
         exe_findings: List[Finding] = []
+        raw = d.get("raw")
         try:
             from aegis.core.cmdline import extract_executable
 
-            exe = extract_executable(cmd) if cmd else None
+            exe = (raw.get("path") if isinstance(raw, dict) else None) or (extract_executable(cmd) if cmd else None)
             if exe and os.path.isfile(exe) and not is_under(exe, [Path(p) for p in system_binary_dirs()]):
                 from aegis.scanners.files import scan_file
 
@@ -1543,6 +1578,19 @@ class PersistenceGuard:
         if exe_findings:
             sev = max([sev] + [f.severity for f in exe_findings])
             hits += [f.title for f in exe_findings]
+        try:  # the persistence scanner's own verdict on this entry (missing target, odd location, ...)
+            from aegis.scanners import persistence as P
+
+            if isinstance(raw, dict) and "type" in raw:
+                reasons = P.assess_entry(raw, scan_findings=exe_findings)
+                pf = P.finding_for_entry(raw, reasons)
+                if pf:
+                    sev = max(sev, pf.severity)
+                    hits += [r.text.split(":")[0][:80] for r in reasons if r.severity > Severity.INFO]
+                    mitre += list(pf.mitre)
+        except Exception as exc:
+            log.debug("assess_entry failed: %s", exc)
+        hits = list(dict.fromkeys(hits))
         return Finding(
             "AEG-RT-AUTORUN", f"New autorun entry: {d['name'] or d['command'][:60]}", sev, Category.PERSISTENCE,
             "A new startup / persistence entry appeared while real-time protection was running." +
@@ -1722,10 +1770,11 @@ class RealtimeMonitor:
                 return
             self._stop.set()
             threads = list(self._threads)
-        self.files.stop()
         deadline = time.monotonic() + timeout
         for t in threads:  # joined outside the lock: workers may be blocked in emit()
-            t.join(max(0.0, deadline - time.monotonic()))
+            while t.is_alive() and time.monotonic() < deadline:
+                self.files.stop()  # repeated: CancelIoEx is a no-op if it races ahead of the blocking read
+                t.join(0.2)
         with self._lock:
             self._threads = [t for t in self._threads if t.is_alive()]
             self._running = False

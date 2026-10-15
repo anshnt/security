@@ -1,0 +1,5 @@
+# Runtime dependencies for Aegis Security Suite
+psutil>=5.9
+
+# Optional: native YARA engine for community rule sets (Windows wheels are available on PyPI)
+# yara-python>=4.3
