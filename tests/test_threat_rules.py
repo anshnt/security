@@ -31,7 +31,7 @@ RULE_FILE = ROOT / "aegis" / "data" / "rules" / "threats_2026.json"
 
 # ATT&CK v19/v20 revoked these; they must not be used in new content (see docs/THREAT_LANDSCAPE.md section 7.3).
 REVOKED_ATTACK_IDS = {"T1562", "T1562.001", "T1562.002", "T1562.004", "T1562.006", "T1562.009", "T1574.002",
-                      "T1070.001"}
+                      "T1070.001", "T1656"}
 
 
 def J(*parts: str) -> str:

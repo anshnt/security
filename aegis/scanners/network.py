@@ -408,7 +408,7 @@ def hosts_findings(text: str, path: str) -> List[Finding]:
             "cannot download updates - a standard malware self-protection trick.",
             path, {"entries": sample, "count": len(blocks)}, "Remove the entries and update your security software.",
             Remediation("restore_hosts", {"path": path, "remove_lines": lines}, "Comment out the blocking hosts entries"),
-            ["T1562.001", "T1565.001"], Category.SUSPICIOUS))
+            ["T1685", "T1565.001"], Category.SUSPICIOUS))
     if custom > MANY_CUSTOM:
         out.append(_f(
             "AEG-NET-HOSTS-CUSTOM", f"Hosts file contains {custom} custom entries", Severity.INFO,

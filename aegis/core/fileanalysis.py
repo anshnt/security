@@ -344,9 +344,20 @@ _SCRIPT_PATTERNS: List[Tuple[str, str, str, int, List[str]]] = [
      r"(?i)(iex|invoke-expression)[\s(]+.{0,80}(downloadstring|downloaddata|invoke-webrequest|iwr|irm|invoke-restmethod|net\.webclient)", 40, ["T1059.001", "T1105"]),
     ("AEG-H-SCR-CRADLE2", "PowerShell download-and-execute cradle",
      r"(?i)(downloadstring|invoke-webrequest|irm|invoke-restmethod)[^|\n]{0,200}\|\s*(iex|invoke-expression)", 40, ["T1059.001", "T1105"]),
-    ("AEG-H-SCR-AMSI", "AMSI bypass attempt", r"(?i)(amsiInitFailed|AmsiScanBuffer|amsi\.dll|System\.Management\.Automation\.AmsiUtils)", 45, ["T1562.001"]),
+    ("AEG-H-SCR-AMSI", "AMSI bypass attempt", r"(?i)(amsiInitFailed|AmsiScanBuffer|amsi\.dll|System\.Management\.Automation\.AmsiUtils)", 45, ["T1685"]),
     ("AEG-H-SCR-DEFENDER", "Disables Microsoft Defender",
-     r"(?i)(Set-MpPreference\s+.{0,60}-Disable(RealtimeMonitoring|BehaviorMonitoring|IOAVProtection|ScriptScanning)\s+(\$true|1)|Add-MpPreference\s+-ExclusionPath|DisableAntiSpyware)", 45, ["T1562.001"]),
+     r"(?i)(Set-MpPreference\s+.{0,60}-Disable(RealtimeMonitoring|BehaviorMonitoring|IOAVProtection|ScriptScanning)\s+(\$true|1)|DisableAntiSpyware)", 45, ["T1685"]),
+    # Only *broad* exclusions are malicious-looking; excluding a dev/build folder is routine.
+    ("AEG-H-SCR-DEFENDER-EXCL", "Adds a broad Microsoft Defender exclusion",
+     r"(?im)Add-MpPreference\b[^\n]{0,80}?-Exclusion(?:Path|Process|Extension)\s+[\"']?(?:"
+     r"[A-Za-z]:\\?(?=[\"'\s,;]|$)"                                   # whole drive
+     r"|\$env:(?:TEMP|TMP|APPDATA|LOCALAPPDATA|USERPROFILE|PUBLIC|ProgramData|SystemDrive|windir)\b"
+     r"|%(?:TEMP|TMP|APPDATA|LOCALAPPDATA|USERPROFILE|PUBLIC|ProgramData|SystemDrive)%"
+     r"|[A-Za-z]:\\(?:Users|ProgramData|Windows\\Temp|Temp)\\?(?=[\"'\s,;]|$)"   # profile/data roots
+     r"|[^\n\"',;]*\\(?:AppData|Temp|Downloads|Public)(?:\\[^\n\"',;]*)?(?=[\"'\s,;]|$)"
+     r"|\.?(?:exe|dll|ps1|bat|cmd|vbs|js|scr|hta)(?=[\"'\s,;]|$)"         # whole executable types
+     r"|(?:powershell|pwsh|cmd|wscript|cscript|mshta|rundll32|regsvr32)(?:\.exe)?(?=[\"'\s,;]|$))",
+     45, ["T1685"]),
     ("AEG-H-SCR-SHADOW", "Deletes volume shadow copies / backups (ransomware)",
      r"(?i)(vssadmin(\.exe)?\s+delete\s+shadows|wmic(\.exe)?\s+shadowcopy\s+delete|wbadmin(\.exe)?\s+delete\s+(catalog|systemstatebackup)|bcdedit(\.exe)?\s+/set\s+\{?default\}?\s+recoveryenabled\s+no|Win32_ShadowCopy.{0,40}Delete)", 60, ["T1490"]),
     ("AEG-H-SCR-LOLBIN-DL", "LOLBin used to download a payload",
@@ -362,7 +373,7 @@ _SCRIPT_PATTERNS: List[Tuple[str, str, str, int, List[str]]] = [
      r"(?i)(schtasks(\.exe)?\s+/create|New-ScheduledTask|reg(\.exe)?\s+add\s+.{0,80}\\CurrentVersion\\Run|New-ItemProperty.{0,120}CurrentVersion\\Run|Start Menu\\Programs\\Startup)", 15, ["T1547.001", "T1053.005"]),
     ("AEG-H-SCR-CREDS", "Credential theft tooling",
      r"(?i)(sekurlsa::|lsadump::|Invoke-Mimikatz|procdump.{0,30}lsass|comsvcs(\.dll)?.{0,20}MiniDump)", 60, ["T1003.001"]),
-    ("AEG-H-SCR-FIREWALL", "Disables the firewall", r"(?i)(netsh\s+(adv)?firewall\s+set\s+\w*\s*(state\s+off|opmode\s+disable)|Set-NetFirewallProfile.{0,60}-Enabled\s+(False|0))", 35, ["T1562.004"]),
+    ("AEG-H-SCR-FIREWALL", "Disables the firewall", r"(?i)(netsh\s+(adv)?firewall\s+set\s+\w*\s*(state\s+off|opmode\s+disable)|Set-NetFirewallProfile.{0,60}-Enabled\s+(False|0))", 35, ["T1686"]),
     ("AEG-H-SCR-LINUX-DROPPER", "Shell download-and-execute",
      r"(?i)(curl|wget)\s+[^|;\n]{0,200}\|\s*(ba|z|da)?sh\b|(curl|wget)[^;\n]{0,200};\s*chmod\s+\+x", 20, ["T1105"]),
     ("AEG-H-SCR-REVSHELL", "Reverse shell", r"(/dev/tcp/\d{1,3}(\.\d{1,3}){3}/\d+|nc(at)?\s+(-e|-c)\s+/bin/(ba)?sh|socket\.socket.{0,200}subprocess.{0,80}/bin/(ba)?sh|New-Object\s+System\.Net\.Sockets\.TCPClient.{0,300}GetStream)", 55, ["T1059"]),

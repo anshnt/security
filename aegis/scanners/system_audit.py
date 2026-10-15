@@ -511,7 +511,7 @@ def check_antivirus(env: AuditEnv) -> List[Check]:
             "Open Windows Security > Virus & threat protection > Manage settings and turn on Real-time protection "
             "(or open your antivirus program and re-enable protection). If it turns itself off or cannot be "
             "turned on, treat the PC as possibly infected: run an offline scan (Defender Offline) and Aegis' full scan.",
-            loc, ev, fix, ["T1562.001"]))
+            loc, ev, fix, ["T1685"]))
 
     # ---- definitions
     stale: List[Tuple[str, str]] = []
@@ -533,7 +533,7 @@ def check_antivirus(env: AuditEnv) -> List[Check]:
             f"{who}: {why}. Old definitions miss new malware.",
             "Open Windows Security > Virus & threat protection > Protection updates > Check for updates "
             "(or update your antivirus). Make sure the PC is online and Windows Update is not blocked.",
-            f"antivirus:{who}", {"stale": [{"product": a, "reason": b} for a, b in stale]}, fix, ["T1562.001"]))
+            f"antivirus:{who}", {"stale": [{"product": a, "reason": b} for a, b in stale]}, fix, ["T1685"]))
     else:
         out.append(passed("AV-SIGNATURES", t_sigs, "Definitions are current."))
 
@@ -549,7 +549,7 @@ def check_antivirus(env: AuditEnv) -> List[Check]:
             "AV-TAMPER", "Defender tamper protection is off", Severity.LOW,
             "Tamper protection stops malware (and scripts) from switching off Defender or adding exclusions.",
             "Open Windows Security > Virus & threat protection > Manage settings and turn on Tamper Protection.",
-            "Microsoft Defender tamper protection", {"IsTamperProtected": False}, None, ["T1562.001"]))
+            "Microsoft Defender tamper protection", {"IsTamperProtected": False}, None, ["T1685"]))
     else:
         out.append(passed("AV-TAMPER", t_tamper))
     if st.mp.get("BehaviorMonitorEnabled") is False:
@@ -559,7 +559,7 @@ def check_antivirus(env: AuditEnv) -> List[Check]:
             "Enable real-time protection in Windows Security; behaviour monitoring turns on with it.",
             "Microsoft Defender behaviour monitoring", {"BehaviorMonitorEnabled": False},
             run_ps("Set-MpPreference -DisableBehaviorMonitoring $false", "Turn on Defender behaviour monitoring"),
-            ["T1562.001"]))
+            ["T1685"]))
     else:
         out.append(passed("AV-BEHAVIOR", t_beh))
     qage = to_int(st.mp.get("QuickScanAge"))
@@ -679,7 +679,7 @@ def check_defender_prefs(env: AuditEnv) -> List[Check]:
                 "Windows Security > Virus & threat protection > Manage settings > Exclusions (or PowerShell: "
                 "Remove-MpPreference -ExclusionPath '<path>'). Keep only exclusions you recognise and need "
                 "(for example a specific developer folder).",
-                "Microsoft Defender exclusions", {"suspicious": bad, "total_exclusions": total}, None, ["T1562.001"]))
+                "Microsoft Defender exclusions", {"suspicious": bad, "total_exclusions": total}, None, ["T1685"]))
         else:
             out.append(passed("DEFENDER-EXCLUSIONS", t_ex, f"{total} exclusion(s) configured, none look dangerous."))
 
@@ -764,7 +764,7 @@ def check_firewall(env: AuditEnv) -> List[Check]:
         "public Wi-Fi) can connect to services on this PC.",
         "Open Windows Security > Firewall & network protection and turn the firewall on for every profile "
         "(or run: netsh advfirewall set allprofiles state on). If you use a third-party firewall, make sure it is running.",
-        "Windows Defender Firewall", {"profiles_off": off}, fix, ["T1562.004"])]
+        "Windows Defender Firewall", {"profiles_off": off}, fix, ["T1686"])]
 
 
 # =========================================================================== UAC
@@ -979,7 +979,7 @@ def check_windows_update(env: AuditEnv) -> List[Check]:
             "Set the service to Manual: services.msc > Windows Update > Startup type > Manual, then run Windows Update.",
             hkey("HKLM", r"SYSTEM\CurrentControlSet\Services\wuauserv", "Start"), {"Start": 4},
             run_cmd(["sc.exe", "config", "wuauserv", "start=", "demand"], "Set the Windows Update service back to Manual"),
-            ["T1562.001"]))
+            ["T1685"]))
     else:
         out.append(passed("WU-SERVICE-DISABLED", "The Windows Update service is not disabled"))
 
@@ -1210,7 +1210,7 @@ def check_hygiene(env: AuditEnv) -> List[Check]:
             "PowerShell: Disable-WindowsOptionalFeature -Online -FeatureName MicrosoftWindowsPowerShellV2Root",
             "Windows feature: PowerShell 2.0", {"state": ps2},
             run_ps("Disable-WindowsOptionalFeature -Online -FeatureName MicrosoftWindowsPowerShellV2Root -NoRestart",
-                   "Remove the legacy PowerShell 2.0 engine"), ["T1059.001", "T1562.001"]))
+                   "Remove the legacy PowerShell 2.0 engine"), ["T1059.001", "T1685"]))
     elif ps2_on is False:
         out.append(passed("PS2-ENGINE", "The legacy PowerShell 2.0 engine is not installed"))
     else:
@@ -1460,7 +1460,7 @@ def check_linux_firewall(env: AuditEnv) -> List[Check]:
             "No active firewall rules (ufw, firewalld, nftables or iptables) were found, so every listening "
             "service is reachable from the network.",
             "Install and enable a firewall, for example: sudo apt install ufw && sudo ufw default deny incoming && "
-            "sudo ufw allow ssh && sudo ufw enable", "Host firewall", {}, None, ["T1562.004"])]
+            "sudo ufw allow ssh && sudo ufw enable", "Host firewall", {}, None, ["T1686"])]
     return [skipped("LINUX-FIREWALL", title, "Needs root to read firewall rules; re-run with sudo.")]
 
 
@@ -1829,7 +1829,7 @@ def check_macos(env: AuditEnv) -> List[Check]:
                 "System Settings > Network > Firewall > On.", "socketfilterfw --getglobalstate",
                 {"output": txt.strip()[:200]},
                 run_cmd(["/usr/libexec/ApplicationFirewall/socketfilterfw", "--setglobalstate", "on"],
-                        "Turn the macOS firewall on"), ["T1562.004"]))
+                        "Turn the macOS firewall on"), ["T1686"]))
     txt = _mac_cmd(["defaults", "read", "/Library/Preferences/com.apple.SoftwareUpdate", "AutomaticCheckEnabled"])
     t = "Automatic update checks are on"
     if txt is None or "does not exist" in (txt or "").lower():

@@ -964,7 +964,7 @@ def analyse_chromium_prefs(prefs: Dict[str, Any], secure: Dict[str, Any], browse
             "AEG-BRW-SAFEBROWSING", f"Safe Browsing is turned off in {browser_name} ({label})", Severity.MEDIUM,
             "Safe Browsing / SmartScreen warnings for phishing and malware downloads are disabled in this profile. "
             "Malware and adware commonly switch this off.", location, dict(ctx_ev, safebrowsing_enabled=False),
-            "Open Settings > Privacy and security > Security and select Standard or Enhanced protection.", None, ["T1562.001"]))
+            "Open Settings > Privacy and security > Security and select Standard or Enhanced protection.", None, ["T1685"]))
         info["safebrowsing"] = "disabled"
     elif _pget(prefs, secure, "safebrowsing.enhanced") is True:
         info["safebrowsing"] = "enhanced protection on"
@@ -1631,7 +1631,7 @@ def analyse_firefox_prefs(prefs: Dict[str, Any], user_prefs: Dict[str, Any], bro
         findings.append(_finding(
             "AEG-BRW-SAFEBROWSING", f"Safe Browsing is turned off in {browser_name} ({label})", Severity.MEDIUM,
             f"{', '.join(off)} set to false: Firefox no longer warns about phishing/malware sites.", location,
-            dict(ev, prefs=off, pref_source=[src(k) for k in off]), "Enable 'Block dangerous and deceptive content' in about:preferences#privacy.", None, ["T1562.001"]))
+            dict(ev, prefs=off, pref_source=[src(k) for k in off]), "Enable 'Block dangerous and deceptive content' in about:preferences#privacy.", None, ["T1685"]))
         info["safebrowsing"] = "disabled"
     else:
         info["safebrowsing"] = "enabled"
@@ -1642,7 +1642,7 @@ def analyse_firefox_prefs(prefs: Dict[str, Any], user_prefs: Dict[str, Any], bro
             "AEG-BRW-FF-SIGREQ", "Firefox extension signature enforcement is disabled", Severity.HIGH,
             f"xpinstall.signatures.required=false ({src('xpinstall.signatures.required')}) lets unsigned, unreviewed add-ons "
             "run. This is only normal on Developer Edition / Nightly.", location, dict(ev, source=src("xpinstall.signatures.required")),
-            "Remove the setting (set it to true) and review installed add-ons.", None, ["T1176", "T1562.001"]))
+            "Remove the setting (set it to true) and review installed add-ons.", None, ["T1176", "T1685"]))
 
     # user.js that reapplies hijack-type settings
     if user_js is not None and user_js.is_file() and any(f.evidence.get("source", "").startswith("user.js") for f in findings):

@@ -386,3 +386,37 @@ def test_detection_content_is_skipped_but_disguised_scripts_are_not(ctx, tmp_pat
     ctx.deep = True
     (tmp_path / "evil.yar").write_bytes(evil)
     assert scan_file(ctx, tmp_path / "evil.yar")
+
+
+@pytest.mark.parametrize("line,broad", [
+    ('Add-MpPreference -ExclusionPath "C:\\"', True),
+    ("Add-MpPreference -ExclusionPath $env:TEMP", True),
+    ('Add-MpPreference -ExclusionPath "C:\\Users\\bob\\AppData\\Roaming"', True),
+    ('Add-MpPreference -ExclusionExtension ".exe"', True),
+    ('Add-MpPreference -ExclusionProcess "powershell.exe"', True),
+    ('Add-MpPreference -Force -ExclusionPath "C:\\Users"', True),
+    ("Add-MpPreference -ExclusionPath 'C:\\Dev\\myproject\\build'", False),
+    ('Add-MpPreference -ExclusionPath "D:\\VMs"', False),
+    ('Add-MpPreference -ExclusionExtension ".vhdx"', False),
+])
+def test_defender_exclusion_only_flags_broad_exclusions(line, broad):
+    ids = {i.rule_id for i in fa.content_indicators(line.encode(), "script")}
+    assert ("AEG-H-SCR-DEFENDER-EXCL" in ids) is broad
+    assert "AEG-H-SCR-DEFENDER" not in ids  # exclusions are not "disabling" Defender
+
+
+def test_no_retired_attack_technique_ids():
+    """ATT&CK v20 (2026-10-13) revoked these ids; the old pages redirect to the replacements."""
+    import re
+    from pathlib import Path
+
+    retired = {"T1562": "T1685", "T1562.001": "T1685", "T1562.002": "T1685.001", "T1562.004": "T1686",
+               "T1562.006": "T1685", "T1562.009": "T1688", "T1070.001": "T1685.005", "T1574.002": "T1574.001",
+               "T1656": "T1684.001"}
+    root = Path(__file__).resolve().parent.parent / "aegis"
+    bad = []
+    for p in list(root.rglob("*.py")) + list(root.rglob("*.json")) + list(root.rglob("*.yar")):
+        for m in re.finditer(r"(?<![\w.])T1\d{3}(?:\.\d{3})?(?![.\d])", p.read_text(encoding="utf-8", errors="replace")):
+            if m.group(0) in retired:
+                bad.append(f"{p.name}: {m.group(0)} -> {retired[m.group(0)]}")
+    assert not bad, bad

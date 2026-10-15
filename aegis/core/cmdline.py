@@ -401,7 +401,7 @@ RULES: List[Rule] = [
     Rule("PS-DOWNLOAD", "PowerShell downloads a file from a URL", S.MEDIUM, ("T1105", "T1059.001"),
          _p(r"\b@PS@\"?(?=\s)(?=.*https?://)(?=.*(?:\.downloadfile\(|\.downloaddata\(|start-bitstransfer|"
             r"(?:invoke-webrequest|\biwr\b)[^|;]*-out(?:file)?\b))"), supersedes=()),
-    Rule("PS-AMSI", "AMSI bypass attempt", S.HIGH, ("T1562.001",),
+    Rule("PS-AMSI", "AMSI bypass attempt", S.HIGH, ("T1685",),
          _p(r"amsiinitfailed|amsiutils|amsicontext|amsiscanbuffer|\[ref\]\.assembly\.gettype\([^)]*amsi")),
     Rule("PS-REVSHELL", "PowerShell reverse shell (TCPClient + stream execution)", S.CRITICAL, ("T1059.001", "T1095"),
          _p(r"tcpclient[\s\S]{0,500}?getstream[\s\S]{0,500}?(?:\biex\b|invoke-expression|\.read\(|streamwriter|\|\s*out-string)")),
@@ -526,31 +526,31 @@ RULES: List[Rule] = [
             r"\bbcdedit(?:\.exe)?\b[^\n]*(?:recoveryenabled\s+(?:no|off|false)|bootstatuspolicy\s+ignoreallfailures)|"
             r"\bwmic(?:\.exe)?\b[^\n]*\bshadowcopy\b[^\n]*\bdelete\b|"
             r"win32_shadowcopy[\s\S]{0,200}?(?:\.delete\(|remove-wmiobject|remove-ciminstance|\bdelete\b)")),
-    Rule("SAFEBOOT", "Boot configuration forced into safe mode", S.MEDIUM, ("T1562.009",),
+    Rule("SAFEBOOT", "Boot configuration forced into safe mode", S.MEDIUM, ("T1688",),
          _p(r"\bbcdedit(?:\.exe)?\b[^\n]*\s/set\s+(?:\{\w+\}\s+)?safeboot\b")),
-    Rule("EVENTLOG-CLEAR-CORE", "Windows Security/System event log cleared", S.HIGH, ("T1070.001",),
+    Rule("EVENTLOG-CLEAR-CORE", "Windows Security/System event log cleared", S.HIGH, ("T1685.005",),
          _p(r"\bwevtutil(?:\.exe)?\"?\s+(?:cl|clear-log)\s+[\"']?(?:security|system|windows\s+powershell|microsoft-windows-powershell)|"
             r"\bfor\b[^\n]*\bwevtutil\b[^\n]*\b(?:cl|clear-log)\b"), supersedes=("AEG-CMD-EVENTLOG-CLEAR",)),
-    Rule("EVENTLOG-CLEAR", "Windows event log cleared", S.MEDIUM, ("T1070.001",),
+    Rule("EVENTLOG-CLEAR", "Windows event log cleared", S.MEDIUM, ("T1685.005",),
          _p(r"\bwevtutil(?:\.exe)?\"?\s+(?:cl|clear-log)\b|\b(?:clear|remove)-eventlog\b")),
     Rule("USN-DELETE", "NTFS change journal deleted", S.HIGH, ("T1070",),
          _p(r"\bfsutil(?:\.exe)?\"?\s+usn\s+deletejournal")),
-    Rule("DEFENDER-TAMPER", "Windows Defender protection disabled or exclusions added", S.HIGH, ("T1562.001",),
+    Rule("DEFENDER-TAMPER", "Windows Defender protection disabled or exclusions added", S.HIGH, ("T1685",),
          _p(r"\b(?:set|add)-mppreference\b[^\n]*(?:-disable(?:realtimemonitoring|behaviormonitoring|ioavprotection|scriptscanning|"
             r"blockatfirstseen|intrusionpreventionsystem|archivescanning|emailscanning|privacymode)\s+[$]?(?:true|1)\b|"
             r"-exclusion(?:path|extension|process)\s)|"
             r"\breg(?:\.exe)?\s+add\b[^\n]*(?:disableantispyware|disablerealtimemonitoring|disableantivirus|disablebehaviormonitoring|"
             r"disableioavprotection|disableonaccessprotection)[^\n]*/d\s+(?:1|0x1)\b|"
             r"\buninstall-windowsfeature\s+windows-defender|\bdism\b[^\n]*disable-feature[^\n]*windows-defender")),
-    Rule("SECURITY-SERVICE-STOP", "Security service stopped or disabled from the command line", S.HIGH, ("T1562.001",),
+    Rule("SECURITY-SERVICE-STOP", "Security service stopped or disabled from the command line", S.HIGH, ("T1685",),
          _p(r"\b(?:sc|net1?)(?:\.exe)?\"?\s+(?:stop|config|delete|pause)\s+(?:windefend|wdnissvc|sense|wdfilter|wdboot|"
             r"mpssvc|securityhealthservice|wscsvc|sedsvc)\b")),
-    Rule("AV-KILL", "Antivirus/EDR process killed via taskkill", S.HIGH, ("T1562.001",),
+    Rule("AV-KILL", "Antivirus/EDR process killed via taskkill", S.HIGH, ("T1685",),
          _p(r"\btaskkill(?:\.exe)?\b[^\n]*[/-]im\s+[\"']?(?:msmpeng|nissrv|mssense|msseces|msascui|msascuil|avp|avgui|avgsvc|"
             r"avastui|avastsvc|ashserv|ekrn|egui|mbam|mbamservice|mcshield|mcuicnt|bdagent|vsserv|savservice|sophosui|"
             r"sophosfilescanner|csfalconservice|cylancesvc|sentinelagent|sentinelstaticengine|wrsa|ccsvchst|nsmdtr|tmbmsrv|"
             r"tmccsf|pccntmon|a2service|hmpalert|ntrtscan)(?:\.exe)?")),
-    Rule("FIREWALL-OFF", "Windows Firewall disabled from the command line", S.MEDIUM, ("T1562.004",),
+    Rule("FIREWALL-OFF", "Windows Firewall disabled from the command line", S.MEDIUM, ("T1686",),
          _p(r"\bnetsh(?:\.exe)?\b[^\n]*(?:advfirewall\s+set\s+\w+profile\s+state\s+off|firewall\s+set\s+opmode\s+(?:mode=)?disable)")),
     Rule("REG-RUN-HIGH", "reg.exe adding an autorun entry that launches an interpreter or user-writable file", S.HIGH,
          ("T1547.001",),
