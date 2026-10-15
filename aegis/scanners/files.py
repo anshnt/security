@@ -11,6 +11,7 @@ import io
 import json
 import logging
 import os
+import re
 import sqlite3
 import threading
 import zipfile
@@ -78,6 +79,36 @@ def _yara_matches(ctx: ScanContext, data: bytes) -> List[Tuple[str, dict]]:
     except Exception as exc:
         log.debug("yara error: %s", exc)
         return []
+
+
+# Text types content-scanned in quick (non-deep) mode: where ransom notes, droppers,
+# phishing pages and miner/stealer configs live. Documentation (.md, .rst) is left to deep scans.
+QUICK_TEXT_EXTS = {"", "txt", "html", "htm", "hta", "xml", "json", "ini", "cfg", "conf", "config", "log", "url", "svg",
+                   "csv", "rtf", "eml", "desktop", "plist", "service", "timer", "cron"}
+
+_YARA_RULE_RE = re.compile(rb"(?m)^\s*(?:(?:private|global)\s+)*rule\s+\w+(?:\s*:\s*[\w\s]+)?\s*\{")
+_YARA_COND_RE = re.compile(rb"(?m)^\s*condition\s*:")
+
+
+def is_detection_content(data: bytes, ext: str) -> bool:
+    """True for detection-rule files (YARA, Sigma, Aegis-Lite JSON). They are inert
+    data that quote malware strings by design. Checks are structural so that a
+    renamed script or binary does not qualify."""
+    if ext in ("yar", "yara"):
+        return bool(_YARA_RULE_RE.search(data)) and bool(_YARA_COND_RE.search(data))
+    if ext in ("yml", "yaml"):
+        return (b"\ndetection:" in data or data.startswith(b"detection:")) and b"logsource:" in data \
+            and b"condition:" in data
+    if ext == "json":
+        try:
+            doc = json.loads(data.decode("utf-8"))
+        except ValueError:
+            return False
+        rules = doc if isinstance(doc, list) else doc.get("rules") if isinstance(doc, dict) else None
+        return bool(rules) and isinstance(rules, list) and all(
+            isinstance(r, dict) and isinstance(r.get("strings"), dict) and isinstance(r.get("condition"), str)
+            for r in rules)
+    return False
 
 
 _OWN_DATA_HASHES: Optional[frozenset] = None
@@ -276,7 +307,7 @@ def scan_file(ctx: ScanContext, path: Path, cache: Optional[ScanCache] = None) -
             head = fh.read(4096)
             kind = fa.classify(head, ext)
             risky = ext in fa.RISKY_EXTS or kind in ("pe", "elf", "macho", "script", "lnk", "office", "pdf", "archive") \
-                or (kind == "text" and st.st_size < 1024 * 1024)  # ransom notes, configs, droppers
+                or (kind == "text" and st.st_size < 1024 * 1024 and ext in QUICK_TEXT_EXTS)  # ransom notes, configs
             too_big = st.st_size > ctx.config.max_file_size_mb * 1024 * 1024
             if not ctx.deep and not risky:
                 ctx.bump("files_skipped_type")
@@ -298,11 +329,13 @@ def scan_file(ctx: ScanContext, path: Path, cache: Optional[ScanCache] = None) -
         return []
     ctx.bump("files_scanned")
     ctx.bump("bytes_scanned", len(data))
-    if ext in ("json", "html", "htm", "csv") and kind == "text":
+    if kind == "text" and ext in ("json", "html", "htm", "csv", "yar", "yara", "yml", "yaml"):
         from aegis.core.report import is_aegis_report
 
-        if is_aegis_report(data, ext):  # our own report quoting evidence, not a threat
-            ctx.bump("aegis_reports_skipped")
+        if is_aegis_report(data, ext) or is_detection_content(data, ext):
+            # Our own report quoting evidence, or detection rules (YARA / Sigma / Aegis-Lite)
+            # that necessarily quote malware strings: inert data, not a threat.
+            ctx.bump("detection_content_skipped")
             if cache:
                 cache.mark_clean(spath, st, "")
             return []

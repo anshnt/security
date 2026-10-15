@@ -175,11 +175,24 @@ class _Parser:
                     raise RuleError("number must be followed by 'of'")
                 names = list(self.ids)
                 need = len(names) if low == "all" else 1
-            return lambda m, ns=names, k=need: sum(1 for n in ns if n in m) >= k
+            return lambda m, ns=names, k=need: _at_least(ns, m, k)
         if tok in self.ids:
             self.take()
             return lambda m, n=tok: n in m
         raise RuleError(f"unknown identifier {tok!r}")
+
+
+def _at_least(names: List[str], hits, k: int) -> bool:
+    """`k of (names)` with early exit once satisfied (or once it can no longer be)."""
+    found = 0
+    for i, n in enumerate(names):
+        if n in hits:
+            found += 1
+            if found >= k:
+                return True
+        elif found + (len(names) - i - 1) < k:
+            return False
+    return found >= k
 
 
 # ------------------------------------------------------------------ rules
@@ -203,14 +216,33 @@ class Rule:
         return kind in self.file_types or ext.lstrip(".").lower() in self.file_types
 
     def match(self, data: bytes) -> Optional[Dict[str, str]]:
-        hits: Dict[str, str] = {}
-        for sid, pat in self.strings.items():
-            m = pat.search(data)
-            if m:
-                hits[sid] = m.group(0)[:80].decode("utf-8", "replace")
-        if self.predicate(set(hits)):
-            return hits
+        """Evaluate the condition, searching each string only when the condition
+        needs it (and at most once): `a and b` never searches b when a is absent.
+        Returns the strings that were found (the evidence) on a match."""
+        lazy = _LazyHits(self.strings, data)
+        if self.predicate(lazy):  # type: ignore[arg-type]
+            return lazy.hits
         return None
+
+
+class _LazyHits:
+    """Set-like view the compiled condition queries with `sid in hits`."""
+
+    __slots__ = ("_strings", "_data", "_checked", "hits")
+
+    def __init__(self, strings: Dict[str, "re.Pattern[bytes]"], data: bytes):
+        self._strings = strings
+        self._data = data
+        self._checked: Set[str] = set()
+        self.hits: Dict[str, str] = {}
+
+    def __contains__(self, sid: object) -> bool:
+        if sid not in self._checked:
+            self._checked.add(sid)  # type: ignore[arg-type]
+            m = self._strings[sid].search(self._data)  # type: ignore[index]
+            if m:
+                self.hits[sid] = m.group(0)[:80].decode("utf-8", "replace")  # type: ignore[index]
+        return sid in self.hits
 
 
 def compile_rule(d: dict, source: str = "") -> Rule:

