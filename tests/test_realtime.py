@@ -454,6 +454,37 @@ def test_process_guard_sees_new_process(cfg, tmp_path):
     assert next(i for i in seen if i["name"] == "sleep")["cmdline"][0] == "sleep"
 
 
+def test_process_guard_rereads_empty_cmdline(cfg, monkeypatch):
+    """A process sampled mid-exec can report an empty cmdline; it must be re-read
+    on a later poll rather than evaluated once without command-line analysis."""
+    import psutil
+
+    mon, _ = make_monitor(cfg, components=())
+    pg = M.ProcessGuard(mon)
+    seen = []
+    pg.handle = lambda info: seen.append(info) or []  # type: ignore[assignment]
+    pg.seed()
+    fake_pid = 2**22 + 99
+    reads = {"n": 0}
+
+    def fake_info(pid):
+        if pid != fake_pid:
+            return None
+        reads["n"] += 1
+        cmd = [] if reads["n"] == 1 else ["evil.exe", "-enc", "AAAA"]
+        return {"pid": pid, "create_time": 1.0, "name": "evil.exe", "ppid": 1, "exe": "/tmp/evil.exe",
+                "cmdline": cmd, "username": "u", "parent_name": "", "parent_exe": "", "parent_cmdline": ""}
+
+    monkeypatch.setattr(pg, "_info", fake_info)
+    monkeypatch.setattr(psutil, "pids", lambda: [fake_pid])
+    pg.poll_once()
+    assert seen == []  # empty cmdline: deferred
+    pg.poll_once()
+    assert len(seen) == 1 and seen[0]["cmdline"] == ["evil.exe", "-enc", "AAAA"]
+    pg.poll_once()
+    assert len(seen) == 1  # evaluated exactly once
+
+
 # --------------------------------------------------------------------------- persistence guard
 
 def test_persistence_guard_diff_and_hosts(cfg, tmp_path):

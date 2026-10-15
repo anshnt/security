@@ -1233,6 +1233,7 @@ class ProcessGuard:
         self.analyse_fn = analyse_fn
         self.scan_fn = scan_fn
         self._seen: Dict[int, float] = {}
+        self._retries: Dict[int, int] = {}  # pids re-read because their cmdline was empty
         self._scanned_exes: "collections.OrderedDict[Tuple[str, int, int], List[Finding]]" = collections.OrderedDict()
 
     def start(self, stop: threading.Event) -> List[threading.Thread]:
@@ -1295,12 +1296,20 @@ class ProcessGuard:
             info = self._info(pid)
             if info is None:
                 continue
+            if not info.get("cmdline") and self._retries.get(pid, 0) < 2:
+                # Caught mid-exec (or not readable yet): an empty command line would
+                # skip command-line analysis entirely, so look again next poll.
+                self._retries[pid] = self._retries.get(pid, 0) + 1
+                continue
+            self._retries.pop(pid, None)
             self._seen[pid] = info["create_time"]
             if info["ppid"] == os.getpid() or pid == os.getpid():
                 continue  # our own helpers (toast PowerShell etc.)
             new_infos.append(info)
         for pid in [p for p in self._seen if p not in current]:
             del self._seen[pid]  # also lets reused pids be seen again
+        for pid in [p for p in self._retries if p not in current]:
+            del self._retries[pid]
         for info in new_infos:
             self.monitor.stats["processes_seen"] += 1
             try:
