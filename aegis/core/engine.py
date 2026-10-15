@@ -21,7 +21,8 @@ log = logging.getLogger("aegis.engine")
 # Which scanners each profile runs. "files" receives paths from the profile.
 PROFILES: Dict[str, List[str]] = {
     "quick": ["processes", "persistence", "files", "browser", "network"],
-    "full": ["processes", "persistence", "files", "browser", "network", "system_audit", "software", "secrets"],
+    "full": ["processes", "persistence", "files", "browser", "network", "system_audit", "software", "secrets",
+             "eventlog", "drivers", "sideload", "usb", "email", "memory"],
     "audit": ["system_audit", "software", "network", "browser"],
     "custom": [],
 }
