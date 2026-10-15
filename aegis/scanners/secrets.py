@@ -274,14 +274,14 @@ def find_seed_phrases(text: str, index: Dict[str, int]) -> List[Dict[str, Any]]:
         for L in (24, 21, 18, 15, 12):
             for start in range(0, len(run) - L + 1):
                 w = run[start:start + L]
-                if len(set(w)) >= L - 2 and bip39_checksum_ok(w, index):
+                if len(set(w)) >= L // 2 and bip39_checksum_ok(w, index):
                     valid_window = w
                     break
             if valid_window:
                 break
         if valid_window:
             results.append({"words": len(valid_window), "checksum_valid": True, "first": mask(valid_window[0])})
-        elif len(run) in (12, 15, 18, 21, 24) and len(set(run)) >= len(run) - 1:
+        elif len(run) in (12, 15, 18, 21, 24) and len(set(run)) >= len(run) // 2:
             results.append({"words": len(run), "checksum_valid": False, "first": mask(run[0])})
 
     for tok in re.findall(r"[A-Za-z]+|\d+", text):
