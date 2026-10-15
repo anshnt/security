@@ -114,20 +114,32 @@ class SignatureDB:
         self.yara_count = 0
         if not HAVE_YARA:
             return
-        files: Dict[str, str] = {}
+        candidates: Dict[str, str] = {}
         for base in (PACKAGE_DATA / "yara", self.config.signatures_dir / "yara"):
             if base.is_dir():
                 for p in sorted(base.rglob("*.yar")) + sorted(base.rglob("*.yara")):
-                    # validate individually so one broken community rule doesn't break all
-                    try:
-                        yara.compile(filepath=str(p))
-                        files[f"{base.name}_{p.stem}_{len(files)}"] = str(p)
-                    except Exception as exc:
-                        log.debug("skipping YARA file %s: %s", p, exc)
-        if files:
+                    candidates[f"{base.parent.name}_{p.stem}_{len(candidates)}"] = str(p)
+        if not candidates:
+            return
+        # Fast path: one compile of everything (large community sets take seconds).
+        try:
+            self.yara_rules = yara.compile(filepaths=candidates)
+            self.yara_count = len(candidates)
+            return
+        except Exception as exc:
+            log.info("YARA bulk compile failed (%s); validating files individually", exc)
+        # Slow path: drop the files that don't compile so one bad rule can't disable all.
+        good = {}
+        for ns, path in candidates.items():
             try:
-                self.yara_rules = yara.compile(filepaths=files)
-                self.yara_count = len(files)
+                yara.compile(filepath=path)
+                good[ns] = path
+            except Exception as exc:
+                log.warning("skipping YARA file %s: %s", path, exc)
+        if good:
+            try:
+                self.yara_rules = yara.compile(filepaths=good)
+                self.yara_count = len(good)
             except Exception as exc:
                 log.warning("YARA compile failed: %s", exc)
 

@@ -632,10 +632,10 @@ def assess_risk(info: ExtInfo) -> Risk:
         r.flags.append(f"{where} every website you visit (<all_urls>-style access)")
     for perm, (w, why) in PERM_WEIGHTS.items():
         if perm in info.perms:
-            if perm in ("webRequest", "declarativeNetRequest") and perm + "Blocking" in info.perms:
-                continue
-            r.score += w
             r.apis.add(perm)
+            if perm in ("webRequest", "declarativeNetRequest") and perm + "Blocking" in info.perms:
+                continue  # the Blocking variant already covers it; don't double count
+            r.score += w
             r.flags.append(f"{perm}: {why}")
     if "scripting" in info.perms and r.broad:
         r.score += 3

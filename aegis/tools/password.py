@@ -13,8 +13,7 @@ import re
 import urllib.error
 import urllib.request
 from functools import lru_cache
-from pathlib import Path
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Tuple
 
 from aegis.core.config import PACKAGE_DATA
 
@@ -150,6 +149,8 @@ def _matches(pw: str, brute_bits: float) -> List[Tuple[int, int, float, str]]:
     for m in re.finditer(r"(?<!\d)(19\d\d|20[0-3]\d)(?!\d)", pw):
         spans.append((m.start(), m.end(), 7.0, "year"))
     for m in re.finditer(r"(?<!\d)(0?[1-9]|[12]\d|3[01])[-/. ]?(0?[1-9]|1[0-2])[-/. ]?(19\d\d|20[0-3]\d|\d\d)(?!\d)", pw):
+        spans.append((m.start(), m.end(), 13.0, "date"))
+    for m in re.finditer(r"(?<!\d)(19\d\d|20[0-3]\d)[-/. ]?(0?[1-9]|1[0-2])[-/. ]?(0?[1-9]|[12]\d|3[01])(?!\d)", pw):
         spans.append((m.start(), m.end(), 13.0, "date"))
     return spans
 

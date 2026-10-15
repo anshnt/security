@@ -18,7 +18,7 @@ from pathlib import Path
 from typing import Any, Dict, Iterable, Iterator, List, Optional, Sequence, Tuple
 
 from aegis.core.models import Category, Finding, Severity
-from aegis.core.platform import IS_LINUX, IS_MAC, IS_WINDOWS, windows_dir
+from aegis.core.platform import IS_MAC, IS_WINDOWS, windows_dir
 
 log = logging.getLogger("aegis.integrity")
 

@@ -471,6 +471,8 @@ def _analyse(raw: str, signatures: Any, config: Any, v: _Verdict, result: Dict[s
         dots = len([x for x in sub.split(".") if x]) if sub else 0
         if dots >= 4:
             v.add(10, f"{dots} nested subdomains")
+        if sum(1 for w in LOGIN_WORDS if w in sld) >= 2:
+            v.add(15, "several credential/verification keywords stuffed into the domain name")
         if host.count("-") >= 3:
             v.add(10, "many hyphens in host name")
         if len(host) > 60:
