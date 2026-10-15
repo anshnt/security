@@ -455,7 +455,8 @@ RULES: List[Rule] = [
             r"[\"']?\s*,")),
     Rule("BARE-HOST", "Process-injection host launched without arguments (rundll32/regsvr32/svchost)", S.HIGH,
          ("T1055", "T1036.005"),
-         _p(r"^\s*(?:\"[^\"]*(?:rundll32|regsvr32|svchost)(?:\.exe)?\"|\S*(?:rundll32|regsvr32|svchost)(?:\.exe)?)\s*$")),
+         # the host name must start at a path boundary: SMSvcHost.exe (.NET) is not svchost.exe
+         _p(r"^\s*(?:\"(?:[^\"]*[\\/])?(?:rundll32|regsvr32|svchost)(?:\.exe)?\"|(?:\S*[\\/])?(?:rundll32|regsvr32|svchost)(?:\.exe)?)\s*$")),
     Rule("REGSVR32-SQUIBLEE", "regsvr32 loading a remote scriptlet (Squiblydoo)", S.HIGH, ("T1218.010",),
          _p(r"\bregsvr32(?:\.exe)?\"?(?=\s)(?=[^\n]*(?:https?://|ftps?://))|"
             r"\bregsvr32(?:\.exe)?\"?(?=\s)(?=[^\n]*\s[-/]i(?::|=|\s))(?=[^\n]*scrobj)")),

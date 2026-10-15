@@ -123,7 +123,7 @@
     "name": "XMRig cryptocurrency miner",
     "severity": "high",
     "category": "malware",
-    "description": "XMRig Monero miner. Frequently installed silently by malware to steal CPU/GPU time (cryptojacking).",
+    "description": "XMRig Monero miner. Frequently installed silently by malware to steal CPU/GPU time (cryptojacking). Requires miner protocol/config evidence (stratum URL or donate-level), not just algorithm names, which security tools' detection lists also contain.",
     "mitre": ["T1496"],
     "file_types": ["pe", "elf", "macho", "script", "text", "other"],
     "strings": {
@@ -133,7 +133,7 @@
       "d": {"text": "cryptonight", "nocase": true},
       "e": {"text": "\"donate-level\""}
     },
-    "condition": "(a and (b or c or d)) or (b and e)"
+    "condition": "(a and (b or e)) or (b and e)"
   },
   {
     "id": "AEG-RAT-STRINGS",

@@ -258,3 +258,16 @@ def test_results_sorted_and_superseded():
 def test_long_input_is_bounded():
     big = "powershell " + "A" * 200000
     assert cl.analyse_command_line(big) == []  # no catastrophic backtracking / crash
+
+
+def test_bare_host_requires_path_boundary():
+    """Real-Windows CI regression: .NET's SMSvcHost.exe is not svchost.exe."""
+    from aegis.core.cmdline import analyse_command_line
+
+    def bare(c):
+        return any(r[0] == "AEG-CMD-BARE-HOST" for r in analyse_command_line(c))
+
+    assert not bare(r"C:\Windows\Microsoft.NET\Framework64\v4.0.30319\SMSvcHost.exe")
+    assert bare(r"C:\Windows\System32\rundll32.exe")
+    assert bare('"C:\\Windows\\system32\\svchost.exe"')
+    assert bare("rundll32.exe")

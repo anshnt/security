@@ -91,7 +91,9 @@ def looks_random(name: str) -> bool:
                 best = max(best, run)
             else:
                 run = 0
-        if ratio < 0.10 or best >= 7 or (len(letters) >= 10 and ratio < 0.20 and best >= 5):
+        # Windows' own names are vowel-poor abbreviations (dnsrslvr, appmgmts, wmpnscfg), so
+        # consonant soup alone needs a long name; callers also skip Windows/Program Files targets.
+        if len(letters) >= 10 and (ratio < 0.10 or (ratio < 0.20 and best >= 6)):
             return True
     if len(low) >= 8:
         trans = sum(1 for a, b in zip(low, low[1:]) if a.isdigit() != b.isdigit())
@@ -303,7 +305,8 @@ def assess_entry(e: Entry, sig_status: Optional[str] = None, scan_findings: Sequ
         reasons.append(Reason(Severity.LOW, f"autostart launches a script host ({host})", "script", ["T1059.005"]))
 
     # 4. random-looking names
-    if typ not in NO_RANDOM_CHECK and not microsoft:
+    trusted_dir = bool(path) and (cl.is_in_windir(path) or cl.is_in_program_files(path))
+    if typ not in NO_RANDOM_CHECK and not microsoft and not trusted_dir:
         leaf = name.rsplit("\\", 1)[-1] if typ == "scheduled_task" else name
         cands = [cl.basename(path)] if path else []
         if typ in ("registry_run", "service", "startup_folder", "scheduled_task"):
@@ -328,7 +331,11 @@ def combined_severity(reasons: Sequence[Reason]) -> Severity:
     if not real:
         return Severity.INFO
     top = max(r.severity for r in real)
-    kinds = {r.kind for r in real if r.kind not in ("missing", "modifier")}
+    # A LOW content-heuristic hint on the target (e.g. high-entropy sections, common in Go/packed
+    # but legitimate binaries) is too weak to stack: it must not turn an unsigned binary in
+    # ProgramData into HIGH. Location + random name (classic dropper pattern) still stacks.
+    kinds = {r.kind for r in real if r.kind not in ("missing", "modifier")
+             and not (r.kind == "scan" and r.severity <= Severity.LOW)}
     evidence_kinds = len(kinds) + (1 if kinds and any(r.kind == "modifier" for r in reasons) else 0)
     if top < Severity.HIGH and evidence_kinds >= 2:
         return Severity(int(top) + 1)
@@ -663,7 +670,8 @@ def collect_lsa() -> List[Entry]:
     return out
 
 
-BOOT_DEFAULT = re.compile(r"^autocheck\s+autochk\s+\*$", re.I)
+# 'autocheck autochk *' plus the standard autochk switches (/q /v /k:C /p /r /x ...) Windows itself sets.
+BOOT_DEFAULT = re.compile(r"^autocheck\s+autochk(?:\s+/[a-z]+(?::\S+)?)*\s+\*$", re.I)
 
 
 def collect_bootexecute() -> List[Entry]:

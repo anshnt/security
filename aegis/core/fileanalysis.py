@@ -285,7 +285,10 @@ def pe_indicators(info: PEInfo, size: int) -> List[Indicator]:
         if packer:
             out.append(Indicator("AEG-H-PE-PACKER", f"Packed with {packer}", Severity.LOW, 15, f"section {s.name}", ["T1027.002"]))
             break
-    high_ent = [s for s in info.sections if s.entropy > 7.2 and s.raw_size > 4096]
+    # Skip resources (compressed icons/images) and COFF long-name sections ("/19", "/32"): the
+    # compressed DWARF debug data Go/MinGW binaries carry - high entropy there is normal.
+    high_ent = [s for s in info.sections if s.entropy > 7.2 and s.raw_size > 4096
+                and s.name.lower() != ".rsrc" and not s.name.startswith("/")]
     if high_ent:
         out.append(Indicator("AEG-H-PE-ENTROPY", "High-entropy (packed/encrypted) sections", Severity.LOW, 15,
                              ", ".join(f"{s.name}={s.entropy}" for s in high_ent), ["T1027.002"]))

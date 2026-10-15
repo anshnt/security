@@ -710,3 +710,34 @@ def test_service_missing_target_only_for_autostart_services():
     auto = ps.service_entry("Old2", {"ImagePath": r"C:\Gone\old.exe", "Type": 0x10, "Start": 2}, {})
     assert sev(manual, exists=lambda p: False) == S.INFO
     assert sev(auto, exists=lambda p: False) == S.LOW
+
+
+def test_weak_scan_hint_does_not_escalate_but_dropper_pattern_does():
+    """Real-Windows CI regression: an unsigned agent in ProgramData (MEDIUM) plus a LOW
+    high-entropy hint must stay MEDIUM, not HIGH."""
+    loc = ps.Reason(S.MEDIUM, "runs from a user-writable location", "location")
+    weak = ps.Reason(S.LOW, "target flagged by scanner: High-entropy sections", "scan")
+    assert ps.combined_severity([loc, weak]) == S.MEDIUM
+    strong = ps.Reason(S.MEDIUM, "target flagged by scanner: Suspicious script", "scan")
+    assert ps.combined_severity([loc, strong]) == S.HIGH
+
+
+def test_windows_service_and_vendor_names_are_not_random():
+    for name in ("dnsrslvr.dll", "appmgmts.dll", "wmpnscfg.exe", "chrmstp.exe"):
+        assert not ps.looks_random(name), name
+    # Service *key* names can be vowel-free ("NgcCtnrSvc"); the target living in System32 clears them.
+    svc = {"type": "service", "location": r"HKLM\SYSTEM\CurrentControlSet\Services\NgcCtnrSvc", "name": "NgcCtnrSvc",
+           "command": r"%SystemRoot%\system32\svchost.exe -k LocalServiceNoNetwork",
+           "path": r"C:\Windows\System32\ngcctnrsvc.dll", "enabled": True,
+           "meta": {"svc_type": 32, "start": 3, "user": "LocalSystem"}}
+    assert not [r for r in assess(svc) if r.kind == "random"]
+    e = run_entry(r"C:\Program Files\Mozilla Firefox\default-browser-agent.exe",
+                  name="Firefox Default Browser Agent 308046B0AF4A39CB")
+    assert not [r for r in assess(e) if r.kind == "random"]
+
+
+def test_bootexecute_default_variants():
+    for v in ("autocheck autochk *", "autocheck autochk /q /v *", "autocheck autochk /k:C *"):
+        assert ps.BOOT_DEFAULT.match(v), v
+    for v in ("autocheck autochk * evil", "autocheck evil.exe *"):
+        assert not ps.BOOT_DEFAULT.match(v), v

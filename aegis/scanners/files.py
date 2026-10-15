@@ -80,6 +80,29 @@ def _yara_matches(ctx: ScanContext, data: bytes) -> List[Tuple[str, dict]]:
         return []
 
 
+_OWN_DATA_HASHES: Optional[frozenset] = None
+
+
+def own_data_hashes() -> frozenset:
+    """SHA-256 of every file Aegis ships in aegis/data. Its rule and YARA files
+    necessarily contain malware strings; the packaged exe unpacks them to
+    %TEMP%\\_MEIxxxx at every launch, where a scan would otherwise flag them.
+    Matching by content (not by path) means malware can't hide by using that path."""
+    global _OWN_DATA_HASHES
+    if _OWN_DATA_HASHES is None:
+        from aegis.core.config import PACKAGE_DATA
+
+        hashes = set()
+        for p in PACKAGE_DATA.rglob("*"):
+            try:
+                if p.is_file():
+                    hashes.add(hashlib.sha256(p.read_bytes()).hexdigest())
+            except OSError:
+                pass
+        _OWN_DATA_HASHES = frozenset(hashes)
+    return _OWN_DATA_HASHES
+
+
 def analyse_bytes(ctx: ScanContext, path: Path, data: bytes, ext: str, location: str, depth: int = 0) -> List[Finding]:
     """Analyse in-memory content. `location` is the display path (may be
     `archive.zip!inner/file.exe`)."""
@@ -87,7 +110,7 @@ def analyse_bytes(ctx: ScanContext, path: Path, data: bytes, ext: str, location:
     sigs = ctx.signatures
     sha256 = hashlib.sha256(data).hexdigest()
     md5 = hashlib.md5(data).hexdigest()
-    if sha256 in {h.lower() for h in ctx.config.allowlist_hashes}:
+    if sha256 in {h.lower() for h in ctx.config.allowlist_hashes} or sha256 in own_data_hashes():
         return []
     remediation = Remediation("quarantine_file", {"path": str(path)}, "Move the file to quarantine") if depth == 0 else \
         Remediation("quarantine_file", {"path": str(path)}, "Quarantine the containing archive")
