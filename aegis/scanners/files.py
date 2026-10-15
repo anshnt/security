@@ -145,6 +145,12 @@ def analyse_bytes(ctx: ScanContext, path: Path, data: bytes, ext: str, location:
     sev = fa.score_to_severity(score)
     if strong:
         sev = max(sev or Severity.HIGH, max(i.severity for i in strong))
+    elif kind != "pe":
+        # Script/document indicators are specific (a download cradle is never
+        # incidental), unlike PE import combos which legitimate tools share.
+        notable = [i for i in inds if i.severity >= Severity.MEDIUM]
+        if notable:
+            sev = max(sev or Severity.MEDIUM, max(i.severity for i in notable))
     # Already detected by a signature/rule: heuristics only enrich evidence.
     if findings:
         findings[0].evidence["heuristics"] = [f"{i.rule_id}: {i.title}" for i in inds if i.score > 0]
