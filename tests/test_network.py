@@ -104,6 +104,44 @@ def test_tor_detection():
     assert all(x.rule_id == "AEG-NET-TOR" and x.severity == S.MEDIUM for x in f)
 
 
+def test_collect_connections_falls_back_to_each_process_when_the_system_list_is_denied(monkeypatch):
+    """Real macOS CI as a normal user: net_connections() raised AccessDenied, and the per-process fallback failed with
+    "Got unexpected field names: ['pid']" because a process's own connections (pconn) have no pid field."""
+    import collections
+
+    import psutil
+
+    addr = collections.namedtuple("addr", "ip port")
+    pconn = collections.namedtuple("pconn", "fd family type laddr raddr status")  # psutil's per-process tuple: no pid
+
+    def denied(kind="inet"):
+        raise psutil.AccessDenied(pid=1)
+
+    class Proc:
+        def __init__(self, pid, conns=None, deny=False):
+            self.pid, self._conns, self._deny = pid, conns or [], deny
+
+        def net_connections(self, kind="inet"):
+            if self._deny:
+                raise psutil.AccessDenied(pid=self.pid)
+            return self._conns
+
+        def name(self):
+            return {4242: "curl", 4343: "sshd"}.get(self.pid, "other")
+
+        def exe(self):
+            return "/usr/bin/" + self.name()
+
+    procs = [Proc(4242, [pconn(5, 2, 1, addr("10.0.0.5", 50000), addr("45.9.148.10", 443), "ESTABLISHED")]),
+             Proc(4343, deny=True), Proc(os.getpid(), [pconn(6, 2, 1, addr("127.0.0.1", 1), addr("127.0.0.1", 2), "NONE")])]
+    monkeypatch.setattr(psutil, "net_connections", denied)
+    monkeypatch.setattr(psutil, "process_iter", lambda attrs=None: procs)
+    monkeypatch.setattr(psutil, "Process", lambda pid: next(p for p in procs if p.pid == pid))
+    conns, warning = nw.collect_connections()
+    assert "limited visibility" in warning
+    assert [(c.pid, c.name, c.raddr, c.rport, c.status) for c in conns] == [(4242, "curl", "45.9.148.10", 443, "ESTABLISHED")]
+
+
 def test_collect_connections_live():
     conns, warning = nw.collect_connections()
     assert isinstance(conns, list)

@@ -13,7 +13,6 @@ from aegis.core.models import CheckResult, CheckStatus, Finding, Severity
 from aegis.scanners import system_audit as sa
 
 TODAY = dt.date(2026, 10, 15)
-posix_only = pytest.mark.skipif(os.name == "nt", reason="needs a POSIX shell")
 linux_only = pytest.mark.skipif(not sys.platform.startswith("linux"), reason="needs a Linux /proc and /sys")
 
 HEALTHY_SYSCTL = {
@@ -184,7 +183,7 @@ def test_sysctl_fix_is_a_fixed_shell_command_with_the_persistent_dropin(tmp_path
     assert "kernel.kptr_restrict" in f.remediation.description and f.remediation.description.endswith("every reboot")
 
 
-@posix_only
+@pytest.mark.skipif(not sys.platform.startswith("linux"), reason="the fix only runs on Linux, whose sed -i is GNU sed")
 def test_sysctl_fix_script_persists_replaces_and_repeats(tmp_path, monkeypatch):
     dropin = tmp_path / "sysctl.d" / "61-test.conf"
     dropin.parent.mkdir()

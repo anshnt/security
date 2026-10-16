@@ -95,23 +95,23 @@ def collect_connections() -> Tuple[List[ConnInfo], Optional[str]]:
     import psutil
 
     warning: Optional[str] = None
-    raw: List[Any] = []
+    raw: List[Tuple[int, Any]] = []  # (owning pid, connection)
     try:
-        raw = list(psutil.net_connections(kind="inet"))
+        raw = [(c.pid or 0, c) for c in psutil.net_connections(kind="inet")]
     except (psutil.AccessDenied, PermissionError):
+        # macOS (and hardened Linux) refuse the system-wide list to a normal user. A process's own list has no pid
+        # field (psutil's pconn tuple), so the owner is carried next to it.
         warning = "limited visibility (run as Administrator/root to see all processes' connections)"
         for p in psutil.process_iter(["pid"]):
             try:
                 fn = getattr(p, "net_connections", None) or p.connections
-                for c in fn(kind="inet"):
-                    raw.append(c._replace(pid=p.pid) if hasattr(c, "_replace") else c)
-            except (psutil.AccessDenied, psutil.NoSuchProcess, psutil.ZombieProcess):
+                raw += [(p.pid, c) for c in fn(kind="inet")]
+            except (psutil.AccessDenied, psutil.NoSuchProcess, psutil.ZombieProcess, PermissionError):
                 continue
     names: Dict[int, Tuple[str, str]] = {}
     out: List[ConnInfo] = []
     me = os.getpid()
-    for c in raw:
-        pid = c.pid or 0
+    for pid, c in raw:
         if pid == me:
             continue
         if pid and pid not in names:
