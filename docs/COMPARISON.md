@@ -19,6 +19,8 @@ be honest, because a security tool that overstates what it does is a risk in its
 | Second-opinion engines (Defender MpCmdRun + VirusTotal) | ✅ | – | ❌ | ❌ | 🟡 VT | ❌ | ❌ |
 | Process analysis (masquerading, typosquats, parent/child chains, miners, RATs) | ✅ | ✅ (behaviour) | ✅ | ✅ | 🟡 manual | ❌ | ❌ |
 | Autostart / persistence audit (Run keys, tasks, services, WMI, IFEO, LSA, COM) | ✅ | 🟡 | 🟡 | 🟡 | ✅ (manual review) | 🟡 | ❌ |
+| Linux PAM backdoor / motd / generator persistence (`pam_exec`, `pam_permit`, unpackaged PAM modules, `update-motd.d`, systemd generators, at jobs) | ✅ | 🟡 (Defender for Endpoint 💲) | ❌ | 🟡 EDR 💲 | ❌ | ❌ | ❌ |
+| macOS login hooks, emond rules, periodic scripts, authorization plugins | ✅ | 🟡 (Defender for Endpoint 💲) | 🟡 | 🟡 EDR 💲 | ❌ | ❌ | ❌ |
 | Browser extension risk scoring + known-malicious extension IDs | ✅ | ❌ | 🟡 Browser Guard | 🟡 | ❌ | 🟡 | ❌ |
 | Browser hijack detection (search/homepage/policy/proxy/notification spam) | ✅ | ❌ | ✅ | 🟡 | ❌ | ✅ | ❌ |
 | PUP / adware / scareware detection | ✅ | 🟡 (PUA opt-in) | ✅ | ✅ | ❌ | ✅ | ❌ |

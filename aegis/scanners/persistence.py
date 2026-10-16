@@ -13,16 +13,22 @@ scheduled tasks (XML) and tasks hidden from Task Scheduler (TaskCache entries
 without a security descriptor), services & drivers, WMI event subscriptions,
 COM hijacks, Office add-ins, Active Setup, logon scripts, screensavers.
 Linux/macOS: cron, systemd, rc.local, shell rc files, ld.so.preload, ssh keys,
-udev, XDG autostart, launchd.
+udev, XDG autostart, launchd, PAM rules and modules, update-motd scripts, systemd
+generators and at jobs; macOS also periodic scripts, emond rules, authorization
+plugins and login/logout hooks.
 """
 
 from __future__ import annotations
 
+import functools
 import hashlib
+import itertools
 import logging
 import os
 import plistlib
+import posixpath
 import re
+import shutil
 import xml.etree.ElementTree as ET
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -31,7 +37,7 @@ from typing import Any, Callable, Dict, Iterable, List, Optional, Sequence, Set,
 from aegis.core import cmdline as cl
 from aegis.core.models import Category, CheckResult, CheckStatus, Finding, Remediation, Severity
 from aegis.core.platform import (IS_MAC, IS_WINDOWS, as_list, powershell_json, reg_read, reg_subkeys,
-                                 reg_values, user_home, windows_dir)
+                                 reg_values, run, user_home, windows_dir)
 from aegis.scanners.base import ScanContext, Scanner, register
 
 log = logging.getLogger("aegis.persistence")
@@ -212,8 +218,16 @@ TYPE_INFO: Dict[str, Tuple[str, str, List[str]]] = {
     "udev": ("AEG-PERS-UDEV", "udev RUN rule", ["T1546.017"]),
     "xdg_autostart": ("AEG-PERS-XDG", "Desktop autostart entry", ["T1547.013"]),
     "launchd": ("AEG-PERS-LAUNCHD", "launchd job", ["T1543.001", "T1543.004"]),
+    "pam": ("AEG-PERS-PAM", "PAM rule or module", ["T1556.003"]),
+    "motd": ("AEG-PERS-MOTD", "update-motd script", ["T1037"]),
+    "systemd_generator": ("AEG-PERS-GENERATOR", "systemd generator", ["T1543.002"]),
+    "at_job": ("AEG-PERS-ATJOB", "at job", ["T1053.002"]),
+    "periodic": ("AEG-PERS-PERIODIC", "macOS periodic script", ["T1053.003"]),
+    "emond": ("AEG-PERS-EMOND", "emond rule", ["T1546.014"]),
+    "auth_plugin": ("AEG-PERS-AUTHPLUGIN", "macOS authorization plugin", ["T1556"]),
+    "login_hook": ("AEG-PERS-LOGINHOOK", "macOS login/logout hook", ["T1037.002"]),
 }
-TEXT_TYPES = {"cron_script", "rc_local", "shell_rc"}
+TEXT_TYPES = {"cron_script", "rc_local", "shell_rc", "motd", "at_job", "periodic"}
 NO_MISSING_CHECK = TEXT_TYPES | {"ifeo", "silentprocessexit", "wmi_subscription", "ssh_key", "ld_preload", "winlogon",
                                  "lsa", "bootexecute", "dll_hook", "com_hijack"}
 NO_RANDOM_CHECK = TEXT_TYPES | {"ssh_key", "ld_preload", "lsa", "winlogon", "bootexecute", "ifeo", "silentprocessexit",
@@ -1366,10 +1380,23 @@ class LinuxPaths:
     etc: Path = Path("/etc")
     spool: Tuple[Path, ...] = (Path("/var/spool/cron"), Path("/var/spool/cron/crontabs"))
     homes: Tuple[Path, ...] = ()
+    root: Optional[Path] = None  # where absolute locations (/usr/lib, /var/spool ...) live; default: the parent of etc
 
     def __post_init__(self) -> None:
         if not self.homes:
             self.homes = tuple(discover_homes())
+        if self.root is None:
+            self.root = Path("/") if self.etc == Path("/etc") else self.etc.parent
+
+    @property
+    def is_real(self) -> bool:
+        return self.root is None or self.root == Path("/")
+
+    def at(self, logical: str) -> Path:
+        """Where an absolute location such as /usr/lib/security lives in this tree (itself on a real system)."""
+        if logical == "/etc" or logical.startswith("/etc/"):
+            return self.etc / logical[5:]
+        return (self.root or Path("/")) / logical.lstrip("/")
 
 
 def discover_homes() -> List[Path]:
@@ -1682,6 +1709,444 @@ def collect_xdg_autostart(paths: LinuxPaths) -> List[Entry]:
     return out
 
 
+# --------------------------------------------------------------------------- Linux / macOS: PAM, motd, generators, at
+
+MAX_DIR_ENTRIES = 1000
+MAX_PAM_MODULES = 500
+
+
+def _dir_files(d: Path) -> List[Path]:
+    """Files (and dangling links) directly inside *d*, sorted and capped; [] when it is missing or unreadable."""
+    try:
+        return sorted(p for p in itertools.islice(d.iterdir(), MAX_DIR_ENTRIES) if not p.is_dir())
+    except OSError:
+        return []
+
+
+def _text_digest(text: str) -> str:
+    return "sha1:" + hashlib.sha1(text.encode("utf-8", "replace")).hexdigest()
+
+
+def _is_exec(p: Path) -> bool:
+    try:
+        return bool(p.stat().st_mode & 0o111)
+    except OSError:
+        return False
+
+
+def _is_mask(p: Path) -> bool:
+    """A symlink to /dev/null: how systemd (and run-parts users) switch a file off without deleting it."""
+    try:
+        return p.is_symlink() and os.readlink(p) == "/dev/null"
+    except OSError:
+        return False
+
+
+def _join_args(args: Sequence[str]) -> str:
+    return " ".join(f'"{a}"' if " " in a else a for a in args)
+
+
+def _script_entries(files: Iterable[Path], type_: str, require_exec: bool = True) -> List[Entry]:
+    """Script files whose *content* is judged (TEXT_TYPES); a file that is not executable is listed but not run."""
+    out = []
+    for f in files:
+        text = None if _is_mask(f) else _read_text(f)
+        if text is not None:
+            out.append(make_entry(type_, str(f.parent), f.name, _text_digest(text), path=str(f),
+                                  enabled=_is_exec(f) or not require_exec, text=text))
+    return out
+
+
+def collect_motd(paths: LinuxPaths) -> List[Entry]:
+    """/etc/update-motd.d: run-parts executes these as root on every SSH/console login (pam_motd)."""
+    return _script_entries(_dir_files(paths.etc / "update-motd.d"), "motd")
+
+
+GENERATOR_DIRS = tuple(f"{base}/{kind}-generators" for kind in ("system", "user")
+                       for base in ("/etc/systemd", "/usr/local/lib/systemd", "/run/systemd"))
+
+
+def collect_generators(paths: LinuxPaths) -> List[Entry]:
+    """systemd generators outside the distribution directories (/usr/lib, /lib are package-owned and not listed).
+
+    systemd runs every executable in these directories as root, before any unit, and lets it write units at will;
+    distributions do not ship anything there, so every entry is at least LOW. A symlink to /dev/null is a mask."""
+    out = []
+    for logical in GENERATOR_DIRS:
+        d = paths.at(logical)
+        for f in _dir_files(d):
+            if _is_mask(f):
+                continue
+            target = os.path.realpath(f) if f.is_symlink() else str(f)
+            reasons = [meta_reason(Severity.LOW, f"systemd generator in {logical}: it runs as root before any service starts and "
+                                                 "can create units; distributions do not ship generators here", ["T1543.002"])]
+            out.append(make_entry("systemd_generator", str(d), f.name, str(f), path=target, enabled=_is_exec(f), reasons=reasons))
+    return out
+
+
+AT_SPOOLS = ("/var/spool/cron/atjobs", "/var/spool/at", "/var/spool/atjobs", "/usr/lib/cron/jobs")
+
+
+def collect_at_jobs(paths: LinuxPaths) -> List[Entry]:
+    """Pending at(1) jobs: each file is a shell script that atd runs once (Linux spools; macOS /usr/lib/cron/jobs)."""
+    out: List[Entry] = []
+    seen: Set[str] = set()
+    for logical in AT_SPOOLS:
+        d = paths.at(logical)
+        real = os.path.realpath(d)
+        if real not in seen:
+            seen.add(real)
+            out += _script_entries((f for f in _dir_files(d) if f.name != ".SEQ"), "at_job", require_exec=False)
+    return out
+
+
+# PAM ------------------------------------------------------------------------
+
+@dataclass
+class PamRule:
+    stack: str  # auth | account | password | session; "*" for an @include of a whole file
+    control: str  # required | requisite | sufficient | optional | include | substack | [value=action ...] | @include
+    module: str  # module name or path; for include/substack/@include the pam.d file to pull in
+    args: str
+    service: str  # the /etc/pam.d file the line is in
+    dash: bool = False  # `-session ...`: do not log a missing module
+
+
+_PAM_RULE = re.compile(r"^(?P<dash>-)?(?P<stack>auth|account|password|session)\s+(?P<control>\[[^\]]*\]|\S+)\s+(?P<module>\S+)"
+                       r"\s*(?P<args>.*)$", re.I)
+
+
+def parse_pam_conf(text: str, service: str = "") -> List[PamRule]:
+    """Rules of one /etc/pam.d file: ``[-]type control module [args]`` (control may be ``[success=1 default=ignore]``)
+    and Debian's ``@include name``. Comments and blank lines are dropped, backslash continuations joined."""
+    out = []
+    for line in logical_lines(text):
+        line = re.split(r"\s#", line, maxsplit=1)[0].strip()
+        if line.startswith("@include"):
+            parts = line.split()
+            if len(parts) >= 2:
+                out.append(PamRule("*", "@include", parts[1], "", service))
+            continue
+        m = _PAM_RULE.match(line)
+        if m:
+            out.append(PamRule(m.group("stack").lower(), m.group("control"), m.group("module"), " ".join(m.group("args").split()),
+                               service, bool(m.group("dash"))))
+    return out
+
+
+# What `required`, `requisite`, `sufficient` and `optional` mean as [value=action] tables (pam.conf(5)).
+_PAM_SIMPLE: Dict[str, Dict[str, str]] = {
+    "required": {"success": "ok", "new_authtok_reqd": "ok", "ignore": "ignore", "default": "bad"},
+    "requisite": {"success": "ok", "new_authtok_reqd": "ok", "ignore": "ignore", "default": "die"},
+    "sufficient": {"success": "done", "new_authtok_reqd": "done", "default": "ignore"},
+    "optional": {"success": "ok", "new_authtok_reqd": "ok", "default": "ignore"},
+}
+# Modules that never check a credential and succeed for any ordinary login attempt (gates, environment, bookkeeping).
+_PAM_NEUTRAL = frozenset({
+    "pam_env", "pam_faildelay", "pam_nologin", "pam_limits", "pam_keyinit", "pam_umask", "pam_motd", "pam_mail", "pam_lastlog",
+    "pam_lastlog2", "pam_loginuid", "pam_selinux", "pam_systemd", "pam_succeed_if", "pam_access", "pam_time", "pam_securetty",
+    "pam_shells", "pam_listfile", "pam_group", "pam_cap", "pam_namespace", "pam_xauth", "pam_echo", "pam_warn", "pam_issue",
+    "pam_tty_audit", "pam_localuser", "pam_usertype", "pam_faillock", "pam_tally", "pam_tally2", "pam_gnome_keyring",
+    "pam_kwallet", "pam_kwallet5", "pam_ecryptfs", "pam_mount", "pam_console", "pam_sepermit", "pam_launchd", "pam_uwtmp"})
+# Interactive login services whose auth stack must be able to say no (autologin, greeter and system-services stacks
+# legitimately consist of pam_permit.so alone, Arch's system-services even has `auth sufficient pam_permit.so`).
+PAM_LOGIN_SERVICES = ("common-auth", "system-auth", "password-auth", "sshd", "sudo", "sudo-i", "login", "su", "su-l", "other",
+                      "system-login", "system-local-login", "system-remote-login")
+
+
+def _pam_stem(module: str) -> str:
+    """pam_unix for pam_unix.so, /lib/security/pam_unix.so and pam_unix.so.2 alike."""
+    return re.sub(r"\.so(?:\.\d+)*$", "", cl.basename(module).lower())
+
+
+def pam_control_actions(control: str) -> Dict[str, str]:
+    """{return code: action} of a simple or ``[value=action ...]`` control; "default" covers every other code."""
+    c = control.strip()
+    if not c.startswith("["):
+        return _PAM_SIMPLE.get(c.lower(), _PAM_SIMPLE["required"])
+    acts = {k.lower(): v.lower() for k, _, v in (tok.partition("=") for tok in c.strip("[]").split()) if v}
+    acts.setdefault("default", "bad")
+    return acts
+
+
+def pam_stack(service: str, stack: str, load: Callable[[str], Optional[List[PamRule]]], depth: int = 0) -> List[Any]:
+    """The *stack* rules that apply to *service*: ``@include`` and ``include`` inlined, ``substack`` kept as a nested list."""
+    out: List[Any] = []
+    for r in load(service) or []:
+        control = r.control.lower()
+        if r.control == "@include" or (r.stack == stack and control in ("include", "substack")):
+            if depth < 8:  # include loops
+                sub = pam_stack(r.module, stack, load, depth + 1)
+                if control == "substack":
+                    out.append(sub)
+                else:
+                    out += sub
+        elif r.stack == stack:
+            out.append(r)
+    return out
+
+
+def pam_stack_passes(items: Sequence[Any], trace: List[PamRule]) -> bool:
+    """Replay a stack (from pam_stack) as Linux-PAM evaluates it for someone who knows no credential.
+
+    pam_permit.so and the modules in _PAM_NEUTRAL succeed, every other module fails. Returns True when the stack still
+    lets that person in; the pam_permit.so rules that contributed to the success are appended to *trace*."""
+    impression, status = "undef", "fail"
+    i = 0
+    while i < len(items):
+        item = items[i]
+        i += 1
+        rule: Optional[PamRule] = None
+        if isinstance(item, list):  # a substack counts as one `required` module
+            retval, acts = ("success" if pam_stack_passes(item, trace) else "auth_err"), _PAM_SIMPLE["required"]
+        else:
+            rule, stem = item, _pam_stem(item.module)
+            retval = "success" if stem == "pam_permit" or stem in _PAM_NEUTRAL else "auth_err"
+            acts = pam_control_actions(item.control)
+        action = acts.get(retval, acts["default"])
+        if action == "ignore":
+            continue
+        if action == "reset":
+            impression, status = "undef", "fail"
+        elif action in ("bad", "die"):
+            if impression != "neg":
+                impression, status = "neg", "fail"
+            if action == "die":
+                return False
+        elif action in ("ok", "done") or action.isdigit():  # a number is ok plus skipping that many modules
+            if impression == "undef" or (impression == "pos" and status == "success"):
+                impression, status = "pos", retval
+                if rule is not None and _pam_stem(rule.module) == "pam_permit":
+                    trace.append(rule)
+            if action == "done" and impression == "pos":
+                return status == "success"
+            if action.isdigit():
+                i += int(action)
+    return impression == "pos" and status == "success"
+
+
+def pam_bypass_rules(services: Dict[str, List[PamRule]]) -> Dict[int, Tuple[PamRule, Set[str]]]:
+    """pam_permit.so lines that let anyone through the auth stack of a login service: {id(rule): (rule, services)}.
+
+    pam_permit.so always succeeds, so its presence proves nothing: every Debian/Ubuntu common-auth ends in
+    ``auth required pam_permit.so``, Arch's system-auth has ``auth optional pam_permit.so``. What matters is whether the
+    stack can still say no. Each service in PAM_LOGIN_SERVICES is therefore replayed (pam_stack_passes) for someone who
+    knows no credential, with the real control semantics (bracket actions, jumps, done/die, includes, substack).
+    Debian's ``[success=1 default=ignore] pam_unix.so`` / ``requisite pam_deny.so`` / ``required pam_permit.so`` fails at
+    pam_deny, Red Hat's ``sufficient pam_unix.so`` ... ``required pam_deny.so`` fails at pam_deny, Arch's ends in
+    ``[default=die] pam_faillock.so authfail``: none of the defaults is reported. A pam_permit.so line is reported only
+    when the replay *succeeds* and that line contributed to it: ``auth sufficient pam_permit.so`` anywhere before the real
+    modules, or a stack whose last word is ``pam_permit.so`` with nothing that can fail after the credential check
+    (``sufficient pam_unix.so`` followed by ``required pam_permit.so``, ``optional pam_unix.so`` ...)."""
+
+    def load(name: str) -> Optional[List[PamRule]]:
+        return services.get(posixpath.basename(name))
+
+    found: Dict[int, Tuple[PamRule, Set[str]]] = {}
+    for service in PAM_LOGIN_SERVICES:
+        trace: List[PamRule] = []
+        if service in services and pam_stack_passes(pam_stack(service, "auth", load), trace):
+            for r in trace:
+                found.setdefault(id(r), (r, set()))[1].add(service)
+    return found
+
+
+# Where a module can sit without raising a question: /lib*/security, /usr/lib*/security, /lib/*/security,
+# /usr/lib/*/security, macOS /usr/lib/pam and the immutable Nix/Guix stores that NixOS writes into pam.d.
+_PAM_STD_DIR = re.compile(r"^(?:/usr)?/lib(?:32|64|x32)?(?:/[^/]+)?/security$|^/usr/lib/pam$"
+                          r"|^/(?:nix|gnu)/store/[^/]+/lib/security$|^/run/current-system/sw/lib/security$")
+_PAM_EXEC_OPTIONS = ("debug", "expose_authtok", "seteuid", "quiet", "quiet_log", "stdout")
+
+
+def pam_exec_command(args: str) -> str:
+    """The program (and its arguments) a pam_exec.so line runs: the arguments minus pam_exec's own options."""
+    toks = args.split()
+    while toks and (toks[0] in _PAM_EXEC_OPTIONS or toks[0].startswith(("log=", "type="))):
+        toks.pop(0)
+    return " ".join(toks)
+
+
+def risky_unix_path(path: str, real: Optional[Path] = None) -> bool:
+    """A place a root-run program should not live: temp dirs, hidden dirs, home folders, anything world-writable.
+
+    *real* is where the path is on disk (differs from *path* only in a test tree); its mode is checked too."""
+    if path.startswith("~") or cl.path_risk(path) > 0 or path.startswith(("/home/", "/root/", "/Users/")):
+        return True
+    if re.search(r"/\.[^/.]", path):
+        return True
+    for p in (real, real.parent if real else None):
+        try:
+            if p is not None and p.stat().st_mode & 0o002:
+                return True
+        except OSError:
+            pass
+    return False
+
+
+@functools.lru_cache(maxsize=1)
+def _package_tool() -> Optional[str]:
+    """"dpkg" or "rpm" when that tool is installed and its database answers (probed once with the tool's own binary)."""
+    for tool in ("dpkg", "rpm"):
+        exe = shutil.which(tool)
+        if exe and _query_owned(tool, exe, [exe]):
+            return tool
+    return None
+
+
+def _path_variants(path: str) -> Set[str]:
+    """The spellings a package database may know a file under (/lib vs /usr/lib on merged-/usr systems, symlinks)."""
+    out = {path, os.path.realpath(path)}
+    for p in list(out):
+        if p.startswith("/usr/") and p[4:].startswith(("/lib", "/bin", "/sbin")):
+            out.add(p[4:])
+        elif p.startswith(("/lib", "/bin", "/sbin")):
+            out.add("/usr" + p)
+    return out
+
+
+def _query_owned(tool: str, exe: str, files: Sequence[str]) -> Optional[Set[str]]:
+    """Subset of *files* that *tool* says belong to a package (one batched query); None when it cannot answer."""
+    variants = {f: _path_variants(f) for f in files}
+    flat = sorted(set().union(*variants.values()))
+    if tool == "dpkg":
+        rc, out, _err = run([exe, "-S", "--"] + flat, timeout=20)
+        if rc not in (0, 1):  # 1 = some paths are not owned
+            return None
+        lines = [ln for ln in out.splitlines() if ": /" in ln and not ln.startswith("diversion")]
+        found = {"/" + ln.rpartition(": /")[2] for ln in lines}
+    else:
+        rc, out, _err = run([exe, "-qf", "--qf", "%{NAME}\\n", "--"] + flat, timeout=20)
+        if rc == -1 or not out.strip():
+            return None
+        found = set(flat) - set(re.findall(r"^file (.+) is not owned by any package$", out, re.M))
+    return {f for f, names in variants.items() if names & found}
+
+
+_OWNED_CACHE: Dict[Tuple[str, int], bool] = {}
+
+
+def package_owned(files: Sequence[str]) -> Optional[Set[str]]:
+    """Which of *files* are installed by a dpkg/rpm package. One batched query for the files not asked about before
+    (the real-time guard polls); None - the check is skipped silently - without a usable dpkg or rpm."""
+    tool = _package_tool()
+    exe = shutil.which(tool) if tool else None
+    if not tool or not exe:
+        return None
+
+    def key(f: str) -> Tuple[str, int]:
+        try:
+            return f, os.stat(f).st_mtime_ns
+        except OSError:
+            return f, 0
+
+    todo = [f for f in files if key(f) not in _OWNED_CACHE]
+    if todo:
+        found = _query_owned(tool, exe, todo)
+        if found is None:
+            return None
+        for f in todo:
+            _OWNED_CACHE[key(f)] = f in found
+    return {f for f in files if _OWNED_CACHE.get(key(f))}
+
+
+def pam_module_files(paths: LinuxPaths) -> List[Path]:
+    """Module files (*.so) of the standard PAM module directories, every real directory once (capped)."""
+    dirs: List[Path] = []
+    for base in ("/lib", "/usr/lib"):
+        dirs += [paths.at(f"{base}{suffix}/security") for suffix in ("", "32", "64", "x32")]
+        try:
+            dirs += sorted(paths.at(base).glob("*/security"))
+        except OSError:
+            pass
+    dirs.append(paths.at("/usr/lib/pam"))
+    seen: Set[str] = set()
+    out: List[Path] = []
+    for d in dirs:
+        real = os.path.realpath(d)
+        if real not in seen and d.is_dir():
+            seen.add(real)
+            out += [f for f in _dir_files(d) if re.search(r"\.so(?:\.\d+)*$", f.name)]
+    return out[:MAX_PAM_MODULES]
+
+
+# Homebrew PAM modules that macOS users add on purpose by absolute path: pam_reattach (Touch ID inside tmux / screen) and
+# pam_watchid (Apple Watch for sudo). Still reported, at LOW, because the Homebrew prefix is writable by its owner.
+KNOWN_EXTRA_PAM_MODULES = frozenset({"pam_reattach", "pam_watchid"})
+
+
+def collect_pam(paths: LinuxPaths, owned: Optional[Callable[[Sequence[str]], Optional[Set[str]]]] = None) -> List[Entry]:
+    """PAM backdoors: a rule or module that runs code or decides logins for every sshd/login/su/sudo session.
+
+    Listed (and judged) are only the notable lines of /etc/pam.d, not the whole configuration:
+    * ``pam_exec.so`` - runs a program on every login; the program is recorded. HIGH when it sits in a temp, hidden, home
+      or world-writable location, MEDIUM otherwise (the stock Debian, Ubuntu, Fedora and Arch login stacks do not use it).
+    * a module given by absolute path outside the standard module directories (_PAM_STD_DIR): MEDIUM, HIGH in such a place.
+    * a ``pam_permit.so`` line that lets anyone through the auth stack of a login service: HIGH (see pam_bypass_rules).
+    * a module file in the standard directories that no package owns: MEDIUM when a PAM rule loads it, else LOW. Needs
+      dpkg or rpm; *owned* (default: package_owned, only on a real root) returns the owned subset or None to skip the check."""
+    out: List[Entry] = []
+    services: Dict[str, List[PamRule]] = {}
+    files: Dict[str, Path] = {}
+    for f in _dir_files(paths.etc / "pam.d"):
+        text = _read_text(f)
+        if text is not None:
+            services[f.name], files[f.name] = parse_pam_conf(text, f.name), f
+    bypass = pam_bypass_rules(services)
+    referenced: Dict[str, Set[str]] = {}
+    for service, rules in services.items():
+        seen: Dict[str, int] = {}
+        for r in rules:
+            if r.stack == "*" or r.control.lower() in ("include", "substack"):
+                continue
+            stem = _pam_stem(r.module)
+            referenced.setdefault(stem, set()).add(service)
+            reasons: List[Dict[str, Any]] = []
+            command, path = f"{r.control} {r.module} {r.args}".strip(), ""
+            if r.module.startswith("/"):
+                path = r.module
+                if not _PAM_STD_DIR.match(posixpath.dirname(posixpath.normpath(r.module))):
+                    known = stem in KNOWN_EXTRA_PAM_MODULES
+                    sev = (Severity.HIGH if risky_unix_path(r.module, paths.at(r.module))
+                           else Severity.LOW if known else Severity.MEDIUM)
+                    reasons.append(meta_reason(sev, f"{r.module} is loaded by the {r.stack} stack of {service} from outside the "
+                                                    "standard PAM module directories"
+                                                    + (" (a known Homebrew module: check that you installed it)" if known else ""),
+                                               ["T1556.003"]))
+            if stem == "pam_exec":
+                command = pam_exec_command(r.args)
+                path = posix_target(command)
+                where = [t for t in command.split() if t.startswith(("/", "~", "./"))]
+                risky = any(risky_unix_path(t, paths.at(t) if t.startswith("/") else None) for t in where)
+                note = " (hands it the user's password: expose_authtok)" if "expose_authtok" in r.args.split() else ""
+                reasons.append(meta_reason(
+                    Severity.HIGH if risky else Severity.MEDIUM,
+                    f"pam_exec.so runs {command[:100] or 'a program'} in the {r.stack} stack of {service}{note}"
+                    + (", from a temporary, hidden, home or world-writable location" if risky else ""), ["T1556.003"]))
+            if id(r) in bypass:
+                names = ", ".join(sorted(bypass[id(r)][1]))
+                reasons.append(meta_reason(Severity.HIGH, f"pam_permit.so lets anyone pass the auth stack of {names}: nothing "
+                                                          "after it can reject a wrong password", ["T1556.003"]))
+            if reasons:
+                base = f"{r.stack} {posixpath.basename(r.module)}"
+                seen[base] = seen.get(base, 0) + 1
+                out.append(make_entry("pam", str(files[service]), base if seen[base] == 1 else f"{base} #{seen[base]}", command,
+                                      path=path, reasons=reasons, rule=f"{r.stack} {r.control} {r.module} {r.args}".strip()))
+    modules = pam_module_files(paths)
+    if owned is None:  # a test tree has no package database of its own
+        owned = package_owned if paths.is_real else (lambda _files: None)
+    owners = owned([str(f) for f in modules]) if modules else None
+    if owners is not None:
+        for f in modules:
+            if str(f) in owners:
+                continue
+            users = referenced.get(_pam_stem(f.name))
+            text = (f"{f.name} is used by the PAM stack of {', '.join(sorted(users))} but no package installed it" if users else
+                    f"{f.name} sits in a PAM module directory but no package installed it")
+            out.append(make_entry("pam", str(f.parent), f.name, str(f), path=str(f),
+                                  reasons=[meta_reason(Severity.MEDIUM if users else Severity.LOW, text, ["T1556.003"])]))
+    return out
+
+
 def parse_launchd_plist(data: bytes) -> Dict[str, Any]:
     pl = plistlib.loads(data)
     args = pl.get("ProgramArguments") or ([pl["Program"]] if pl.get("Program") else [])
@@ -1721,6 +2186,121 @@ def collect_launchd(dirs: Optional[Sequence[Path]] = None) -> List[Entry]:
     return out
 
 
+PERIODIC_DIRS = ("/etc/periodic", "/usr/local/etc/periodic")
+PERIODIC_LOCAL = ("/etc/daily.local", "/etc/weekly.local", "/etc/monthly.local")
+
+
+def collect_periodic(paths: LinuxPaths) -> List[Entry]:
+    """macOS periodic(8) scripts: launchd runs everything in /etc/periodic/{daily,weekly,monthly} (and the same folders
+    under /usr/local/etc/periodic) as root, and the stock 999.local scripts run /etc/{daily,weekly,monthly}.local.
+    The stock scripts are only inventoried; like any script their content is judged."""
+    out: List[Entry] = []
+    for logical in PERIODIC_DIRS:
+        try:
+            subdirs = sorted(p for p in itertools.islice(paths.at(logical).iterdir(), MAX_DIR_ENTRIES) if p.is_dir())
+        except OSError:
+            continue
+        for d in subdirs:
+            out += _script_entries(_dir_files(d), "periodic")
+    return out + _script_entries([paths.at(p) for p in PERIODIC_LOCAL if paths.at(p).is_file()], "periodic", require_exec=False)
+
+
+def parse_emond_rules(data: bytes) -> List[Dict[str, Any]]:
+    """The RunCommand actions of an emond rules plist (a list of rules, each with eventTypes and actions)."""
+    pl = plistlib.loads(data)
+    out = []
+    for rule in pl if isinstance(pl, list) else []:
+        if not isinstance(rule, dict):
+            continue
+        for act in rule.get("actions") or []:
+            if isinstance(act, dict) and str(act.get("type", "")).lower() == "runcommand" and act.get("command"):
+                out.append({"rule": str(rule.get("name", "")), "enabled": rule.get("enabled", True) is not False,
+                            "events": [str(e) for e in rule.get("eventTypes") or []], "user": str(act.get("user", "")),
+                            "args": [str(act["command"])] + [str(a) for a in act.get("arguments") or []]})
+    return out
+
+
+def collect_emond(paths: LinuxPaths) -> List[Entry]:
+    """macOS emond (removed in macOS 13, shipped without rules before): each enabled RunCommand rule in
+    /etc/emond.d/rules runs a command as root on a system event, and a file in /private/var/db/emondClients is what
+    wakes emond up. Both are unusual, so an enabled rule is MEDIUM and a client file LOW."""
+    out: List[Entry] = []
+    rules = paths.at("/etc/emond.d/rules")
+    try:
+        plists = sorted(rules.glob("*.plist"))
+    except OSError:
+        plists = []
+    for f in plists:
+        try:
+            actions = parse_emond_rules(f.read_bytes())
+        except Exception as exc:
+            log.debug("bad emond rules %s: %s", f, exc)
+            continue
+        seen: Dict[str, int] = {}
+        for a in actions:
+            name = a["rule"] or f.stem
+            seen[name] = seen.get(name, 0) + 1
+            reasons = [meta_reason(Severity.MEDIUM, f"emond rule {name!r} runs a command as {a['user'] or 'root'} on "
+                                                    f"{', '.join(a['events'])[:80] or 'system events'}", ["T1546.014"])]
+            out.append(make_entry("emond", str(f), name if seen[name] == 1 else f"{name} #{seen[name]}", _join_args(a["args"]),
+                                  path=a["args"][0], enabled=a["enabled"], reasons=reasons))
+    clients = paths.at("/private/var/db/emondClients")
+    for f in _dir_files(clients):
+        if not f.name.startswith("."):
+            why = f"{f.name} in emondClients wakes the emond daemon, which modern macOS does not use"
+            reasons = [meta_reason(Severity.LOW, why, ["T1546.014"])]
+            out.append(make_entry("emond", str(clients), f.name, "", path="", reasons=reasons))
+    return out
+
+
+def _bundle_executable(bundle: Path) -> str:
+    """The Mach-O a .bundle loads (CFBundleExecutable, else Contents/MacOS/<name>); the bundle itself when neither exists."""
+    macos = bundle / "Contents" / "MacOS"
+    try:
+        name = plistlib.loads((bundle / "Contents" / "Info.plist").read_bytes()).get("CFBundleExecutable")
+        if name and (macos / str(name)).is_file():
+            return str(macos / str(name))
+    except Exception:
+        pass
+    return str(macos / bundle.stem) if (macos / bundle.stem).is_file() else str(bundle)
+
+
+def collect_auth_plugins(paths: LinuxPaths) -> List[Entry]:
+    """macOS authorization plugins (/Library/Security/SecurityAgentPlugins/*.bundle): code loaded into the login window
+    and every authorization prompt. Listed only; Apple's and the known vendors' (Jamf Connect, NoMAD Login ...) are
+    not suspicious in themselves, so just the usual location and content checks apply."""
+    d = paths.at("/Library/Security/SecurityAgentPlugins")
+    try:
+        bundles = sorted(p for p in itertools.islice(d.iterdir(), MAX_DIR_ENTRIES) if p.suffix == ".bundle")
+    except OSError:
+        return []
+    out = []
+    for b in bundles:
+        exe = _bundle_executable(b)
+        out.append(make_entry("auth_plugin", str(d), b.name, exe, path=exe))
+    return out
+
+
+def collect_login_hooks(paths: LinuxPaths) -> List[Entry]:
+    """macOS login/logout hooks: ``defaults write com.apple.loginwindow LoginHook /path/script`` runs the script as root at
+    every login (LogoutHook: at logout). Deprecated since macOS 10.11, so any hook is at least LOW."""
+    out: List[Entry] = []
+    plists = [paths.at("/Library/Preferences/com.apple.loginwindow.plist")]
+    plists += [h / "Library" / "Preferences" / "com.apple.loginwindow.plist" for h in paths.homes]
+    for f in plists:
+        try:
+            pl = plistlib.loads(f.read_bytes())
+        except Exception:
+            continue
+        for key in ("LoginHook", "LogoutHook"):
+            hook = pl.get(key) if isinstance(pl, dict) else None
+            if isinstance(hook, str) and hook.strip():
+                out.append(make_entry("login_hook", str(f), key, hook.strip(), reasons=[meta_reason(
+                    Severity.LOW, f"{key} {hook.strip()[:100]} runs as root at every {key[:-4].lower()}; hooks are deprecated "
+                                  "since macOS 10.11", ["T1037.002"])]))
+    return out
+
+
 # --------------------------------------------------------------------------- collection
 
 def _safe(collector: Callable[[], List[Entry]], name: str, errors: List[str]) -> List[Entry]:
@@ -1747,10 +2327,14 @@ def collect_all(errors: Optional[List[str]] = None, linux_paths: Optional[LinuxP
         lp = linux_paths or LinuxPaths()
         for name, fn in (("cron", collect_cron), ("systemd", collect_systemd), ("rc_local", collect_rc_local),
                          ("shell_rc", collect_shell_rc), ("ld_preload", collect_ld_preload), ("ssh_keys", collect_ssh_keys),
-                         ("udev", collect_udev), ("xdg", collect_xdg_autostart)):
+                         ("udev", collect_udev), ("xdg", collect_xdg_autostart), ("pam", collect_pam), ("motd", collect_motd),
+                         ("generators", collect_generators), ("at_jobs", collect_at_jobs)):
             out += _safe(lambda fn=fn: fn(lp), name, errors)
         if IS_MAC:
             out += _safe(collect_launchd, "launchd", errors)
+            for name, fn in (("periodic", collect_periodic), ("emond", collect_emond), ("auth_plugins", collect_auth_plugins),
+                             ("login_hooks", collect_login_hooks)):
+                out += _safe(lambda fn=fn: fn(lp), name, errors)
     return out
 
 
@@ -1778,7 +2362,8 @@ def _scan_target_ok(path: str, deep: bool) -> bool:
 class PersistenceScanner(Scanner):
     name = "persistence"
     title = "Autostart / persistence"
-    description = "Autoruns-style analysis: Run keys, tasks (also hidden ones), services, WMI, IFEO, Winlogon, startup folders, cron, systemd, launchd"
+    description = ("Autoruns-style analysis: Run keys, tasks (also hidden ones), services, WMI, IFEO, Winlogon, startup folders, "
+                   "cron, systemd, launchd, PAM, update-motd, systemd generators, at jobs, macOS periodic/emond/login hooks")
     platforms = ("windows", "linux", "darwin")
 
     @staticmethod

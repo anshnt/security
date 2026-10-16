@@ -14,7 +14,6 @@
   - **Windows policy:** reports `SaveZoneInformation = 1` (Windows no longer marks downloads) with a fix that sets it back
     to 2, and `ScanWithAntiVirus = 1`.
   - Addresses are shown without query strings, and the content of a file is never read.
-- **Real-time file guard:** alerts for a file now carry where it was downloaded from, when the system recorded it.
 - **Linux kernel hardening and integrity in the audit (`AEG-AUDIT-KERNEL-*`).** Read-only checks of `/proc` and `/sys`.
   - **Weak kernel settings:** ASLR off (HIGH) or without heap randomisation, `kptr_restrict`, `dmesg_restrict`, Yama
     `ptrace_scope`, unprivileged eBPF (MEDIUM), `fs.protected_symlinks` / `hardlinks` (MEDIUM), `protected_fifos` /
@@ -33,10 +32,55 @@
   password-protected screen saver, honouring the Group Policy values; the fix sets `InactivityTimeoutSecs` to 900),
   macOS (`sysadminctl -screenLock status`) and Linux desktops (GNOME, Cinnamon, MATE through gsettings, KDE Plasma through
   kreadconfig). Reports a screen that never locks or only after more than 15 minutes.
+- **More Linux and macOS persistence locations (`persistence`).** All of them appear in `aegis autoruns`, in the real-time
+  persistence guard and in the scan results; nothing is changed or deleted.
+  - **PAM backdoors (Linux):** `pam_exec.so` lines (the program is recorded; high when it sits in a temporary, hidden, home
+    or world-writable location), modules loaded by absolute path from outside the standard module directories, module files
+    that no dpkg/rpm package owns, and `pam_permit.so` lines that let anyone through the auth stack of sshd, login, su or
+    sudo. The default files of Debian, Ubuntu, Fedora/RHEL (authselect) and Arch raise nothing: the auth stacks are
+    replayed the way PAM evaluates them, and only a stack that still succeeds for a wrong password is reported.
+  - **`update-motd.d` scripts:** run as root on every login; their content is judged like cron scripts.
+  - **systemd generators** in `/etc`, `/usr/local/lib` and `/run`: run as root before any service; the distribution
+    directories are not reported.
+  - **at jobs** (`/var/spool/cron/atjobs`, `/var/spool/at`, macOS `/usr/lib/cron/jobs`): script content is judged.
+  - **macOS:** periodic scripts (the stock ones are listed but not flagged), emond rules, authorization plugins and
+    login/logout hooks.
+
+- **Hidden scheduled tasks (Tarrask technique, `persistence`, needs administrator rights).** Reads the Task Scheduler
+  cache in the registry and reports a task that Task Scheduler, `schtasks` and `Get-ScheduledTask` cannot list while
+  Windows still runs it: a missing or empty security descriptor (HIGH), or `Index` 0 on a non-Microsoft task whose task
+  file exists (MEDIUM). The command the task runs is decoded from its binary `Actions` value. Stale Microsoft cache
+  entries (`Index` 0 with no task file, 26 of them on Windows Server 2025) are not reported. No automatic fix: deleting
+  the keys blindly would destroy the evidence.
+- **Inbound firewall rule review (`network`).** Windows: enabled allow rules for programs in user-writable folders (HIGH;
+  MEDIUM for Downloads and Desktop, where the Windows firewall prompt creates them), rules that allow everything from
+  anywhere (MEDIUM), RDP / SMB / WinRM / SSH open to any address on public networks (MEDIUM) and rules for programs that
+  no longer exist (LOW). Linux: the same exposure checks for `ufw`.
+- **Secure Boot certificate update (`system_audit`).** The Microsoft 2011 Secure Boot certificates expire from June 2026;
+  reports whether Windows has moved this PC to the 2023 certificates (`UEFICA2023Status`): not started or failed is
+  MEDIUM, in progress LOW. Skipped when Secure Boot is off.
+
+### Real-time protection
+- **Real-time file guard:** alerts for a file now carry where it was downloaded from, when the system recorded it.
+- **Clipboard guard.** Warns when a web page copies a ClickFix / fake-CAPTCHA command (PowerShell download-and-run,
+  `mshta`, `curl | sh`, the "I am not a robot" lure) and empties the clipboard when the command carries the lure text.
+  The text is only checked in memory and never stored. Windows reads the clipboard sequence number, macOS and Linux use
+  `pbpaste`, `wl-paste`, `xclip` or `xsel`. Settings: `realtime_clipboard_guard`, `realtime_clear_malicious_clipboard`;
+  also on the GUI Protection page.
+
+### Reports
+- **`aegis fleet PATH...`** builds one HTML, JSON or CSV overview from the scan results of many PCs (folders of JSON
+  reports, `--recursive`, `--since DAYS`, `--min-severity`, `--fail-on` for scripts). A host's row is its current state:
+  the most recent result of each scanner, so a narrow follow-up scan does not hide what a full scan found.
 
 ### Changes
 - **ASLR on Linux** is now reported by the kernel check as `AEG-AUDIT-KERNEL-ASLR` (HIGH when off, LOW when the heap is
   not randomised) instead of `AEG-AUDIT-LINUX-ASLR`, so the same setting is not reported twice.
+
+### Fixes
+- **Persistence on Linux as a normal user:** another user's home that this account cannot enter no longer stops the
+  shell start-up file review with a permission error (found by the new real-Ubuntu CI run).
+
 
 ## [1.3.0] - 2026-10-16
 
