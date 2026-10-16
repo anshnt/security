@@ -175,7 +175,7 @@ jobs:
           # v1.2: SARIF from a real scan, and the software updater against the runner's real winget
           ok ./dist/aegis.exe report e2e/audit.sarif --input e2e/audit.json
           python -c "import json; d = json.load(open('e2e/audit.sarif', encoding='utf-8')); r = d['runs'][0]; print('SARIF', d['version'], len(r['results']), 'results,', len(r['tool']['driver']['rules']), 'rules')"
-          ./dist/aegis.exe apps list || echo ">> apps list exit $? (winget unavailable or offline is not a failure here)"
+          ./dist/aegis.exe apps list || echo ">> apps list exit $? (1 = updates pending; 2 = winget unavailable or offline, not a failure here)"
 
       - uses: actions/upload-artifact@v4
         if: always()

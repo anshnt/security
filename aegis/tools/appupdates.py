@@ -255,9 +255,11 @@ HIGH_RISK = [
                                            r"wireguard|forticlient|globalprotect|anyconnect|secure client|openssh|"
                                            r"\bssh\b|openssh-(server|client)"),
     ("media player", r"\bvlc\b|mpc-hc|k-lite|itunes|quicktime"),
+    ("server", r"mysql|mariadb|postgres|mongodb|\bredis\b|elasticsearch|tomcat|nginx|apache2|\bhttpd\b|"
+               r"apache http server|jenkins|grafana|openssh-server|samba|vsftpd|filezilla server|exim|postfix"),
     ("developer / admin tool", r"notepad\+\+|visual studio code|vscode|\bgit\b|git\.git|docker|virtualbox|vmware|"
                                r"wireshark|keepass|bitwarden|1password|\bsudo\b|polkit|glibc|libc6|curl|libcurl|"
-                               r"linux-image|\bkernel\b|systemd|\bbash\b|nginx|apache2|httpd"),
+                               r"linux-image|\bkernel\b|systemd|\bbash\b"),
 ]
 _HIGH_RISK_RX = [(label, re.compile(rx, re.I)) for label, rx in HIGH_RISK]
 
