@@ -104,10 +104,15 @@ def test_null_values_and_dispositions_of_the_sample():
     ("[enabled, allowed, hidden, notified] (0xb)", (True, True, False)),
     ("[disabled, allowed, visible, notified] (0xe)", (False, True, True)),
     ("[enabled, disallowed, visible, not notified] (0x5)", (True, False, True)),
-    ("[enabled, allowed, notified] (0xb)", (True, True, False)),  # no word for visibility: the bit says hidden
-    ("[enabled, allowed, visible, notified] (0xb)", (True, True, True)),  # the words win over the bits
-    ("(0x3)", (True, True, False)),
-    ("(0x0)", (False, False, False)),
+    # real macOS 26 output has no word for visibility; bit 0x4 is "hidden", clear on every item listed in System Settings
+    ("[enabled, allowed, notified] (0xb)", (True, True, True)),
+    ("[enabled, allowed, not notified] (0x3)", (True, True, True)),
+    ("[disabled, allowed, not notified] (0x2)", (False, True, True)),
+    ("[enabled, allowed, notified] (0xf)", (True, True, False)),  # 0x4 set: hidden
+    ("[enabled, allowed, visible, notified] (0xf)", (True, True, True)),  # the words win over the bits
+    ("(0x3)", (True, True, True)),
+    ("(0x7)", (True, True, False)),
+    ("(0x0)", (False, False, True)),
     ("[enabled, allowed]", (True, True, None)),
     ("", (None, None, None)),
     ("something new", (None, None, None)),
@@ -918,3 +923,77 @@ def test_current_macos_system_apps_are_signed_by_apple():
 def test_tests_run_without_the_btm_cache():
     """tests/conftest.py points the cache at a missing folder: on a real Mac a fake dump was served to the next call."""
     assert ps._BTM_CACHE == {} and not ps.BTM_DB_DIR.exists() and ps._btm_db_stamp() is None
+
+
+# Records of a real `sfltool dumpbtm` (macOS 26.6, GitHub's macos-latest runner): no Team Identifier line, "(null)" values,
+# a developer record named only by its UUID, and dispositions without a word for visibility.
+REAL_MACOS26 = """
+========================
+ Records for UID -2 : FFFFEEEE-DDDD-CCCC-BBBB-AAAAFFFFFFFE
+========================
+
+ ServiceManagement migrated: true
+ LaunchServices registered: false
+
+ Items:
+
+ #1:
+                 UUID: C8E7DF86-2F45-48B8-84D4-13AF4F6C3F6A
+                 Name: (null)
+       Developer Name: (null)
+                 Type: developer (0x20)
+                Flags: [  ] (0)
+          Disposition: [disabled, allowed, not notified] (0x2)
+           Identifier: Unknown Developer
+                  URL: (null)
+           Generation: 0
+  Embedded Item Identifiers:
+    #1: 16.com.veertu.anka.addons.systemsetup
+
+ #2:
+                 UUID: EE4D379B-3BAF-4F4C-9B97-0094B49253F5
+                 Name: ankaupd.sh
+       Developer Name: (null)
+                 Type: legacy daemon (0x10010)
+                Flags: [ legacy ] (0x1)
+          Disposition: [enabled, allowed, not notified] (0x3)
+           Identifier: 16.com.veertu.anka.addons.ankaupd
+                  URL: file:///Library/LaunchDaemons/com.veertu.anka.addons.ankaupd.plist
+      Executable Path: /Library/Application Support/Veertu/Anka/addons/ankaupd.sh
+           Generation: 0
+    Parent Identifier: Unknown Developer
+
+ #3:
+                 UUID: 793B452D-1B0F-4C80-B6C2-2160DA42CBA3
+                 Name: change_hostname.sh
+       Developer Name: (null)
+                 Type: legacy daemon (0x10010)
+                Flags: [ legacy ] (0x1)
+          Disposition: [enabled, allowed, notified] (0xb)
+           Identifier: 16.change-hostname
+                  URL: file:///Library/LaunchDaemons/change_hostname.plist
+      Executable Path: /usr/local/bin/change_hostname.sh
+           Generation: 1
+    Parent Identifier: Unknown Developer
+"""
+
+
+def test_real_macos26_records_parse_and_are_not_called_hidden():
+    recs = ps.parse_btm_dump(REAL_MACOS26)
+    assert [(r.uid, r.kind, r.name) for r in recs] == [
+        ("-2", "developer", ""), ("-2", "daemon", "ankaupd.sh"), ("-2", "daemon", "change_hostname.sh")]
+    daemon = recs[1]
+    assert (daemon.enabled, daemon.allowed, daemon.visible) == (True, True, True)
+    assert daemon.executable == "/Library/Application Support/Veertu/Anka/addons/ankaupd.sh" and daemon.team_id == ""
+    assert daemon.url == "file:///Library/LaunchDaemons/com.veertu.anka.addons.ankaupd.plist"
+    assert recs[2].visible is True and recs[0].enabled is False
+    texts = [r["text"] for r in ps.btm_reasons(recs[2], apple=False)]
+    assert texts == ["not signed by an identified developer: the item has no Team Identifier"]  # not "hidden"
+
+
+def test_real_legacy_daemons_are_left_to_the_launchd_collector(tree):
+    entries = ps.collect_btm(tree, dump=lambda: (REAL_MACOS26, ""))
+    launchd = [ps.make_entry("launchd", "/Library/LaunchDaemons", "com.veertu.anka.addons.ankaupd.plist", "x"),
+               ps.make_entry("launchd", "/Library/LaunchDaemons", "change_hostname.plist", "y")]
+    kept = ps.without_listed_plists(entries, launchd)
+    assert [e["meta"]["item_type"] for e in kept] == ["developer"]

@@ -2371,8 +2371,10 @@ class BtmRecord:
 
 
 def parse_btm_disposition(text: str) -> Tuple[Optional[bool], Optional[bool], Optional[bool]]:
-    """(enabled, allowed, visible) of ``[enabled, allowed, visible, notified] (0xf)``. The words win; without them the bits
-    (enabled 0x1, allowed 0x2, visible 0x4, notified 0x8) do; None when the text says neither."""
+    """(enabled, allowed, visible) of a disposition such as ``[enabled, allowed, notified] (0xb)``. The words win; without
+    them the bits do: enabled 0x1, allowed 0x2, hidden 0x4, notified 0x8 (real macOS 26 prints only enabled / disabled,
+    allowed / disallowed and notified / not notified, and 0xb = enabled + allowed + notified on items that are listed in
+    System Settings). None when the text says neither."""
     m = re.search(r"\[([^\]]*)\]", text)
     words = {w.strip().lower() for w in m.group(1).split(",")} if m else set()
     h = re.search(r"\(0x([0-9a-fA-F]+)\)", text)
@@ -2385,7 +2387,8 @@ def parse_btm_disposition(text: str) -> Tuple[Optional[bool], Optional[bool], Op
             return False
         return None if bits is None else bool(bits & bit)
 
-    return flag("enabled", "disabled", 0x1), flag("allowed", "disallowed", 0x2), flag("visible", "hidden", 0x4)
+    hidden = flag("hidden", "visible", 0x4)
+    return flag("enabled", "disabled", 0x1), flag("allowed", "disallowed", 0x2), None if hidden is None else not hidden
 
 
 def btm_kind(type_text: str, url: str = "") -> str:
