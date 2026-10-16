@@ -132,14 +132,17 @@ jobs:
           run_scan quick quick
           # threat-hunting scanners: event logs, drivers, sideloading, USB, email, process memory
           run_scan hunt custom --scanners eventlog,drivers,sideload,usb,email,memory
+          # deep scan of a large tree: exercises the multi-process file scanner inside the frozen exe
+          run_scan deepfiles custom --scanners files --deep --path "$pythonLocation/Lib"
           python - <<'PY'
           import json, sys
           bad = False
-          for profile in ("audit", "quick", "hunt"):
+          for profile in ("audit", "quick", "hunt", "deepfiles"):
               d = json.load(open(f"e2e/{profile}.json", encoding="utf-8"))
               print(f"{profile}: score {d['score']} ({d['grade']}), scanners {d['scanners']}, counts {d['counts']}, "
                     f"checks {sum(c['status'] == 'pass' for c in d['checks'])}/{len(d['checks'])} pass, "
-                    f"{d['stats'].get('duration_s')}s")
+                    f"{d['stats'].get('duration_s')}s, files {d['stats'].get('files_scanned', '-')}, "
+                    f"workers {d['stats'].get('file_scan_workers', '-')}")
               for f in d["findings"][:15]:
                   print(f"   {f['severity']:<8} {f['rule_id']:<28} {f['title'][:70]}")
               for c in d["checks"]:
