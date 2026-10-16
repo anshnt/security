@@ -307,6 +307,7 @@ def test_scanner_windows_rwx_flow(monkeypatch, ctx):
     monkeypatch.setattr(mem, "HAVE_YARA", False)
     monkeypatch.setattr(mem, "IS_WINDOWS", True)
     monkeypatch.setattr(mem, "private_exec_regions", lambda pid: {7001: [(0x10000, 8192, 0x40)], 7003: []}.get(pid))
+    monkeypatch.setattr(mem, "loads_jit_runtime", lambda pid: False)  # fake pids: never ask the real OS
     out = list(mem.MemoryScanner().run(ctx_with(ctx, FakeRules())))
     f = [x for x in out if isinstance(x, Finding)]
     assert [x.rule_id for x in f] == ["AEG-MEM-RWX"] and f[0].evidence["pid"] == 7001
@@ -374,3 +375,34 @@ def test_real_yara_scans_a_foreign_process(ctx):
     finally:
         child.kill()
         child.wait(timeout=10)
+
+
+def test_rwx_skips_processes_running_a_jit_runtime(monkeypatch, ctx):
+    """Real-Windows CI regression: .NET apps (incl. .NET Core apphost exes like the Actions runner,
+    SMSvcHost, the Azure guest agent) JIT into private executable memory - not injection."""
+    fake_procs(monkeypatch, [P(7101, "Runner.Listener.exe", exe=r"C:\actions-runner\bin\Runner.Listener.exe"),
+                             P(7102, "evil.exe", exe=r"C:\Users\bob\AppData\Local\Temp\evil.exe")])
+    monkeypatch.setattr(mem, "HAVE_YARA", False)
+    monkeypatch.setattr(mem, "IS_WINDOWS", True)
+    monkeypatch.setattr(mem, "private_exec_regions", lambda pid: [(0x10000, 8192, 0x40)])
+    monkeypatch.setattr(mem, "loads_jit_runtime", lambda pid: pid == 7101)
+    out = list(mem.MemoryScanner().run(ctx_with(ctx, FakeRules())))
+    assert [f.evidence["pid"] for f in out if isinstance(f, Finding)] == [7102]
+    assert ctx.stats.get("memory_rwx_jit_skipped") == 1
+
+
+def test_loads_jit_runtime_reads_module_names(monkeypatch):
+    import psutil
+
+    class FakeProc:
+        def __init__(self, pid):
+            self.pid = pid
+
+        def memory_maps(self, grouped=True):
+            paths = {1: [r"C:\Windows\System32\ntdll.dll", r"C:\Program Files\dotnet\shared\Microsoft.NETCore.App\8.0.0\coreclr.dll"],
+                     2: [r"C:\Windows\System32\ntdll.dll", r"C:\Windows\System32\kernel32.dll"]}[self.pid]
+            return [type("M", (), {"path": p})() for p in paths]
+
+    monkeypatch.setattr(psutil, "Process", FakeProc)
+    assert mem.loads_jit_runtime(1) is True
+    assert mem.loads_jit_runtime(2) is False

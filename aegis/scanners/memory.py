@@ -72,6 +72,33 @@ _JIT_HOSTS = {
     "chrome", "firefox", "java", "node", "python", "python3", "code", "dotnet",
 }
 
+# Runtimes whose JIT compilers legitimately create private executable memory. Detected from the
+# modules a process has loaded, which also covers apps not named in _JIT_HOSTS - e.g. .NET Core
+# apps launched via a native apphost exe (no CLR header), Azure/GitHub agents, Electron/CEF apps.
+_JIT_RUNTIME_MODULES = {
+    "clr.dll", "coreclr.dll", "clrjit.dll", "mscorwks.dll", "mscorsvr.dll", "mrt100_app.dll",  # .NET
+    "jvm.dll", "libjvm.so",  # Java
+    "libcef.dll", "node.dll", "v8.dll", "v8_libbase.dll", "libnode.dll",  # V8 / Chromium Embedded / Electron
+    "mono-2.0-bdwgc.dll", "mono-2.0-sgen.dll", "monosgen-2.0.dll", "libmonosgen-2.0.so",  # Mono / Unity
+    "lua51.dll", "luajit.dll",  # LuaJIT
+}
+
+
+def loads_jit_runtime(pid: int) -> bool:
+    """True when the process has a JIT runtime loaded (best effort; False if modules can't be read)."""
+    try:
+        import psutil
+
+        maps = psutil.Process(pid).memory_maps(grouped=True)
+    except Exception:
+        return False
+    for m in maps:
+        name = re.split(r"[\\/]", getattr(m, "path", "") or "")[-1].lower()
+        if name in _JIT_RUNTIME_MODULES:
+            return True
+    return False
+
+
 _PRIORITY_NAMES = {"powershell.exe": 3, "pwsh.exe": 3, "wscript.exe": 4, "cscript.exe": 4, "mshta.exe": 4, "rundll32.exe": 3,
                    "regsvr32.exe": 3, "cmd.exe": 2, "msbuild.exe": 2, "installutil.exe": 3, "regasm.exe": 3, "regsvcs.exe": 3,
                    "explorer.exe": 2, "svchost.exe": 2, "notepad.exe": 3, "spoolsv.exe": 2, "winlogon.exe": 1, "taskhostw.exe": 2,
@@ -581,6 +608,9 @@ class MemoryScanner(Scanner):
             if regions is None:
                 continue
             checked += 1
+            if regions and loads_jit_runtime(p.pid):  # .NET / Java / V8 JIT code is expected, not injection
+                ctx.bump("memory_rwx_jit_skipped")
+                continue
             f = rwx_finding(p, regions)
             if f:
                 flagged += 1
