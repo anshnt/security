@@ -1693,3 +1693,33 @@ def test_no_contiguous_secret_shaped_strings_in_the_scanner_or_its_tests():
                         r"discord(?:app)?\.com/api/webhooks/\d+/[\w-]+|api\.telegram\.org/bot\d+:[\w-]+|hooks\.slack\.com/services/\w+")
     for path in (Path(tr.__file__), Path(__file__)):
         assert not shapes.search(path.read_text(encoding="utf-8")), path.name
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="reads the real Windows DNS client cache")
+def test_real_windows_dns_cache_is_read_and_checked():
+    """CI never downloads the threat feeds, so the scan itself skips this check there. This runs the real
+    Get-DnsClientCache path with a one-domain stub feed."""
+    import socket
+    from types import SimpleNamespace
+
+    from aegis.core.config import Config
+    from aegis.scanners.base import ScanContext
+
+    try:
+        socket.getaddrinfo("github.com", 443)
+    except OSError:
+        pytest.skip("no DNS resolution on this machine")
+    rows = tr.powershell_json(tr.DNS_SCRIPT, timeout=60)
+    assert rows is not None, "Get-DnsClientCache failed"
+    records = tr.parse_dns_cache(rows)
+    assert any(r.entry.lower().rstrip(".") == "github.com" for r in records), [r.entry for r in records][:20]
+    assert all(r.rtype for r in records)
+
+    bad = {"github.com"}
+    sigs = SimpleNamespace(bad_domains=bad, is_bad_domain=lambda d: d.lower().strip(".") in bad,
+                           is_bad_ip=lambda ip: False)
+    ctx = ScanContext(config=Config(), signatures=sigs)
+    out = list(tr.check_dns_cache(ctx))
+    findings = [x for x in out if getattr(x, "rule_id", "") == "AEG-TRACE-DNS"]
+    assert findings and findings[0].location == "dns-cache:github.com" and findings[0].severity.name == "HIGH"
+    assert out[-1].status == "fail" and ctx.stats["traces_dns_entries"] > 0
