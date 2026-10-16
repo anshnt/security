@@ -1,5 +1,38 @@
 # Changelog
 
+## [1.2.0] - 2026-10-16
+
+### Detection
+- **App tampering and session theft (`apptamper`).**
+  - **Discord client injection** by token stealers: one-click restore of the genuine file, with undo.
+  - **Electron and Node code injection** through `ELECTRON_RUN_AS_NODE` and `NODE_OPTIONS`.
+  - **Hijacked browser shortcuts**, read by a new built-in `.lnk` parser. Covers forced extensions, remote-debugging
+    ports, proxies, forced start pages, and shortcuts disguised as a browser.
+  - **Browsers started hidden with remote debugging** to steal cookies, including the copied-profile variant used
+    since Chrome 136. The real-time process guard also checks every new browser process for this.
+  - **Exodus, Atomic Wallet and Ledger Live** apps whose code was swapped or that contain exfiltration endpoints.
+- **Privacy and spyware review (`privacy`).** Reads the operating system's own record of which programs used the
+  camera, microphone, location and screen capture (Windows), or hold camera, microphone, screen-recording,
+  Accessibility and Input Monitoring permissions (macOS). Flags script hosts, programs in Temp, Downloads or hidden
+  folders, programs that deleted themselves afterwards, and anything recording right now. Each device also gets an
+  inventory of the apps that used it.
+- **Software updater.** The software audit lists pending app updates from winget, apt, dnf, pacman or Homebrew, and
+  flags outdated browsers, archivers, PDF readers, runtimes, communication and remote-access tools, and servers.
+  `aegis apps upgrade` and the GUI's App updates tab install them through the package manager.
+
+### Reporting
+- **SARIF 2.1.0 output** (`--report out.sarif`, `aegis report out.sarif`, GUI export) for GitHub code scanning and
+  other SARIF viewers. The output validates against the official schema. `check-project` writes paths relative to
+  the project, and the README shows a GitHub Actions upload step.
+
+### Fixes
+- **Memory scanner false positives.** The "unbacked executable memory" check no longer flags .NET, Java, V8, Mono and
+  LuaJIT processes, which compile code into such memory by design. Real-Windows CI showed seven of these false
+  positives; it now skips exactly those seven.
+- **Memory scanner ordering.** The check now runs before the YARA memory scan with its own time budget. Previously a
+  slow YARA pass could leave it no time at all, and YARA now scans the processes it flags first.
+- **`--scanners` help** lists every scanner, with a test so it cannot go stale.
+
 ## [1.1.0] - 2026-10-16
 
 ### Detection

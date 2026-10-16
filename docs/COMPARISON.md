@@ -38,6 +38,9 @@ be honest, because a security tool that overstates what it does is a risk in its
 | One-command hardening incl. ASR rules, with full undo | ✅ | 🟡 (manual / Intune 💲) | ❌ | 🟡 | ❌ | ❌ | ❌ |
 | Scan history, "new since last scan", alerts to Slack/Teams/Discord/email | ✅ | 🟡 (Defender for Endpoint 💲) | 🟡 💲 | 🟡 💲 | ❌ | ❌ | ❌ |
 | Exposed secrets / seed phrases / plaintext credentials on disk | ✅ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ |
+| Infostealer persistence in trusted apps (Discord injection, wallet-app swaps, Electron/Node env abuse) | ✅ | 🟡 (signatures) | 🟡 | 🟡 | ❌ | ❌ | ❌ |
+| Hijacked browser shortcuts + browsers launched for cookie theft (remote debugging) | ✅ | 🟡 | ✅ | 🟡 | ❌ | ✅ (shortcuts) | ❌ |
+| Webcam / microphone / screen-capture access review (spyware, stalkerware) | ✅ (OS usage record) | ❌ | 🟡 💲 | ✅ 💲 (webcam protection) | ❌ | ❌ | ❌ |
 | Phishing / malicious URL checker | ✅ (offline heuristics + URLhaus + optional Safe Browsing) | ✅ SmartScreen | ✅ 💲 | ✅ | ❌ | ❌ | ❌ |
 | Password breach check (HIBP k-anonymity) | ✅ | ✅ (Edge) | ❌ | ✅ 💲 | ❌ | ❌ | ❌ |
 | Real-time file protection | ✅ user-mode | ✅ kernel | ✅ 💲 | ✅ | ❌ | ❌ | 🟡 (clamonacc, Linux) |
