@@ -1595,7 +1595,7 @@ def test_scanner_is_registered_and_in_the_full_profile():
     cls = REGISTRY["apptamper"]
     assert cls.name == "apptamper" and set(cls.platforms) == {"windows", "linux", "darwin"}
     assert cls.title == "Application tampering & session theft" and cls.description and cls().supported()
-    assert PROFILES["full"][-1] == "apptamper" and PROFILES["full"].count("apptamper") == 1
+    assert PROFILES["full"].index("apptamper") > PROFILES["full"].index("privacy") and PROFILES["full"].count("apptamper") == 1
     assert "apptamper" not in PROFILES["quick"] and "apptamper" not in PROFILES["audit"]
 
 

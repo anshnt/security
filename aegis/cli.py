@@ -784,7 +784,8 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("profile", nargs="?", default="quick", choices=["quick", "full", "audit", "custom"])
     s.add_argument("--path", action="append", help="file or folder to scan (repeatable)")
     s.add_argument("--scanners", help="comma-separated scanners: files,processes,persistence,browser,network,"
-                   "system_audit,software,secrets,eventlog,drivers,sideload,usb,email,memory,supplychain,ide,privacy,apptamper "
+                   "system_audit,software,secrets,eventlog,drivers,sideload,usb,email,memory,supplychain,ide,privacy,apptamper,"
+                   "recovery "
                    "(see `aegis info`)")
     s.add_argument("--exclude", action="append", help="path prefix or glob to skip (repeatable)")
     s.add_argument("--deep", action="store_true", help="content-scan every file type, not only risky ones")
@@ -794,7 +795,7 @@ def build_parser() -> argparse.ArgumentParser:
     output_opts(s)
     s.set_defaults(func=cmd_scan)
 
-    a = sub.add_parser("audit", help="security hardening audit (system, software, network, browser)")
+    a = sub.add_parser("audit", help="security hardening audit (system, software, network, browser, backups)")
     output_opts(a)
     a.set_defaults(func=cmd_scan, profile="audit", path=None, scanners=None, exclude=None, deep=False, no_cache=False,
                    cloud=False, auto_quarantine=False)
