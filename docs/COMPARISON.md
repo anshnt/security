@@ -50,6 +50,7 @@ be honest, because a security tool that overstates what it does is a risk in its
 | ClickFix / fake-CAPTCHA traces (Run dialog, PowerShell and shell history), malicious domains in DNS cache and browser history | ✅ | 🟡 (behaviour blocking) | 🟡 Browser Guard | 🟡 EDR 💲 | ❌ | ❌ | ❌ |
 | Clipboard guard: warns about (and clears) ClickFix commands a web page copies | ✅ | 🟡 (blocks the command when it runs) | 🟡 Browser Guard | 🟡 | ❌ | ❌ | ❌ |
 | Download origin review (Mark-of-the-Web / macOS quarantine / xattr): known-bad and raw-IP sources, HTML smuggling, WebDAV delivery, deceptive file names | ✅ | 🟡 (SmartScreen reputation at download time) | 🟡 (web protection) | 🟡 (web protection) | 🟡 Streams (manual) | ❌ | ❌ |
+| Remote-access tool review (AnyDesk, TeamViewer, ScreenConnect, RustDesk, NetSupport, MeshAgent ...): who connected and when from the tool's own logs, unattended-access passwords, self-hosted relays, portable copies | ✅ | ❌ | 🟡 (flags some tools as riskware) | 🟡 (flags some tools as riskware) | 🟡 Autoruns (services only) | ❌ | ❌ |
 | Ransomware recovery readiness (restore points, File History, cloud versioning, Time Machine) with a grade | ✅ | 🟡 (CFA, OneDrive prompt) | ❌ | 🟡 (own backup 💲) | ❌ | ❌ | ❌ |
 | Exploit-protection audit (DEP, ASLR, CFG, SEHOP switched off) | ✅ | 🟡 (settings page) | ✅ 💲 (exploit protection) | ✅ | ❌ | ❌ | ❌ |
 | Linux kernel hardening & hidden kernel module check (sysctls, rootkit LKMs, module-list cross-check, taint, AppArmor / SELinux) | ✅ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ |

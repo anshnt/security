@@ -1,5 +1,31 @@
 # Changelog
 
+## [Unreleased]
+
+### Detection
+- **Remote-access tool review (`remoteaccess`, part of the full scan).** For the victim of a tech-support scam: can someone
+  get in without clicking Accept, and who connected, and when? Reads what AnyDesk, TeamViewer, ScreenConnect / ConnectWise
+  Control, RustDesk, Splashtop, Atera, NetSupport and MeshAgent keep on disk, for every user profile the scan may read.
+  Read-only: the logs are evidence and nothing is deleted. Running programs are still reported by the process scanner.
+  - **Who connected, and when (`AEG-RA-INCOMING`):** the tool's own log: AnyDesk `connection_trace.txt` (with whether a person
+    clicked Accept or a stored password or token let the session in) and the request and address lines of `ad.trace` /
+    `ad_svc.trace`, TeamViewer `Connections_incoming.txt`, RustDesk server logs. Count, first and last time, remote IDs and
+    addresses and the last 10 sessions. MEDIUM; LOW when every session is older than 90 days.
+  - **Unattended access (`AEG-RA-UNATTENDED`, MEDIUM):** an AnyDesk unattended-access password, a TeamViewer permanent
+    password or account assignment, a RustDesk permanent password, an Access-mode ScreenConnect client, or an Atera,
+    Splashtop, NetSupport or MeshAgent installation (naming the Atera account or MeshCentral group that manages the PC).
+  - **Relay servers (`AEG-RA-RELAY`):** HIGH for a bare IP address, a dynamic-DNS name (duckdns.org, ddns.net, no-ip,
+    hopto.org ...), a host on the threat feed or a NetSupport `GatewayAddress` (the hallmark of NetSupport RAT campaigns, with
+    the flags that hide the client from its user); MEDIUM for any other self-hosted RustDesk, ScreenConnect or MeshCentral
+    server. A vendor's own cloud is not reported.
+  - **Portable copies (`AEG-RA-PORTABLE`):** `AnyDesk.exe`, `TeamViewerQS*.exe`, `rustdesk*.exe`, `ScreenConnect*.exe` and
+    others in the top level of Downloads, Desktop and Temp (MEDIUM; LOW when older than 90 days and not running). A RustDesk
+    copy that names its server in its file name also gets the relay finding.
+  - **Secrets stay out:** passwords, hashes, salts, tokens, session ids and keys are shown as "set" or "not set" and never
+    copied. Logs in UTF-8 (with or without a byte order mark) and UTF-16 are read; large traces from their last 4 MB.
+  - The check `AEG-RA-CHK` ("Remote access tools reviewed") passes, fails with a summary per tool, or skips and names where
+    it looked; profiles the scan may not read are named. ATT&CK ids are T1219.002 (Remote Desktop Software), T1133 and T1078.
+
 ## [1.4.0] - 2026-10-16
 
 ### Detection

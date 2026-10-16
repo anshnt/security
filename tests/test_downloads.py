@@ -631,7 +631,7 @@ def test_scanner_registered_and_in_the_quick_and_full_profiles():
     assert set(cls.platforms) == {"windows", "linux", "darwin"} and cls().supported()
     assert PROFILES["quick"].count("downloads") == 1 and PROFILES["full"].count("downloads") == 1
     assert "downloads" not in PROFILES["audit"] and PROFILES["custom"] == []
-    assert PROFILES["quick"][-1] == "downloads" and PROFILES["full"][-1] == "downloads"
+    assert PROFILES["quick"][-1] == "downloads" and PROFILES["full"].index("downloads") > PROFILES["full"].index("traces")
 
 
 def test_cli_help_names_the_scanner():

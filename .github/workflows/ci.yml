@@ -104,7 +104,7 @@ jobs:
           }
           scan audit audit
           scan quick quick
-          scan hunt custom --scanners secrets,email,supplychain,ide,privacy,apptamper,traces,recovery,usb
+          scan hunt custom --scanners secrets,email,supplychain,ide,privacy,apptamper,traces,recovery,usb,remoteaccess
           rc=0
           sudo env "PATH=$PATH" AEGIS_HOME="$RUNNER_TEMP/aegis-home-mac-root" python -m aegis scan custom \
             --scanners system_audit,persistence,privacy,processes,network --json > mac-root.json || rc=$?
@@ -251,8 +251,8 @@ jobs:
           run_scan audit audit
           run_scan quick quick
           # threat-hunting scanners: event logs, drivers, sideloading, USB, email, process memory, privacy, app tampering,
-          # recent-activity traces (ClickFix commands, DNS cache, browser history)
-          run_scan hunt custom --scanners eventlog,drivers,sideload,usb,email,memory,supplychain,ide,privacy,apptamper,traces
+          # recent-activity traces (ClickFix commands, DNS cache, browser history), remote-access tools
+          run_scan hunt custom --scanners eventlog,drivers,sideload,usb,email,memory,supplychain,ide,privacy,apptamper,traces,remoteaccess
           # deep scan of a large tree: exercises the multi-process file scanner inside the frozen exe
           run_scan deepfiles custom --scanners files --deep --path "$pythonLocation/Lib"
           python - <<'PY'

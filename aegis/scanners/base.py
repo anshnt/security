@@ -98,6 +98,7 @@ def load_all() -> Dict[str, Type[Scanner]]:
         "recovery",
         "traces",
         "downloads",
+        "remoteaccess",
     ):
         try:
             importlib.import_module(f"aegis.scanners.{mod}")
