@@ -279,6 +279,8 @@ try{$v=Get-CimInstance -Namespace root/cimv2/security/microsoftvolumeencryption 
 try{$dg=Get-CimInstance -Namespace root/Microsoft/Windows/DeviceGuard -ClassName Win32_DeviceGuard -ErrorAction Stop;if($dg){$r['dg']=[pscustomobject]@{vbs=[int]$dg.VirtualizationBasedSecurityStatus;running=@($dg.SecurityServicesRunning|ForEach-Object{[int]$_})}}}catch{}
 try{$t=Get-CimInstance -Namespace root/cimv2/security/microsofttpm -ClassName Win32_Tpm -ErrorAction Stop;if($t){$r['tpm']=[pscustomobject]@{enabled=[bool]$t.IsEnabled_InitialValue;spec=[string]$t.SpecVersion}}}catch{}
 try{$sv=Get-Service RemoteRegistry;if($sv){$r['remote_registry']=[string]$sv.Status}}catch{}
+try{$pm=Get-ProcessMitigation -System;if($pm){$r['mitig']=[pscustomobject]@{dep=[string]$pm.DEP.Enable;bottomup=[string]$pm.ASLR.BottomUp;forcereloc=[string]$pm.ASLR.ForceRelocateImages;highentropy=[string]$pm.ASLR.HighEntropy;cfg=[string]$pm.CFG.Enable;sehop=[string]$pm.SEHOP.Enable}}}catch{}
+try{$r['dep_policy']=[int](Get-CimInstance Win32_OperatingSystem).DataExecutionPrevention_SupportPolicy}catch{}
 try{$c=Get-SmbServerConfiguration;if($c){$r['smb1_server']=[bool]$c.EnableSMB1Protocol}}catch{}
 if($admin){try{$f=Get-WindowsOptionalFeature -Online -FeatureName MicrosoftWindowsPowerShellV2Root;if($f){$r['ps2']=[string]$f.State}}catch{}}
 $r|ConvertTo-Json -Depth 5 -Compress
@@ -1035,6 +1037,81 @@ def check_secure_boot(env: AuditEnv) -> List[Check]:
         "Credential Guard protects domain credentials from credential-dumping tools such as Mimikatz "
         "(mainly relevant for work/domain PCs).", "Enable Credential Guard via Group Policy or Windows Security on Enterprise/Education editions.",
         "Credential Guard", {"running": sorted(x for x in running if x is not None)}, None, ["T1003"]))
+    return out
+
+
+# =========================================================================== exploit protection
+DEP_POLICIES = {0: "AlwaysOff", 1: "AlwaysOn", 2: "OptIn", 3: "OptOut"}
+_EXPLOIT_TITLE = "System-wide exploit protection (DEP, ASLR, CFG, SEHOP) is on"
+_MITIGATION_HELP = ("Windows Security > App & browser control > Exploit protection settings > System settings, set the "
+                    "setting to 'Use default (On)', or run as administrator: Set-ProcessMitigation -System -Enable {flags}")
+
+
+def _option(mitig: Dict[str, Any], key: str) -> str:
+    """'ON' / 'OFF' / 'NOTSET' (the Windows default, which is on for these settings) or '' when unknown."""
+    return str(mitig.get(key) or "").strip().upper()
+
+
+def check_exploit_protection(env: AuditEnv) -> List[Check]:
+    """System-wide exploit mitigations from Get-ProcessMitigation -System and the DEP support policy.
+
+    Windows ships DEP, bottom-up ASLR, CFG and SEHOP on; 'NOTSET' means the default is in effect. Only settings that were
+    explicitly switched OFF are reported: malware, cracked software and 'tweak' tools turn them off so exploits and
+    injected code work again."""
+    mitig = env.facts.get("mitig") if isinstance(env.facts.get("mitig"), dict) else None
+    policy = to_int(env.facts.get("dep_policy"))
+    if mitig is None and policy is None:
+        return [skipped("EXPLOIT-PROTECTION", _EXPLOIT_TITLE,
+                        "Exploit protection settings are not available (Get-ProcessMitigation needs Windows 10 1709 or later).")]
+    mitig = mitig or {}
+    out: List[Check] = []
+    evidence = {"dep_support_policy": DEP_POLICIES.get(policy, policy) if policy is not None else None,
+                **{k: _option(mitig, k) or None for k in ("dep", "bottomup", "highentropy", "forcereloc", "cfg", "sehop")}}
+    loc = "Exploit protection (system settings)"
+    if policy == 0 or _option(mitig, "dep") == "OFF":
+        out.append(failed(
+            "EXPLOIT-DEP", "Data Execution Prevention (DEP) is turned off for the whole system", Severity.HIGH,
+            "DEP stops code from running in memory that holds data, which defeats the most common way exploits run "
+            "their payload. It is turned off system-wide (" + ("boot policy AlwaysOff" if policy == 0 else
+                                                              "exploit protection setting OFF") + "), so every program "
+            "on this PC can be exploited more easily. Malware and cracked software turn it off for this reason.",
+            "Run as administrator: bcdedit /set {current} nx OptIn (or OptOut for stronger protection) and restart; "
+            "also set Exploit protection > System settings > Data Execution Prevention to 'Use default (On)'. If the "
+            "drive is encrypted with BitLocker, have the recovery key at hand before changing boot settings.",
+            loc, evidence, None, ["T1685"]))
+    else:
+        out.append(passed("EXPLOIT-DEP", "Data Execution Prevention (DEP) is on",
+                          f"DEP boot policy: {DEP_POLICIES.get(policy, 'unknown')}."))
+    aslr_off = [name for key, name in (("bottomup", "bottom-up ASLR"), ("highentropy", "high-entropy ASLR"))
+                if _option(mitig, key) == "OFF"]
+    if aslr_off:
+        what = " and ".join(aslr_off)
+        out.append(failed(
+            "EXPLOIT-ASLR", "Address space layout randomisation (ASLR) is weakened", Severity.MEDIUM,
+            f"{what[0].upper() + what[1:]} {'is' if len(aslr_off) == 1 else 'are'} switched off for the whole "
+            "system. ASLR loads code at unpredictable addresses so exploits cannot find what they need; with it off, "
+            "memory-corruption bugs in any program become much easier to exploit.",
+            _MITIGATION_HELP.format(flags="BottomUp,HighEntropy"), loc, evidence,
+            run_ps("Set-ProcessMitigation -System -Enable BottomUp,HighEntropy",
+                   "Turn bottom-up and high-entropy ASLR back on (system default)"), ["T1685"]))
+    else:
+        out.append(passed("EXPLOIT-ASLR", "Address space layout randomisation (ASLR) is on",
+                          "Mandatory ASLR (force relocate images) is also on." if _option(mitig, "forcereloc") == "ON"
+                          else "Bottom-up and high-entropy ASLR use the Windows default (on)."))
+    for key, flag, title, why in (
+            ("cfg", "CFG", "Control Flow Guard (CFG)",
+             "CFG checks that indirect calls only go to valid targets, which blocks a large class of code-reuse exploits."),
+            ("sehop", "SEHOP", "Structured exception handler overwrite protection (SEHOP)",
+             "SEHOP blocks exploits that overwrite exception handlers on the stack, a classic way to take over a program.")):
+        if _option(mitig, key) == "OFF":
+            out.append(failed(
+                f"EXPLOIT-{flag}", f"{title} is turned off for the whole system", Severity.MEDIUM,
+                f"{why} It has been switched off system-wide, which weakens every program on this PC.",
+                _MITIGATION_HELP.format(flags=flag), loc, evidence,
+                run_ps(f"Set-ProcessMitigation -System -Enable {flag}", f"Turn {flag} back on (system default)"), ["T1685"]))
+        else:
+            out.append(passed(f"EXPLOIT-{flag}", f"{title} is on",
+                              "Uses the Windows default (on)." if _option(mitig, key) in ("NOTSET", "") else "Explicitly on."))
     return out
 
 
@@ -1924,8 +2001,8 @@ def check_macos(env: AuditEnv) -> List[Check]:
 # =========================================================================== scanner
 WINDOWS_CHECKS: List[Callable[[AuditEnv], List[Check]]] = [
     check_os_support, check_antivirus, check_defender_prefs, check_firewall, check_uac, check_smb, check_rdp,
-    check_bitlocker, check_secure_boot, check_windows_update, check_credentials, check_hygiene, check_office,
-    check_asr,
+    check_bitlocker, check_secure_boot, check_exploit_protection, check_windows_update, check_credentials, check_hygiene,
+    check_office, check_asr,
 ]
 LINUX_CHECKS: List[Callable[[AuditEnv], List[Check]]] = [
     check_linux_firewall, check_linux_ssh, check_linux_updates, check_linux_files, check_linux_suid,

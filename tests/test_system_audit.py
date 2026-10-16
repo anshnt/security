@@ -606,3 +606,50 @@ def test_scanner_runs_on_this_platform(tmp_path, monkeypatch):
     assert sa.SystemAuditScanner.name == "system_audit"
     from aegis.scanners.base import REGISTRY
     assert REGISTRY["system_audit"] is sa.SystemAuditScanner
+
+
+# ---------------------------------------------------------------- exploit protection
+def _by_key(checks):
+    return {c.key: c for c in checks}
+
+
+def test_exploit_protection_defaults_pass():
+    facts = {"mitig": {"dep": "NOTSET", "bottomup": "NOTSET", "highentropy": "NOTSET", "forcereloc": "NOTSET",
+                       "cfg": "NOTSET", "sehop": "NOTSET"}, "dep_policy": 2}
+    checks = _by_key(sa.check_exploit_protection(env(facts)))
+    assert set(checks) == {"EXPLOIT-DEP", "EXPLOIT-ASLR", "EXPLOIT-CFG", "EXPLOIT-SEHOP"}
+    assert all(c.ok is True for c in checks.values())
+    assert "OptIn" in checks["EXPLOIT-DEP"].detail and all(c.to_finding() is None for c in checks.values())
+
+
+def test_exploit_protection_flags_explicitly_disabled_mitigations():
+    facts = {"mitig": {"dep": "NOTSET", "bottomup": "OFF", "highentropy": "NOTSET", "forcereloc": "NOTSET",
+                       "cfg": "OFF", "sehop": "OFF"}, "dep_policy": 0}
+    checks = _by_key(sa.check_exploit_protection(env(facts)))
+    dep = checks["EXPLOIT-DEP"].to_finding()
+    assert dep.severity == Severity.HIGH and "AlwaysOff" in dep.description and dep.remediation is None  # BitLocker caution
+    assert "BitLocker" in dep.recommendation and dep.evidence["dep_support_policy"] == "AlwaysOff"
+    aslr = checks["EXPLOIT-ASLR"].to_finding()
+    assert aslr.severity == Severity.MEDIUM and aslr.description.startswith("Bottom-up ASLR is switched off")
+    assert aslr.remediation.params["command"] == "Set-ProcessMitigation -System -Enable BottomUp,HighEntropy"
+    for key, flag in (("EXPLOIT-CFG", "CFG"), ("EXPLOIT-SEHOP", "SEHOP")):
+        f = checks[key].to_finding()
+        assert f.severity == Severity.MEDIUM and f.remediation.params["powershell"] is True
+        assert f.remediation.params["command"] == f"Set-ProcessMitigation -System -Enable {flag}"
+        assert f.mitre == ["T1685"] and f.rule_id == "AEG-AUDIT-" + key
+
+
+def test_exploit_protection_dep_off_via_mitigation_and_aslr_wording():
+    facts = {"mitig": {"dep": "OFF", "bottomup": "OFF", "highentropy": "OFF", "cfg": "ON", "sehop": "ON", "forcereloc": "ON"}}
+    checks = _by_key(sa.check_exploit_protection(env(facts)))
+    assert checks["EXPLOIT-DEP"].ok is False and "exploit protection setting OFF" in checks["EXPLOIT-DEP"].description
+    assert checks["EXPLOIT-ASLR"].description.startswith("Bottom-up ASLR and high-entropy ASLR are switched off")
+    assert checks["EXPLOIT-CFG"].ok is True and checks["EXPLOIT-CFG"].detail == "Explicitly on."
+
+
+def test_exploit_protection_unavailable_is_skipped_and_partial_facts_work():
+    checks = sa.check_exploit_protection(env({}))
+    assert len(checks) == 1 and checks[0].ok is None and checks[0].status == CheckStatus.SKIP
+    only_policy = _by_key(sa.check_exploit_protection(env({"dep_policy": 3})))
+    assert only_policy["EXPLOIT-DEP"].ok is True and "OptOut" in only_policy["EXPLOIT-DEP"].detail
+    assert all(c.ok is True for c in only_policy.values())
