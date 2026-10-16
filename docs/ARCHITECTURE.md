@@ -36,7 +36,10 @@
   `run(ctx)`. To add one, drop a module into `aegis/scanners/` and list it in `base.load_all()`.
 * **Profiles** (`core/engine.py`): `quick` runs processes, persistence, hot-spot files, browser and
   network. `full` adds every drive, system audit, software, secrets and the threat-hunting scanners (eventlog,
-  drivers, sideload, usb, email, memory). `audit` runs configuration checks only.
+  drivers, sideload, usb, email, memory, supplychain, ide, privacy, apptamper, recovery, traces). `audit` runs
+  configuration checks only (system audit, software and updates, network, browser, recovery readiness).
+* **Action plan** (`core/report.py: action_plan`): groups findings by rule, worst first, with the fix command for
+  each group. The HTML and console reports and the desktop dashboard all show it.
 * **Signatures** (`core/signatures.py`): bundled data in `aegis/data` is merged with downloaded feeds in
   `<data>/signatures`. If a feed update fails, the previous file is kept.
 * **Data directory**: `%ProgramData%\Aegis` when running as admin, `%LOCALAPPDATA%\Aegis` otherwise

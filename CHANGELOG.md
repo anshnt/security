@@ -1,5 +1,34 @@
 # Changelog
 
+## [1.3.0] - 2026-10-16
+
+### Detection
+- **Recent-activity traces (`traces`).**
+  - **Run dialog:** finds commands pasted by ClickFix / fake-CAPTCHA attacks, including the "I am not a robot" lure.
+  - **Command history:** finds download-and-run and Defender-tampering lines in PowerShell history, and strong
+    attack patterns in bash, zsh and fish history (`curl | sh` from raw IPs or paste sites, `base64 -d | sh`, fake
+    macOS password dialogs).
+  - **Network traces:** checks the Windows DNS cache and the last 30 days of browser history against the
+    malicious-domain feeds.
+  - Developer installers from well-known hosts are not flagged.
+- **Ransomware recovery readiness (`recovery`, part of `aegis audit`).**
+  - **Recovery layers checked:** System Restore and shadow copies, File History, OneDrive folder backup, Google Drive,
+    Dropbox, Time Machine, and Linux snapshot and backup tools.
+  - **Result:** a Good / Fair / Weak grade with exact steps for each gap. Read-only.
+- **Exploit protection in the hardening audit.** Reports DEP, ASLR, Control Flow Guard and SEHOP when they were
+  explicitly switched off system-wide. ASLR, CFG and SEHOP have a fix that turns them back on.
+- **Saved Wi-Fi networks.** Reviews every saved network, not only the current one: WEP, open networks the device
+  joins automatically ("evil twin" risk), WPA/TKIP and hidden networks that are joined automatically. The fix switches
+  the network to "connect manually"; nothing is deleted and no keys are read.
+
+### Reports and app
+- **"What to do first".**
+  - **Grouping:** findings are grouped by kind, worst first.
+  - **Fix commands:** each group has the exact command that fixes it.
+  - **Where it appears:** the HTML report, the console report and the desktop dashboard, which has a Fix button per
+    group.
+- **HTML report:** every finding shows its location, and a search box filters findings by any text.
+
 ## [1.2.0] - 2026-10-16
 
 ### Detection

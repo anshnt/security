@@ -16,7 +16,7 @@
 | R10 | Find exposed secrets (keys, seed phrases, plaintext passwords) | `scanners/secrets.py` |
 | R11 | Real-time protection: new files, new processes, ransomware behaviour, persistence changes | `realtime/` |
 | R12 | Quarantine with restore; remediation with backups | `core/quarantine.py`, `core/remediation.py` |
-| R13 | Reports: security score, HTML/JSON/CSV/TXT, MITRE ATT&CK mapping | `core/report.py`, `core/scoring.py` |
+| R13 | Reports: security score, HTML/JSON/CSV/TXT/SARIF, "What to do first" action plan, MITRE ATT&CK mapping | `core/report.py`, `core/scoring.py` |
 | R14 | Utilities: URL/phishing checker, password breach check, file deep-analysis, integrity monitoring | `tools/` |
 | R15 | Interfaces: CLI with exit codes, desktop GUI, scheduled tasks / services | `cli.py`, `ui/gui.py`, `core/service.py` |
 | R16 | Privacy: no telemetry. Cloud lookups are opt-in and send hashes only; passwords use k-anonymity | all modules |

@@ -41,6 +41,10 @@ be honest, because a security tool that overstates what it does is a risk in its
 | Infostealer persistence in trusted apps (Discord injection, wallet-app swaps, Electron/Node env abuse) | ✅ | 🟡 (signatures) | 🟡 | 🟡 | ❌ | ❌ | ❌ |
 | Hijacked browser shortcuts + browsers launched for cookie theft (remote debugging) | ✅ | 🟡 | ✅ | 🟡 | ❌ | ✅ (shortcuts) | ❌ |
 | Webcam / microphone / screen-capture access review (spyware, stalkerware) | ✅ (OS usage record) | ❌ | 🟡 💲 | ✅ 💲 (webcam protection) | ❌ | ❌ | ❌ |
+| ClickFix / fake-CAPTCHA traces (Run dialog, PowerShell and shell history), malicious domains in DNS cache and browser history | ✅ | 🟡 (behaviour blocking) | 🟡 Browser Guard | 🟡 EDR 💲 | ❌ | ❌ | ❌ |
+| Ransomware recovery readiness (restore points, File History, cloud versioning, Time Machine) with a grade | ✅ | 🟡 (CFA, OneDrive prompt) | ❌ | 🟡 (own backup 💲) | ❌ | ❌ | ❌ |
+| Exploit-protection audit (DEP, ASLR, CFG, SEHOP switched off) | ✅ | 🟡 (settings page) | ✅ 💲 (exploit protection) | ✅ | ❌ | ❌ | ❌ |
+| Saved Wi-Fi review (WEP, auto-joined open networks, hidden networks) | ✅ | ❌ | ❌ | ✅ (Wi-Fi inspector) | ❌ | ❌ | ❌ |
 | Phishing / malicious URL checker | ✅ (offline heuristics + URLhaus + optional Safe Browsing) | ✅ SmartScreen | ✅ 💲 | ✅ | ❌ | ❌ | ❌ |
 | Password breach check (HIBP k-anonymity) | ✅ | ✅ (Edge) | ❌ | ✅ 💲 | ❌ | ❌ | ❌ |
 | Real-time file protection | ✅ user-mode | ✅ kernel | ✅ 💲 | ✅ | ❌ | ❌ | 🟡 (clamonacc, Linux) |
