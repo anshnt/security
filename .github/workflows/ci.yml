@@ -20,8 +20,11 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, windows-latest]
+        os: [ubuntu-latest, windows-latest, macos-latest]
         python: ["3.11", "3.12"]
+        exclude:
+          - os: macos-latest
+            python: "3.11"
     steps:
       - uses: actions/checkout@v4
 
@@ -67,6 +70,68 @@ jobs:
           python -m aegis scan custom --scanners files --path tests || rc=$?
           echo "scan exit code: $rc"
           if [ "$rc" -ne 0 ] && [ "$rc" -ne 1 ]; then exit "$rc"; fi
+
+      - name: Real-macOS end-to-end (every macOS scanner, as the user and as root)
+        if: runner.os == 'macOS'
+        shell: bash
+        run: |
+          # A real Mac: launchd, TCC, quarantine attributes, Gatekeeper/SIP/FileVault, PAM and the screen lock are real.
+          # Two harmless downloads with a quarantine record and kMDItemWhereFroms, as Safari writes them:
+          mkdir -p ~/Downloads
+          for name in aegis-e2e-setup.dmg aegis-e2e-movie.iso; do
+            printf 'harmless Aegis CI test file\n' > ~/Downloads/$name
+            xattr -w com.apple.quarantine "0083;65a1b2c3;Safari;" ~/Downloads/$name
+          done
+          python - <<'PY'
+          import os, plistlib, subprocess
+          home = os.path.expanduser("~/Downloads")
+          for name, urls in (("aegis-e2e-setup.dmg", ["http://45.9.148.10/dl/aegis-e2e-setup.dmg?token=E2ESECRET",
+                                                      "https://share.example/page"]),
+                             ("aegis-e2e-movie.iso", ["blob:https://share.example/0d7c4f1e-5b7a-4a43-9a51-7e8c2f0b1a2c"])):
+              data = plistlib.dumps(urls, fmt=plistlib.FMT_BINARY)
+              subprocess.run(["xattr", "-wx", "com.apple.metadata:kMDItemWhereFroms", data.hex(), os.path.join(home, name)],
+                             check=True)
+          PY
+          scan() {  # name, then scan arguments
+            local name="$1"; shift
+            rc=0
+            AEGIS_HOME="$RUNNER_TEMP/aegis-home-mac" python -m aegis scan "$@" --json > "mac-$name.json" || rc=$?
+            echo "$name exit code: $rc"
+            if [ "$rc" -ne 0 ] && [ "$rc" -ne 1 ]; then exit "$rc"; fi
+          }
+          scan audit audit
+          scan quick quick
+          scan hunt custom --scanners secrets,email,supplychain,ide,privacy,apptamper,traces,recovery,usb
+          rc=0
+          sudo env "PATH=$PATH" AEGIS_HOME="$RUNNER_TEMP/aegis-home-mac-root" python -m aegis scan custom \
+            --scanners system_audit,persistence,privacy,processes,network --json > mac-root.json || rc=$?
+          echo "root exit code: $rc"
+          if [ "$rc" -ne 0 ] && [ "$rc" -ne 1 ]; then exit "$rc"; fi
+          python - <<'PY'
+          import json, sys
+          bad = False
+          for name in ("audit", "quick", "hunt", "root"):
+              d = json.load(open(f"mac-{name}.json", encoding="utf-8"))
+              print(f"{name}: score {d['score']} ({d['grade']}), scanners {d['scanners']}, counts {d['counts']}, "
+                    f"checks {sum(c['status'] == 'pass' for c in d['checks'])}/{len(d['checks'])} pass")
+              for c in d["checks"]:
+                  if c["status"] != "pass":
+                      print(f"   {c['status']:<5} {c['check_id']:<34} {c['detail'][:150]}")
+                  if c["status"] == "error":
+                      bad = True
+              for f in d["findings"]:
+                  print(f"   F {f['severity']:<8} {f['rule_id']:<30} {f['title'][:110]}")
+              for e in d["errors"]:
+                  print(f"   SCANNER ERROR: {e}")
+                  bad = True
+          quick = open("mac-quick.json", encoding="utf-8").read()
+          got = {(f["rule_id"], f["evidence"].get("file")) for f in json.loads(quick)["findings"] if f["scanner"] == "downloads"}
+          print("download origin review:", sorted(got))
+          if not {("AEG-DL-RAWIP", "aegis-e2e-setup.dmg"), ("AEG-DL-SMUGGLED", "aegis-e2e-movie.iso")} <= got or "E2ESECRET" in quick:
+              print("   EXPECTED the planted downloads to be reported, without the token in their address")
+              bad = True
+          sys.exit(1 if bad else 0)
+          PY
 
       - name: Real-Linux end-to-end (hardening audit and autostart review, as the user and as root)
         if: runner.os == 'Linux'
