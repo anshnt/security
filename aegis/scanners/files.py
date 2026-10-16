@@ -416,6 +416,54 @@ def iter_files(roots: Iterable[Path], ctx: ScanContext) -> Iterator[Path]:
                     yield Path(full)
 
 
+# --------------------------------------------------------------------------- process pool
+# Regex matching holds the GIL, so threads only use one core. Deep/full scans of whole
+# drives therefore fan out to worker processes, each with its own SignatureDB; the main
+# process keeps the clean-file cache and progress reporting.
+
+_WORKER_CTX: Optional[ScanContext] = None
+
+
+def _worker_init(cfg_dict: dict, deep: bool) -> None:
+    global _WORKER_CTX
+    from aegis.core.config import Config
+    from aegis.core.signatures import SignatureDB
+
+    cfg = Config(**cfg_dict)
+    _WORKER_CTX = ScanContext(config=cfg, signatures=SignatureDB(cfg), deep=deep)
+
+
+def _worker_scan(path: str) -> Tuple[str, List[Finding], dict]:
+    ctx = _WORKER_CTX
+    if ctx is None:  # pragma: no cover - initializer failed
+        raise RuntimeError("scan worker not initialised")
+    ctx.stats.clear()
+    findings = scan_file(ctx, Path(path), None)
+    return path, findings, dict(ctx.stats)
+
+
+def _spawn_supported() -> bool:
+    """Spawned workers re-import the main program: possible for the frozen exe,
+    `python -m aegis` and scripts on disk, not for code fed through stdin/-c."""
+    import sys
+
+    if getattr(sys, "frozen", False):
+        return True
+    main = sys.modules.get("__main__")
+    spec = getattr(main, "__spec__", None)
+    main_file = getattr(main, "__file__", None)
+    return spec is not None or bool(main_file and os.path.isfile(main_file))
+
+
+def _scan_mode(ctx: ScanContext) -> str:
+    mode = str(ctx.options.get("file_scan_mode", "auto")).lower()
+    if mode == "threads" or not _spawn_supported():
+        return "threads"
+    if mode == "processes":
+        return mode
+    return "processes" if ctx.deep and (os.cpu_count() or 1) >= 2 else "threads"
+
+
 @register
 class FileScanner(Scanner):
     name = "files"
@@ -431,6 +479,20 @@ class FileScanner(Scanner):
                 cache = ScanCache(ctx.config.home / "scan_cache.sqlite", hashlib.sha1(version.encode()).hexdigest()[:12])
             except Exception as exc:
                 log.debug("cache disabled: %s", exc)
+        ctx.report(self.name, "scanning " + ", ".join(str(r) for r in ctx.paths))
+        try:
+            if _scan_mode(ctx) == "processes":
+                try:
+                    yield from self._run_processes(ctx, cache)
+                    return
+                except _PoolUnavailable as exc:
+                    log.info("process pool unavailable (%s); scanning with threads", exc)
+            yield from self._run_threads(ctx, cache)
+        finally:
+            if cache:
+                cache.commit()
+
+    def _run_threads(self, ctx: ScanContext, cache: Optional[ScanCache], paths: Optional[Iterable[Path]] = None):
         results: List[Finding] = []
         lock = threading.Lock()
         count = 0
@@ -444,11 +506,9 @@ class FileScanner(Scanner):
                 if count % 500 == 0:
                     ctx.report(self.name, f"{count} files examined... ({p.parent})")
 
-        roots = ctx.paths
-        ctx.report(self.name, "scanning " + ", ".join(str(r) for r in roots))
         with ThreadPoolExecutor(max_workers=ctx.config.scan_threads) as pool:
             batch = []
-            for p in iter_files(roots, ctx):
+            for p in (iter_files(ctx.paths, ctx) if paths is None else paths):
                 batch.append(pool.submit(work, p))
                 if len(batch) >= 256:
                     for f in batch:
@@ -459,6 +519,79 @@ class FileScanner(Scanner):
                     yield from pending
             for f in batch:
                 f.result()
-        if cache:
-            cache.commit()
         yield from results
+
+    def _run_processes(self, ctx: ScanContext, cache: Optional[ScanCache]):
+        import collections
+        import multiprocessing
+        from concurrent.futures import ProcessPoolExecutor
+        from dataclasses import asdict
+
+        workers = max(2, min(os.cpu_count() or 2, 8, ctx.config.scan_threads))
+        try:
+            pool = ProcessPoolExecutor(max_workers=workers, mp_context=multiprocessing.get_context("spawn"),
+                                       initializer=_worker_init, initargs=(asdict(ctx.config), ctx.deep))
+        except Exception as exc:  # e.g. no semaphores in a sandbox
+            raise _PoolUnavailable(str(exc))
+        ctx.report(self.name, f"using {workers} worker processes")
+        ctx.bump("file_scan_workers", workers)
+        in_flight: "collections.deque" = collections.deque()
+        limit = workers * 64
+        done = 0
+
+        def collect(entry) -> List[Finding]:
+            nonlocal done
+            fut, path, st = entry
+            try:
+                _p, findings, stats = fut.result()
+            except Exception as exc:  # a crashed worker must not lose the file: scan it here
+                log.debug("worker failed on %s (%s); scanning in-process", path, exc)
+                ctx.bump("files_rescanned_in_process")
+                return scan_file(ctx, path, cache)
+            for k, v in stats.items():
+                ctx.bump(k, v)
+            if not findings and cache and st is not None:
+                cache.mark_clean(str(path), st, "")
+            done += 1
+            if done % 500 == 0:
+                ctx.report(self.name, f"{done} files examined... ({path.parent})")
+            return findings
+
+        from concurrent.futures.process import BrokenProcessPool
+
+        files = iter_files(ctx.paths, ctx)
+        broken_at: Optional[Path] = None
+        try:
+            for p in files:
+                st = None
+                if cache:
+                    try:
+                        st = p.stat()
+                        if cache.is_clean(str(p), st):
+                            ctx.bump("files_cached")
+                            continue
+                    except OSError:
+                        continue
+                try:
+                    in_flight.append((pool.submit(_worker_scan, str(p)), p, st))
+                except (BrokenProcessPool, RuntimeError) as exc:
+                    log.warning("scan worker pool failed (%s); continuing with threads", exc)
+                    broken_at = p
+                    break
+                while len(in_flight) >= limit:
+                    yield from collect(in_flight.popleft())
+                if ctx.cancelled:
+                    break
+            while in_flight and not ctx.cancelled:
+                yield from collect(in_flight.popleft())  # failed futures are rescanned in-process
+        finally:
+            pool.shutdown(wait=not ctx.cancelled and broken_at is None, cancel_futures=True)
+        if broken_at is not None and not ctx.cancelled:
+            ctx.bump("file_scan_pool_failures")
+            import itertools
+
+            yield from self._run_threads(ctx, cache, itertools.chain([broken_at], files))
+
+
+class _PoolUnavailable(RuntimeError):
+    pass
