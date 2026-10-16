@@ -1145,6 +1145,17 @@ def test_discovery_skips_dependency_dirs_venvs_and_hidden_dirs(tmp_path):
     assert {p.name for p in disc.projects} == {"proj", "py"} and not disc.truncated
 
 
+def test_discovery_skips_test_fixture_folders(tmp_path):
+    """Real macOS CI: a GitHub Action's __tests__/data lockfiles were reported as vulnerable installs."""
+    write(tmp_path, "action/package-lock.json", "{}")
+    for fixture in ("__tests__/data", "test/fixtures/old", "pkg/testdata", "src/__fixtures__/app", "x/__mocks__/m"):
+        write(tmp_path, f"action/{fixture}/requirements.txt", "idna==2.9\n")
+    disc = sc.discover([tmp_path], sc.Budget(), lambda: False)
+    assert {p.name for p in disc.projects} == {"action"}
+    only = sc.discover([tmp_path / "action" / "__tests__" / "data"], sc.Budget(), lambda: False)
+    assert len(only.projects) == 1  # scanning a fixture folder on purpose still works
+
+
 def test_discovery_depth_entry_and_time_budgets(tmp_path):
     write(tmp_path, "a/b/c/d/e/package-lock.json", "{}")
     write(tmp_path, "top/package-lock.json", "{}")

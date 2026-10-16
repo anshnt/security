@@ -45,6 +45,8 @@
   a progress bar was animating.
 - **Supply-chain findings name the project:** the same vulnerable package in two projects no longer reads as one finding
   listed twice.
+- **Supply chain skips test fixtures:** lockfiles in `__tests__`, `fixtures`, `__fixtures__`, `__mocks__` and `testdata`
+  folders are test data, never installed, and are no longer reported (scanning such a folder directly still works).
 
 ## [1.4.0] - 2026-10-16
 

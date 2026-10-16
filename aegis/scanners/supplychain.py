@@ -55,6 +55,9 @@ SKIP_DIRS = frozenset({
     "dist-packages", "__pycache__", "cache", "vendor", "target", "build", "dist", "out", "obj", "bin", "pods",
     "carthage", "deriveddata", "appdata", "library", "$recycle.bin", "system volume information", "windows",
     "program files", "program files (x86)", "programdata", "onedrivetemp", "temp", "tmp",
+    # test fixtures: lockfiles and manifests kept as test data, never installed (a GitHub Action's __tests__/data
+    # folder on the macOS runner produced eight "vulnerable package" findings)
+    "__tests__", "__fixtures__", "__mocks__", "fixtures", "testdata", "test-data", "test_data",
 })
 DEV_DIR_NAMES = ("source", "src", "repos", "projects", "code", "dev", "git", "workspace", "workspaces", "work",
                  "github", "gitlab", "developer", "Documents", "Desktop", "Downloads")
