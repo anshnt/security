@@ -260,6 +260,11 @@ EXPOSED_SERVICES: Dict[int, Tuple[str, Severity]] = {
     5900: ("VNC", Severity.MEDIUM), 5901: ("VNC", Severity.MEDIUM), 5902: ("VNC", Severity.MEDIUM),
     23: ("Telnet", Severity.MEDIUM), 5985: ("WinRM (HTTP)", Severity.LOW), 5986: ("WinRM (HTTPS)", Severity.LOW),
     21: ("FTP", Severity.MEDIUM),
+    # databases and dev servers: several have no password by default and are wiped for ransom when reachable
+    2375: ("Docker Engine API without TLS", Severity.HIGH), 6379: ("Redis", Severity.MEDIUM),
+    27017: ("MongoDB", Severity.MEDIUM), 9200: ("Elasticsearch", Severity.MEDIUM), 11211: ("Memcached", Severity.MEDIUM),
+    5984: ("CouchDB", Severity.LOW), 3306: ("MySQL", Severity.LOW), 5432: ("PostgreSQL", Severity.LOW),
+    1433: ("SQL Server", Severity.LOW),
 }
 
 
@@ -934,6 +939,10 @@ FW_ADMIN_PORTS: Dict[int, str] = {22: "SSH", 445: "SMB file sharing", 3389: "Rem
 _FW_PORT_PROTOCOLS = {"any", "tcp", "udp", "6", "17"}  # the protocols that have ports (not ICMP, GRE, ESP ...)
 _FW_OPEN_REMOTE = re.compile(r"^(?:any|\*|internet|0\.0\.0\.0/0|::/0|0\.0\.0\.0-255\.255\.255\.255)$", re.I)
 _FW_APPDATA_ROOT = re.compile(r"^[a-z]:\\users\\[^\\]+\\appdata\\(?:local|roaming)\\[^\\]+\.(?:exe|dll|scr|bat|cmd|vbs|js|ps1)$")
+# programs that never need to accept connections: an inbound allow rule for one is a backdoor
+FW_LOLBINS = frozenset({"powershell.exe", "pwsh.exe", "cmd.exe", "mshta.exe", "wscript.exe", "cscript.exe", "rundll32.exe",
+                        "regsvr32.exe", "certutil.exe", "bitsadmin.exe", "msbuild.exe", "installutil.exe", "regasm.exe",
+                        "regsvcs.exe", "wmic.exe", "nc.exe", "nc64.exe", "ncat.exe", "netcat.exe", "socat.exe"})
 _FW_NAME_OK = re.compile(r"^[^\x00-\x1f\x7f\"*?\[\]]{1,200}$")  # no control characters, quotes or wildcards
 
 
@@ -1076,6 +1085,27 @@ def firewall_admin_ports(ranges: List[Tuple[int, int]]) -> Dict[int, str]:
     return {p: n for p, n in FW_ADMIN_PORTS.items() if any(lo <= p <= hi for lo, hi in ranges)}
 
 
+def firewall_lolbin_or_fake(program: Optional[str]) -> str:
+    """Why a rule's program should never accept connections: 'lolbin' for script hosts and admin tools, 'fake' for a
+    system process name outside its real folder, '' otherwise (or when the path cannot be resolved)."""
+    if not _specific_program(program):
+        return ""
+    p = re.sub(r"(?i)%(?:systemroot|windir)%", r"c:\\windows", str(program).strip().strip('"'))
+    if "%" in p:
+        return ""
+    p = cl.norm_win(p)
+    base = cl.basename(p)
+    if base in FW_LOLBINS:
+        return "lolbin"
+    from aegis.scanners.processes import SYSTEM_PROCS
+
+    spec = SYSTEM_PROCS.get(base)
+    if spec is None:
+        return ""
+    folder = re.sub(r"^[a-z]:", "", cl.dirname(p))
+    return "" if folder in spec.dirs or any(folder.startswith(d) for d in spec.dir_prefixes) else "fake"
+
+
 def firewall_allows_everything(r: FirewallRule) -> bool:
     """Any program, service and port from any address on a profile that includes Public, outside Windows' own groups."""
     return (not r.has_group and not r.windows_owned and not r.owner
@@ -1149,6 +1179,8 @@ def firewall_rule_findings(rules: Sequence[FirewallRule], exists: Callable[[str]
            MEDIUM for Downloads / Desktop (Windows' own "allow access" prompt creates such rules for portable apps),
     MEDIUM any program on any port from any address on Public/Any, outside built-in groups,
     MEDIUM an admin port (RDP, VNC, WinRM, SSH, SMB) open to any address on Public/Any, outside Windows' own groups.
+    HIGH   (checked first) a script host / admin tool (PowerShell, cmd, mshta, netcat ...) or a system process name
+           outside its Windows folder.
     LOW    one summary finding for rules whose program no longer exists (stale, or left behind by removed malware)."""
     names = Counter(r.display_name.lower() for r in rules)
     out: List[Finding] = []
@@ -1157,7 +1189,28 @@ def firewall_rule_findings(rules: Sequence[FirewallRule], exists: Callable[[str]
     for r in rules:
         if len(out) >= MAX_FW_FINDINGS:
             break
-        if not firewall_program_in_user_path(r.program):
+        why = firewall_lolbin_or_fake(r.program)
+        if not why:
+            continue
+        flagged.add(r.name)
+        base = cl.basename(r.program or "")
+        detail = (f"{base} is a script host or system tool; it never needs to accept connections, so a rule for it is a "
+                  "backdoor or a leftover from an attack." if why == "lolbin" else
+                  f"the real {base} only runs from its Windows folder; a copy elsewhere with a firewall opening is a classic "
+                  "trojan disguise.")
+        out.append(_f(
+            "AEG-NET-FW-LOLBIN", f"Firewall lets {'a fake ' if why == 'fake' else ''}{base} accept connections from the network",
+            Severity.HIGH,
+            f"The rule '{r.label}' lets {r.program} accept inbound connections: {detail}",
+            _fw_location(r), _fw_evidence(r),
+            "Disable the rule (the fix below keeps it) unless you created it on purpose, and scan the program it names. "
+            + _fw_undo_hint(r),
+            firewall_disable_fix(r, names[r.display_name.lower()] > 1), ["T1686.003"], Category.SUSPICIOUS))
+
+    for r in rules:
+        if len(out) >= MAX_FW_FINDINGS:
+            break
+        if r.name in flagged or not firewall_program_in_user_path(r.program):
             continue
         flagged.add(r.name)
         # Windows' own "allow access" prompt creates such rules for portable apps run from Downloads or the Desktop:

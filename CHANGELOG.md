@@ -79,6 +79,19 @@
 ## [1.4.0] - 2026-10-16
 
 ### Detection
+- **Network exposure (`exposure`, part of `aegis audit` and the full scan).**
+  - **Router port forwards:** asks the router over UPnP which ports it forwards from the internet. RDP, SMB, SSH, VNC,
+    databases or the Docker API forwarded to this computer are HIGH, and so is a port opened for a program running
+    from Temp or Downloads. Forwards to other devices on risky ports are MEDIUM. When the router's own internet
+    address is private (carrier-grade or double NAT) the forwards are capped at LOW. Every forward is listed. The
+    router is only queried; answers that point at another host are ignored.
+  - **Docker Engine API without TLS:** `daemon.json` hosts, systemd `-H tcp://` and Docker Desktop's "Expose daemon on
+    tcp://localhost:2375 without TLS".
+- **Firewall rules for script hosts and fake system processes.** The network scanner's inbound rule review also flags
+  allow rules for PowerShell, cmd, mshta, rundll32, regsvr32, certutil, netcat and similar tools, and for system
+  process names (svchost.exe, lsass.exe, ...) outside System32 (`AEG-NET-FW-LOLBIN`, HIGH).
+- **Database and dev servers on all interfaces.** The network scanner now also reports Redis, MongoDB, Elasticsearch,
+  Memcached, CouchDB, MySQL, PostgreSQL, SQL Server and the Docker API listening on every interface.
 - **Download origin review (`downloads`, part of the quick and full scans).**
   - **Where downloads came from:** reads the origin the system keeps with a file (Windows Mark-of-the-Web, macOS
     quarantine and `kMDItemWhereFroms`, the `user.xdg.origin.url` attribute on Linux) for the risky files in Downloads and

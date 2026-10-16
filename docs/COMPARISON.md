@@ -40,6 +40,7 @@ be honest, because a security tool that overstates what it does is a risk in its
 | USB / removable-media threats (autorun, shortcut virus) | ✅ | ✅ | ✅ | ✅ | ❌ | ❌ | ❌ |
 | Sigma rules (community detection standard) on event logs + live processes | ✅ | ❌ | ❌ | 🟡 EDR 💲 | ❌ | ❌ | ❌ |
 | Software supply chain: malicious/vulnerable dependencies in local projects, malicious IDE extensions | ✅ (OSV.dev, Microsoft list) | ❌ | ❌ | 🟡 | ❌ | ❌ | ❌ |
+| Router port forwards (UPnP) and risky inbound firewall rules | ✅ | ❌ | ❌ | 🟡 home-network scan 💲 | ❌ | ❌ | ❌ |
 | Web protection (malicious-domain blocking) + C2 IP firewall blocking | ✅ hosts/firewall | ✅ SmartScreen / Network Protection | ✅ 💲 | ✅ | ❌ | ❌ | ❌ |
 | One-command hardening incl. ASR rules, with full undo | ✅ | 🟡 (manual / Intune 💲) | ❌ | 🟡 | ❌ | ❌ | ❌ |
 | Scan history, "new since last scan", alerts to Slack/Teams/Discord/email | ✅ | 🟡 (Defender for Endpoint 💲) | 🟡 💲 | 🟡 💲 | ❌ | ❌ | ❌ |

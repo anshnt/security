@@ -1036,3 +1036,32 @@ def test_scanner_reviews_ufw_on_linux_and_skips_elsewhere(ctx, tmp_path, monkeyp
     monkeypatch.setattr(nw, "collect_ufw_rules", linux_only)
     check = {o.check_id: o for o in nw.NetworkScanner().run(ctx) if isinstance(o, CheckResult)}["AEG-NET-CHK-FIREWALL"]
     assert check.status == CheckStatus.SKIP
+
+
+# --------------------------------------------------------------------------- firewall rules: script hosts, fake system processes
+
+@pytest.mark.parametrize("program,why", [
+    (r"%SystemRoot%\System32\WindowsPowerShell\v1.0\powershell.exe", "lolbin"),
+    (r"C:\Windows\System32\mshta.exe", "lolbin"),
+    (r"C:\Tools\nc64.exe", "lolbin"),
+    (r"C:\Users\bob\AppData\Roaming\Microsoft\svchost.exe", "fake"),
+    (r"C:\ProgramData\lsass.exe", "fake"),
+    (r"%SystemRoot%\system32\svchost.exe", ""),
+    (r"%windir%\explorer.exe", ""),
+    (r"C:\Program Files\Steam\steam.exe", ""),
+    (r"%ProgramFiles%\Vendor\svchost.exe", ""),  # an unexpanded variable: cannot tell, so not flagged
+    ("Any", ""), ("System", ""), (None, ""),
+])
+def test_firewall_lolbin_or_fake(program, why):
+    assert nw.firewall_lolbin_or_fake(program) == why
+
+
+def test_firewall_rule_for_a_script_host_or_fake_system_process_is_high():
+    by = fw_by_rule(FW("{PS}", "Windows Update Helper", program=r"C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe",
+                       ports=("4444",)),
+                    FW("{SV}", "Host Process", program=r"C:\Users\bob\AppData\Roaming\svchost.exe", ports=("8080",)),
+                    FW("{OK}", "Steam", program=r"C:\Program Files (x86)\Steam\steam.exe", ports=("27015",)))
+    assert by["{PS}"].rule_id == "AEG-NET-FW-LOLBIN" and by["{PS}"].severity == Severity.HIGH
+    assert "powershell.exe" in by["{PS}"].title and by["{PS}"].remediation is not None
+    assert by["{SV}"].rule_id == "AEG-NET-FW-LOLBIN" and "a fake svchost.exe" in by["{SV}"].title  # not also USERPATH
+    assert "{OK}" not in by
