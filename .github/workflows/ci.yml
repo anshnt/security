@@ -175,6 +175,7 @@ jobs:
           ok ./dist/aegis.exe alert status
           # v1.2: SARIF from a real scan, and the software updater against the runner's real winget
           ok ./dist/aegis.exe report e2e/audit.sarif --input e2e/audit.json
+          ok ./dist/aegis.exe fleet e2e -o e2e/fleet.html   # one overview built from this run's real scan results
           python -c "import json; d = json.load(open('e2e/audit.sarif', encoding='utf-8')); r = d['runs'][0]; print('SARIF', d['version'], len(r['results']), 'results,', len(r['tool']['driver']['rules']), 'rules')"
           ./dist/aegis.exe apps list || echo ">> apps list exit $? (1 = updates pending; 2 = winget unavailable or offline, not a failure here)"
 

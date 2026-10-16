@@ -666,6 +666,27 @@ def cmd_report(args, cfg: Config) -> int:
     return EXIT_CLEAN
 
 
+def cmd_fleet(args, cfg: Config) -> int:
+    from aegis.core import fleet
+
+    loaded = fleet.load_results(args.path, recursive=args.recursive)
+    for missing in loaded.missing:
+        _print(f"warning: no such file or folder: {missing}")
+    if not loaded.results:
+        _print("error: no Aegis scan results found" + (f" ({len(loaded.skipped)} file(s) skipped)" if loaded.skipped else ""))
+        return EXIT_ERROR
+    overview = fleet.build_fleet(loaded.results, since_days=args.since, min_severity=Severity.parse(args.min_severity),
+                                 load=loaded)
+    _print(fleet.render_text(overview))
+    try:
+        out = fleet.write_fleet(overview, args.output or cfg.reports_dir / "fleet.html")
+    except (OSError, ValueError) as exc:
+        _print(f"error: {exc}")
+        return EXIT_ERROR
+    _print(f"\nFleet overview written to {out}")
+    return EXIT_FINDINGS if fleet.exceeds(overview, Severity.parse(args.fail_on)) else EXIT_CLEAN
+
+
 def cmd_info(args, cfg: Config) -> int:
     from aegis.core.engine import ScanEngine, last_scan
     from aegis.core.signatures import HAVE_YARA
@@ -752,6 +773,16 @@ def cmd_service(args, cfg: Config) -> int:
 
 
 # ----------------------------------------------------------------------------- parser
+
+def _positive_int(text: str) -> int:
+    try:
+        n = int(text)
+    except ValueError:
+        raise argparse.ArgumentTypeError(f"invalid number of days: {text!r}") from None
+    if n < 1:
+        raise argparse.ArgumentTypeError("must be at least 1 day")
+    return n
+
 
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(
@@ -865,6 +896,20 @@ def build_parser() -> argparse.ArgumentParser:
     r.add_argument("--source-root", help="SARIF: write file locations relative to this folder (e.g. the repository root)")
     r.add_argument("--input", help="scan result JSON (default: last scan)")
     r.set_defaults(func=cmd_report)
+
+    fl = sub.add_parser("fleet", help="one overview of many computers: which machines need attention and what is wrong "
+                        "across them, from their scan result JSON files")
+    fl.add_argument("path", nargs="+", help="scan result file(s) or folder(s) (e.g. a shared folder the PCs write to)")
+    fl.add_argument("-o", "--output", metavar="FILE", help="write the overview here (.html, .json or .csv; default: "
+                    "fleet.html in the data folder's reports)")
+    fl.add_argument("--since", type=_positive_int, metavar="DAYS",
+                    help="list hosts whose latest scan is older than DAYS days as stale")
+    fl.add_argument("--recursive", action="store_true", help="also search sub-folders of the given folders")
+    fl.add_argument("--min-severity", default="medium", choices=["info", "low", "medium", "high", "critical"],
+                    help="list, count as new and group findings at/above this severity (default: medium)")
+    fl.add_argument("--fail-on", default="high", choices=["info", "low", "medium", "high", "critical"],
+                    help="exit code 1 when any host has findings at/above this severity (default: high)")
+    fl.set_defaults(func=cmd_fleet)
 
     i = sub.add_parser("info", help="show version, environment, signatures and scanners")
     i.add_argument("--json", action="store_true")

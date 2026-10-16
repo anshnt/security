@@ -100,6 +100,7 @@ aegis check-password                 strength + breach check (k-anonymity)
 aegis autoruns [--json]              list every autostart entry
 aegis integrity baseline|check       file integrity monitoring
 aegis report out.html|out.sarif [--source-root DIR]   render the last scan
+aegis fleet PATH... [-o fleet.html|json|csv] [--since DAYS] [--recursive]   one overview of many PCs' scans
 aegis info | config show | config set KEY VALUE
 aegis gui | install-service | uninstall-service
 ```
@@ -121,6 +122,25 @@ code-scanning alerts on the right files:
     sarif_file: aegis.sarif
     category: aegis-supply-chain
 ```
+
+### One overview of many PCs (`aegis fleet`)
+
+For a small office, a school or a family, let each PC's scheduled scan write its JSON result to a shared folder, then
+build one page from that folder:
+
+```powershell
+# on every PC (scheduled task):
+aegis scan full --quiet --report "\\server\share\aegis\$env:COMPUTERNAME-$(Get-Date -Format yyyy-MM-dd).json"
+# on the admin PC:
+aegis fleet \\server\share\aegis -o fleet.html --since 7
+```
+
+The page lists every PC worst first (score and grade, critical / high / medium counts, new findings and score change
+since its previous scan, admin or not), the issues that show up on the most PCs, and for each PC what to do first.
+Only the newest result of each PC is shown; keep the older files in the folder to get its score trend. `--since 7`
+marks PCs with no scan in the last 7 days as stale. Use `-o fleet.json` or `-o fleet.csv` for other tools, and
+`--recursive` to search sub-folders. Files that are not Aegis scan results are skipped and counted. Exit code `1`
+means some PC has findings at or above `--fail-on` (default `high`), `2` that no scan result was found.
 
 ### Configuration
 

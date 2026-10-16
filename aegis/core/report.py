@@ -635,13 +635,21 @@ def is_aegis_report(data: bytes, ext: str) -> bool:
             return _is_aegis_sarif(data)  # results.sarif.json
         try:
             d = json.loads(data.decode("utf-8"))
-        except ValueError:
+        except (ValueError, RecursionError):  # RecursionError: absurdly nested input
             return False
+        if isinstance(d, dict) and d.get("report") == "fleet":
+            from aegis.core.fleet import is_fleet_json
+
+            return is_fleet_json(d)
         return isinstance(d, dict) and d.get("generator") == "Aegis Security Suite" and \
             isinstance(d.get("findings"), list) and "score" in d and "scanners" in d
     if ext in ("html", "htm"):
         if b'<meta name="generator" content="Aegis Security Suite">' not in data[:1024]:
             return False
+        if b'<meta name="aegis-report" content="fleet">' in data[:1024]:  # `aegis fleet` page: its own, stricter check
+            from aegis.core.fleet import is_fleet_html
+
+            return is_fleet_html(data)
         low = data.lower()
         # Everything Aegis renders is HTML-escaped: the only active content is its own filter script.
         if low.count(b"<script") != 1 or _REPORT_SCRIPT.encode() not in data:
