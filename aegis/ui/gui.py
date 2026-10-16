@@ -756,7 +756,7 @@ class DashboardPage(Page):
                                 style="TButton" if on else "Accent.TButton")
         if on:
             st = app.monitor.status()
-            self.prot_detail.configure(text=f"File, process, ransomware and persistence guards active. Watching "
+            self.prot_detail.configure(text=f"File, process, ransomware, persistence and clipboard guards active. Watching "
                                             f"{len(st['watched'])} folders, {st['canaries']} ransomware canaries, "
                                             f"{st['stats'].get('files_scanned', 0)} files scanned this session.")
         else:
@@ -1223,7 +1223,7 @@ class ProtectionPage(Page):
         f = self.frame
         f.columnconfigure(0, weight=1)
         f.rowconfigure(3, weight=1)
-        app.heading(f, "Protection", "Real-time file, process, ransomware and persistence guards").grid(row=0, column=0, sticky="w")
+        app.heading(f, "Protection", "Real-time file, process, ransomware, persistence and clipboard guards").grid(row=0, column=0, sticky="w")
         top = app.card(f)
         top.grid(row=1, column=0, sticky="ew", pady=(12, 0))
         top.columnconfigure(0, weight=1)
@@ -1241,6 +1241,7 @@ class ProtectionPage(Page):
             "realtime_kill_malicious_processes": tk.BooleanVar(value=cfg.realtime_kill_malicious_processes),
             "ransomware_canaries": tk.BooleanVar(value=cfg.ransomware_canaries),
             "notifications": tk.BooleanVar(value=cfg.notifications),
+            "realtime_clipboard_guard": tk.BooleanVar(value=cfg.realtime_clipboard_guard),
         }
         opts = ttk.Frame(top, style="Panel.TFrame")
         opts.grid(row=2, column=0, columnspan=2, sticky="w")
@@ -1249,12 +1250,13 @@ class ProtectionPage(Page):
             "realtime_kill_malicious_processes": "Kill switch: terminate malicious processes",
             "ransomware_canaries": "Ransomware canary files",
             "notifications": "Desktop notifications",
+            "realtime_clipboard_guard": "Clipboard guard (fake CAPTCHA commands)",
         }
         for i, (key, var) in enumerate(self.vars.items()):
             ttk.Checkbutton(opts, text=labels[key], variable=var, command=self.apply_options).grid(
                 row=i // 2, column=i % 2, sticky="w", padx=(0, 28), pady=2)
         sev_row = ttk.Frame(opts, style="Panel.TFrame")
-        sev_row.grid(row=2, column=0, columnspan=2, sticky="w", pady=(6, 0))
+        sev_row.grid(row=(len(self.vars) + 1) // 2, column=0, columnspan=2, sticky="w", pady=(6, 0))
         ttk.Label(sev_row, text="Auto-quarantine minimum severity:", style="Panel.TLabel").pack(side="left")
         self.min_sev = tk.StringVar(value=cfg.auto_quarantine_min_severity.lower())
         cb = ttk.Combobox(sev_row, textvariable=self.min_sev, values=["medium", "high", "critical"], width=10, state="readonly")

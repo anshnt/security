@@ -66,6 +66,8 @@ class Config:
     auto_quarantine_min_severity: str = "high"
     realtime_watch_dirs: List[str] = field(default_factory=list)  # empty = defaults
     realtime_kill_malicious_processes: bool = False
+    realtime_clipboard_guard: bool = True  # warn when a page copies a ClickFix / fake-CAPTCHA command (checked in memory only)
+    realtime_clear_malicious_clipboard: bool = True  # and empty the clipboard when the command carries the lure text
     ransomware_canaries: bool = True
     notifications: bool = True
 
