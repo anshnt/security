@@ -1040,6 +1040,69 @@ def check_secure_boot(env: AuditEnv) -> List[Check]:
     return out
 
 
+# =========================================================================== Secure Boot certificates (2011 -> 2023)
+SECURE_BOOT_KEY = r"SYSTEM\CurrentControlSet\Control\SecureBoot"
+SECURE_BOOT_SERVICING_KEY = SECURE_BOOT_KEY + r"\Servicing"
+# Microsoft's 2011 Secure Boot certificates expire in 2026; devices must move to the 2023 certificates to keep receiving
+# boot-security fixes (DBX revocations of vulnerable boot managers such as the one BlackLotus abuses).
+SECURE_BOOT_2011_EXPIRY = (("Microsoft Corporation KEK CA 2011", dt.date(2026, 6, 24)),
+                           ("Microsoft UEFI CA 2011", dt.date(2026, 6, 27)),
+                           ("Microsoft Windows Production PCA 2011", dt.date(2026, 10, 19)))
+_SB_CERT_TITLE = "Secure Boot uses the 2023 Microsoft certificates"
+_SB_CERT_HELP = ("Install all Windows updates and restart twice; Windows moves to the 2023 certificates by itself on supported "
+                 "devices. Check for a BIOS/UEFI firmware update from the PC or motherboard maker, because some firmware must "
+                 "be updated first. Managed PCs: follow Microsoft's 'Secure Boot certificate rollout' guidance (Group Policy / "
+                 "Intune). Have your BitLocker recovery key at hand before firmware or boot changes.")
+
+
+def _expiry_text(today: dt.date) -> str:
+    parts = [f"{name} {'expired' if today >= when else 'expires'} on {when.isoformat()}" for name, when in SECURE_BOOT_2011_EXPIRY]
+    return "; ".join(parts)
+
+
+def check_secure_boot_certs(env: AuditEnv) -> List[Check]:
+    """Status of the move from Microsoft's 2011 Secure Boot certificates to the 2023 ones, from the servicing values
+    Microsoft documents for this (``UEFICA2023Status`` / ``UEFICA2023Error`` under ``...\SecureBoot\Servicing``).
+    ``WindowsUEFICA2023Capable`` is kept as evidence only: Microsoft says not to use it for status."""
+    if rd_int("HKLM", SECURE_BOOT_KEY + r"\State", "UEFISecureBootEnabled") != 1:
+        return [skipped("SECURE-BOOT-CERTS", _SB_CERT_TITLE, "Secure Boot is not enabled, so its certificates are not in use.")]
+    status = str(rd("HKLM", SECURE_BOOT_SERVICING_KEY, "UEFICA2023Status") or "").strip()
+    error = rd_int("HKLM", SECURE_BOOT_SERVICING_KEY, "UEFICA2023Error") or 0
+    event = rd_int("HKLM", SECURE_BOOT_SERVICING_KEY, "UEFICA2023ErrorEvent")
+    capable = rd_int("HKLM", SECURE_BOOT_SERVICING_KEY, "WindowsUEFICA2023Capable")
+    ev = {"UEFICA2023Status": status or None, "UEFICA2023Error": error, "UEFICA2023ErrorEvent": event,
+          "WindowsUEFICA2023Capable": capable}
+    loc = "HKLM\\" + SECURE_BOOT_SERVICING_KEY
+    why = ("Microsoft's 2011 Secure Boot certificates are expiring (" + _expiry_text(env.today) + "). A PC that has not "
+           "moved to the 2023 certificates stops receiving security fixes for its boot chain, such as revocations of "
+           "vulnerable boot managers that bootkits like BlackLotus abuse, and may not be able to boot newer boot media.")
+    if status.lower() == "updated" and not error:
+        return [passed("SECURE-BOOT-CERTS", _SB_CERT_TITLE, "The 2023 Secure Boot certificates and boot manager are in place.")]
+    if error:
+        return [failed(
+            "SECURE-BOOT-CERTS", "The Secure Boot certificate update failed", Severity.MEDIUM,
+            f"Windows tried to install the 2023 Secure Boot certificates but stopped with error {error:#x}"
+            + (f" (event {event})" if event else "") + ". " + why,
+            "Look up the error in Event Viewer (Windows Logs > System, Secure Boot / TPM-WMI events), install any firmware "
+            "update from the PC maker, then restart and let Windows retry. " + _SB_CERT_HELP, loc, ev, None, ["T1542.003"])]
+    if status.lower() == "inprogress":
+        return [failed(
+            "SECURE-BOOT-CERTS", "The Secure Boot certificate update has not finished", Severity.LOW,
+            "Windows has started moving to the 2023 Secure Boot certificates but has not finished. " + why,
+            "Restart the PC (twice if needed) so Windows can finish the update, then scan again. " + _SB_CERT_HELP,
+            loc, ev, None, ["T1542.003"])]
+    if status.lower() == "notstarted":
+        return [failed(
+            "SECURE-BOOT-CERTS", "Secure Boot still uses the expiring 2011 certificates", Severity.MEDIUM,
+            "Windows reports that the move to the 2023 Secure Boot certificates has not started. " + why,
+            _SB_CERT_HELP, loc, ev, None, ["T1542.003"])]
+    return [failed(
+        "SECURE-BOOT-CERTS", "Secure Boot certificate update status is unknown", Severity.LOW,
+        "Windows has not reported the status of the move to the 2023 Secure Boot certificates (the servicing status "
+        "value is missing, usually because recent cumulative updates are not installed). " + why,
+        _SB_CERT_HELP, loc, ev, None, ["T1542.003"])]
+
+
 # =========================================================================== exploit protection
 DEP_POLICIES = {0: "AlwaysOff", 1: "AlwaysOn", 2: "OptIn", 3: "OptOut"}
 _EXPLOIT_TITLE = "System-wide exploit protection (DEP, ASLR, CFG, SEHOP) is on"
@@ -2001,8 +2064,8 @@ def check_macos(env: AuditEnv) -> List[Check]:
 # =========================================================================== scanner
 WINDOWS_CHECKS: List[Callable[[AuditEnv], List[Check]]] = [
     check_os_support, check_antivirus, check_defender_prefs, check_firewall, check_uac, check_smb, check_rdp,
-    check_bitlocker, check_secure_boot, check_exploit_protection, check_windows_update, check_credentials, check_hygiene,
-    check_office, check_asr,
+    check_bitlocker, check_secure_boot, check_secure_boot_certs, check_exploit_protection, check_windows_update,
+    check_credentials, check_hygiene, check_office, check_asr,
 ]
 LINUX_CHECKS: List[Callable[[AuditEnv], List[Check]]] = [
     check_linux_firewall, check_linux_ssh, check_linux_updates, check_linux_files, check_linux_suid,

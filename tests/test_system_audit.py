@@ -653,3 +653,54 @@ def test_exploit_protection_unavailable_is_skipped_and_partial_facts_work():
     only_policy = _by_key(sa.check_exploit_protection(env({"dep_policy": 3})))
     assert only_policy["EXPLOIT-DEP"].ok is True and "OptOut" in only_policy["EXPLOIT-DEP"].detail
     assert all(c.ok is True for c in only_policy.values())
+
+
+# ---------------------------------------------------------------- Secure Boot 2023 certificates
+SB_STATE = r"SYSTEM\CurrentControlSet\Control\SecureBoot\State"
+SB_SERVICING = r"SYSTEM\CurrentControlSet\Control\SecureBoot\Servicing"
+
+
+def _sb_certs(reg, **servicing):
+    values = {("HKLM", SB_STATE, "UEFISecureBootEnabled"): 1}
+    values.update({("HKLM", SB_SERVICING, k): v for k, v in servicing.items()})
+    reg(values)
+    checks = sa.check_secure_boot_certs(env())
+    assert len(checks) == 1 and checks[0].key == "SECURE-BOOT-CERTS"
+    return checks[0]
+
+
+def test_secure_boot_certs_updated_passes(reg):
+    c = _sb_certs(reg, UEFICA2023Status="Updated", UEFICA2023Error=0, WindowsUEFICA2023Capable=2)
+    assert c.ok is True and c.to_finding() is None
+
+
+def test_secure_boot_certs_states(reg):
+    c = _sb_certs(reg, UEFICA2023Status="NotStarted")
+    assert c.ok is False and c.severity == Severity.MEDIUM and "2011" in c.title
+    f = c.to_finding()
+    assert f.remediation is None and "BitLocker" in f.recommendation and f.mitre == ["T1542.003"]
+    assert "Microsoft Corporation KEK CA 2011" in f.description and f.evidence["UEFICA2023Status"] == "NotStarted"
+    c = _sb_certs(reg, UEFICA2023Status="InProgress")
+    assert c.ok is False and c.severity == Severity.LOW and "Restart" in c.recommendation
+    c = _sb_certs(reg, UEFICA2023Status="InProgress", UEFICA2023Error=0x80070005, UEFICA2023ErrorEvent=1796)
+    assert c.severity == Severity.MEDIUM and "0x80070005" in c.description and "event 1796" in c.description
+    c = _sb_certs(reg)  # not reported at all: older update level
+    assert c.ok is False and c.severity == Severity.LOW and "unknown" in c.title
+
+
+def test_secure_boot_certs_capable_is_not_used_for_status(reg):
+    # Microsoft: WindowsUEFICA2023Capable is reference only; a device can report 2 without the update being complete
+    c = _sb_certs(reg, UEFICA2023Status="NotStarted", WindowsUEFICA2023Capable=2)
+    assert c.ok is False and c.evidence["WindowsUEFICA2023Capable"] == 2
+
+
+def test_secure_boot_certs_skipped_without_secure_boot(reg):
+    reg({("HKLM", SB_STATE, "UEFISecureBootEnabled"): 0, ("HKLM", SB_SERVICING, "UEFICA2023Status"): "NotStarted"})
+    checks = sa.check_secure_boot_certs(env())
+    assert checks[0].ok is None and checks[0].status == CheckStatus.SKIP
+
+
+def test_secure_boot_expiry_wording_follows_the_date():
+    assert "expires on 2026-10-19" in sa._expiry_text(dt.date(2026, 10, 1))
+    assert "Microsoft Windows Production PCA 2011 expired on 2026-10-19" in sa._expiry_text(dt.date(2026, 10, 20))
+    assert "Microsoft Corporation KEK CA 2011 expired on 2026-06-24" in sa._expiry_text(dt.date(2026, 10, 1))
