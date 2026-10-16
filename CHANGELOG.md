@@ -1,6 +1,6 @@
 # Changelog
 
-## [Unreleased]
+## [1.5.0] - 2026-10-16
 
 ### Detection
 - **Remote-access tool review (`remoteaccess`, part of the full scan).** For the victim of a tech-support scam: can someone
@@ -58,6 +58,12 @@
   sideloaded, malicious or adware one raises its usual MEDIUM to CRITICAL finding (with a desktop notification) at once,
   an ordinary store extension is a LOW event. A profile is re-read only when its files change. With administrator rights
   it watches every user's profiles. Setting: `realtime_extension_guard`, also on the GUI Protection page.
+
+### Quality
+- **Real macOS in CI.** Every push now also runs the full test suite and real scans on a Mac (the audit, a quick scan, the
+  hunting scanners and a root scan of the system scanners, plus planted Safari-style downloads that must be reported), next
+  to the real Windows and Ubuntu runs. Its first runs found the macOS bugs listed below, and checked the login-item parser
+  against a real `sfltool dumpbtm`.
 
 ### Fixes
 - **Network connections on macOS as a normal user:** the per-process fallback (used when the system-wide list is refused)
