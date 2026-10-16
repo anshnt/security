@@ -939,9 +939,17 @@ def _osv_url(vid: str) -> str:
     return f"https://osv.dev/{vid}"
 
 
+_GENERIC_FOLDER = re.compile(r"(?i)^(?:v?\d+(?:\.\d+)*|data|src|source|app|lib|libs|dist|build|code|current|latest|main|"
+                             r"master|node_modules|site-packages|\.?venv|env|python\d*|.{1,2})$")
+
+
 def _in_project(proj: Project) -> str:
-    """' in <folder>' for a title, so the same package in two projects does not read as one finding listed twice."""
-    name = proj.path.name or str(proj.path)
+    """' in <folder>' for a title, so the same package in two projects does not read as one finding listed twice. A
+    generic folder name (a version such as v5, 'data', 'src') is shown with its parent: 'checkout/v5'."""
+    path = proj.path
+    name = path.name
+    if name and _GENERIC_FOLDER.match(name) and path.parent.name:
+        name = f"{path.parent.name}/{name}"
     return f" in {name}" if name else ""
 
 

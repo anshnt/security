@@ -818,7 +818,7 @@ def test_malicious_package_is_critical_with_guidance(tmp_path, monkeypatch):
     mal = by_rule(findings, "AEG-SC-MALPKG")
     assert len(mal) == 1 and mal[0].severity == Severity.CRITICAL
     f = mal[0]
-    assert f.title == "Known malicious package npm/@ctrl/tinycolor@4.1.1 in app" and f.category == "malware"
+    assert f.title == f"Known malicious package npm/@ctrl/tinycolor@4.1.1 in {tmp_path.name}/app" and f.category == "malware"
     assert f.location.startswith(str(tmp_path / "app" / "package-lock.json"))
     assert f.evidence["advisories"] == ["MAL-2025-47141"] and f.evidence["file"].endswith("package-lock.json")
     assert "rotate" in f.recommendation.lower() and "persistence" in f.recommendation.lower()
@@ -838,6 +838,18 @@ def test_the_same_vulnerable_package_in_two_projects_names_each_project(tmp_path
     titles = sorted(f.title for f in by_rule(findings, "AEG-SC-VULN"))
     assert titles == ["Vulnerable npm package lodash@4.17.15 in admin-tool: 1 known advisory (high)",
                       "Vulnerable npm package lodash@4.17.15 in site: 1 known advisory (high)"]
+
+
+@pytest.mark.parametrize("folder,label", [
+    ("/home/u/site", " in site"), ("/home/u/admin-tool", " in admin-tool"),
+    ("/work/actions/checkout/v5", " in checkout/v5"),  # real macOS CI: "in v5" said nothing
+    ("/opt/aws-cli/data", " in aws-cli/data"), ("/home/u/proj/src", " in proj/src"), ("/x/b/1.2.3", " in b/1.2.3"),
+    ("/", ""),
+])
+def test_project_label_adds_the_parent_of_a_generic_folder(folder, label):
+    from types import SimpleNamespace
+
+    assert sc._in_project(SimpleNamespace(path=Path(folder))) == label
 
 
 def test_vulnerable_packages_aggregate_advisories_per_package(tmp_path, monkeypatch):
