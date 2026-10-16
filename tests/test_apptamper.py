@@ -331,6 +331,7 @@ def test_parse_real_windows_shortcuts(tmp_path):
         spec.append({"lnk": str(tmp_path / f"case{i}.lnk"), "target": str(target), "args": args, "wd": str(workdir)})
     script = tmp_path / "make.ps1"
     script.write_text(
+        "$ErrorActionPreference = 'Stop'\n"
         "$ws = New-Object -ComObject WScript.Shell\n"
         "foreach ($c in ($env:LNK_CASES | ConvertFrom-Json)) {\n"
         "  $s = $ws.CreateShortcut($c.lnk)\n"
@@ -342,10 +343,12 @@ def test_parse_real_windows_shortcuts(tmp_path):
     env = dict(os.environ, LNK_CASES=json.dumps(spec))  # json escapes non-ASCII, so the environment stays ASCII
     done = subprocess.run([ps, "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File", str(script)],
                           capture_output=True, text=True, timeout=180, env=env)
-    assert done.returncode == 0, done.stderr
+    assert done.returncode == 0, (done.stdout, done.stderr)
     for (target, args), item in zip(cases, spec):
+        lnk = Path(item["lnk"])
+        assert lnk.is_file(), (str(lnk), sorted(p.name for p in tmp_path.iterdir()), done.stdout[-500:], done.stderr[-500:])
         info = read_lnk(item["lnk"])
-        assert info is not None, item["lnk"]
+        assert info is not None, (str(lnk), lnk.stat().st_size, lnk.read_bytes()[:96].hex())
         assert _same_path(info.target_path, target), (info.target_path, str(target))
         assert info.arguments == args
         assert _same_path(info.working_dir, workdir)
