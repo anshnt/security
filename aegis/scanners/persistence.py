@@ -1105,17 +1105,22 @@ def collect_task_cache(subkeys: Optional[Callable[[str], List[str]]] = None,
     return tasks, truncated
 
 
-def hidden_task_reasons(t: TaskKey) -> List[str]:
+INDEX_ZERO_REASON = "its Index value is 0"
+
+
+def hidden_task_reasons(t: TaskKey, xml_present: bool = False) -> List[str]:
     """Why a task key is hidden from Task Scheduler / schtasks / Get-ScheduledTask while it keeps running: no (or an empty)
-    SD value (the Tarrask technique) or an Index of 0 (documented by Qualys; a missing Index is normal and not reported)."""
+    SD value (the Tarrask technique) or an Index of 0 (documented by Qualys; a missing Index is normal and not reported).
+    An Index of 0 counts only for a task outside \\Microsoft\\ whose task file exists: Windows Server 2025 keeps dozens of
+    built-in Microsoft tasks with Index 0 and no task file, stale cache entries that are not a sign of tampering."""
     out: List[str] = []
     if t.path.lower() not in SDLESS_TASK_ALLOWLIST:
         if not t.has_sd:
             out.append("it has no SD (security descriptor) value")
         elif t.sd_empty:
             out.append("its SD (security descriptor) value is empty")
-    if t.index == 0:
-        out.append("its Index value is 0")
+    if t.index == 0 and xml_present and not t.path.lower().startswith("\\microsoft\\"):
+        out.append(INDEX_ZERO_REASON)
     return out
 
 
@@ -1202,25 +1207,29 @@ def task_xml_path(task_path: str) -> str:
 
 def hidden_task_findings(tasks: Sequence[TaskKey], read_actions: Optional[Callable[[str], Any]] = None,
                          xml_exists: Optional[Callable[[str], bool]] = None) -> List[Finding]:
-    """HIGH finding for every task that Task Scheduler cannot list but Windows still runs. No automatic fix: restoring an SD
-    or deleting the keys blindly would destroy the evidence of a compromise."""
+    """A finding for every task that Task Scheduler cannot list but Windows still runs: HIGH for a missing or empty SD,
+    MEDIUM when the only sign is an Index of 0. No automatic fix: restoring an SD or deleting the keys blindly would destroy
+    the evidence of a compromise."""
     read_actions = read_actions or (lambda tid: None if "\\" in tid or "/" in tid else
                                     reg_read("HKLM", f"{TASKCACHE_KEY}\\Tasks\\{tid}", "Actions"))
     xml_exists = xml_exists or os.path.isfile
     out: List[Finding] = []
     for t in tasks:
-        reasons = hidden_task_reasons(t)
-        if not reasons:
-            continue
-        command, strings = describe_task_actions(read_actions(t.task_id))
+        if t.has_sd and not t.sd_empty and t.index != 0:
+            continue  # the common case: no file system access
         xml = task_xml_path(t.path)
         try:
             xml_present = bool(xml_exists(xml))
         except OSError:
             xml_present = False
+        reasons = hidden_task_reasons(t, xml_present)
+        if not reasons:
+            continue
+        command, strings = describe_task_actions(read_actions(t.task_id))
         tasks_key = f"HKLM\\{TASKCACHE_KEY}\\Tasks\\{t.task_id}"
         out.append(Finding(
-            "AEG-PERS-TASK-HIDDEN", f"Hidden scheduled task: {t.path}", Severity.HIGH, Category.PERSISTENCE,
+            "AEG-PERS-TASK-HIDDEN", f"Hidden scheduled task: {t.path}",
+            Severity.MEDIUM if reasons == [INDEX_ZERO_REASON] else Severity.HIGH, Category.PERSISTENCE,
             f"The scheduled task {t.path} is registered in the Task Scheduler cache but {' and '.join(reasons)}. That keeps it "
             "out of Task Scheduler, 'schtasks /query' and Get-ScheduledTask while Windows still runs it - a technique used by "
             "the Tarrask malware (HAFNIUM) and other attackers to hide persistence. Tasks registered normally have a security "

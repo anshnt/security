@@ -820,16 +820,30 @@ def test_collect_task_cache_walks_folders_and_reads_values_case_insensitively():
 def test_hidden_task_reasons_cover_sd_and_index_zero():
     assert ps.hidden_task_reasons(task("\\a", sd=False)) == ["it has no SD (security descriptor) value"]
     assert ps.hidden_task_reasons(task("\\a", empty=True)) == ["its SD (security descriptor) value is empty"]
-    assert ps.hidden_task_reasons(task("\\a", index=0)) == ["its Index value is 0"]
-    assert len(ps.hidden_task_reasons(task("\\a", sd=False, index=0))) == 2
+    assert ps.hidden_task_reasons(task("\\a", index=0), xml_present=True) == ["its Index value is 0"]
+    assert len(ps.hidden_task_reasons(task("\\a", sd=False, index=0), xml_present=True)) == 2
     for ok in (task("\\a"), task("\\a", index=None), task("\\a", index=1), task("\\a", index=4)):
-        assert ps.hidden_task_reasons(ok) == []
+        assert ps.hidden_task_reasons(ok) == [] and ps.hidden_task_reasons(ok, xml_present=True) == []
+
+
+def test_index_zero_counts_only_for_a_non_microsoft_task_with_a_task_file():
+    """Real Windows Server 2025 (CI): 26 built-in tasks such as \\Microsoft\\Windows\\WindowsUpdate\\sihboot have Index 0,
+    an SD and no task file. Those are stale cache entries, not hidden tasks."""
+    builtin = task(r"\Microsoft\Windows\WindowsUpdate\sihboot", index=0)
+    assert ps.hidden_task_reasons(builtin) == [] and ps.hidden_task_reasons(builtin, xml_present=True) == []
+    assert ps.hidden_task_reasons(task(r"\MICROSOFT\Windows\X", index=0), xml_present=True) == []
+    assert ps.hidden_task_reasons(task(r"\Vendor\Quiet", index=0)) == []  # no task file: a leftover, not a live task
+    assert ps.hidden_task_reasons(task(r"\Vendor\Quiet", index=0), xml_present=True) == ["its Index value is 0"]
+    assert ps.hidden_task_reasons(task(r"\MicrosoftEdgeUpdateFake", index=0), xml_present=True)  # not the \Microsoft\ folder
+    # a missing SD is reported wherever the task lives and whether or not its file exists
+    assert ps.hidden_task_reasons(task(r"\Microsoft\Windows\WinUpdate", sd=False, index=0)) == [
+        "it has no SD (security descriptor) value"]
 
 
 def test_task_without_sd_can_be_allow_listed_but_index_zero_cannot(monkeypatch):
     monkeypatch.setattr(ps, "SDLESS_TASK_ALLOWLIST", {r"\vendor\known"})
     assert ps.hidden_task_reasons(task(r"\Vendor\Known", sd=False)) == []
-    assert ps.hidden_task_reasons(task(r"\Vendor\Known", sd=False, index=0)) == ["its Index value is 0"]
+    assert ps.hidden_task_reasons(task(r"\Vendor\Known", sd=False, index=0), True) == ["its Index value is 0"]
     assert ps.hidden_task_reasons(task(r"\Vendor\Other", sd=False))
 
 
@@ -943,8 +957,16 @@ def test_hidden_task_findings_report_sd_index_command_and_xml_state():
         asked.append(tid)
         return blob if tid == "{AAAA}" else None
 
-    fs = ps.hidden_task_findings([ok, t_sd, t_idx, t_both], read_actions, lambda p: p.endswith("\\WinUpdate"))
-    assert asked == ["{AAAA}", "{BBBB}", "{CCCC}"]  # healthy tasks are never read
+    stale = task(r"\Microsoft\Windows\WindowsUpdate\sihboot", "{EEEE}", index=0)
+    looked = []
+
+    def xml_exists(p):
+        looked.append(p)
+        return p.endswith(("\\WinUpdate", "\\Quiet", "\\Both"))
+
+    fs = ps.hidden_task_findings([ok, t_sd, t_idx, t_both, stale], read_actions, xml_exists)
+    assert asked == ["{AAAA}", "{BBBB}", "{CCCC}"]  # healthy tasks and stale Microsoft entries are never read
+    assert not any(p.endswith("ScheduledDefrag") for p in looked)  # nor is a healthy task's file looked up
     by = {f.evidence["task"]: f for f in fs}
     assert set(by) == {"\\WinUpdate", r"\Vendor\Quiet", "\\Both"}
     f = by["\\WinUpdate"]
@@ -959,9 +981,11 @@ def test_hidden_task_findings_report_sd_index_command_and_xml_state():
     assert "reg query" in f.recommendation and "reg export" in f.recommendation and "full scan" in f.recommendation
     assert f.evidence["tasks_key"].endswith("\\Tasks\\{AAAA}") and "Tasks\\{AAAA}" in f.recommendation
     q = by[r"\Vendor\Quiet"]
-    assert q.evidence["problems"] == ["its Index value is 0"] and q.evidence["xml_file_exists"] is False
-    assert "could not be read" in q.description and "missing" in q.description
-    assert len(by["\\Both"].evidence["problems"]) == 2 and "and its Index value is 0" in by["\\Both"].description
+    assert q.evidence["problems"] == ["its Index value is 0"] and q.evidence["xml_file_exists"] is True
+    assert q.severity == S.MEDIUM  # Index 0 alone is a weaker sign than a removed security descriptor
+    assert "could not be read" in q.description and "task file exists" in q.description
+    b = by["\\Both"]
+    assert len(b.evidence["problems"]) == 2 and "and its Index value is 0" in b.description and b.severity == S.HIGH
     assert len({x.fingerprint for x in fs}) == 3  # one stable fingerprint per task key
 
 
@@ -981,6 +1005,7 @@ def test_hidden_task_findings_default_readers_use_the_registry_and_the_task_fold
     assert seen == [("HKLM", ps.TASKCACHE_KEY + "\\Tasks\\{GUID-X}", "Actions")]  # ids that could escape the key are not read
     assert fs[0].evidence["command"] == "cmd.exe /c dir" and fs[0].evidence["xml_file_exists"] is True
     assert fs[1].evidence["command"] == "" and fs[1].evidence["xml_file_exists"] is False
+    assert "task file under System32\\Tasks is missing" in fs[1].description and fs[1].severity == S.HIGH
 
 
 def test_task_xml_path_is_under_system32_tasks():
