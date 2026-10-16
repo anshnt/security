@@ -1196,8 +1196,8 @@ def test_scanner_is_registered_and_in_the_profiles():
     cls = REGISTRY["recovery"]
     assert cls.name == "recovery" and set(cls.platforms) == {"windows", "linux", "darwin"} and cls().supported()
     assert cls.title == "Backup & ransomware recovery readiness" and cls.description and cls.needs_admin_for_full_results
-    assert PROFILES["full"][-1] == "recovery" and PROFILES["full"].count("recovery") == 1
-    assert PROFILES["audit"][-1] == "recovery" and PROFILES["audit"].count("recovery") == 1
+    assert PROFILES["full"].count("recovery") == 1
+    assert PROFILES["audit"].count("recovery") == 1
     assert "recovery" not in PROFILES["quick"]
 
 
