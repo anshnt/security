@@ -9,8 +9,9 @@ entries (plus scan_file hits on their targets).
 
 Windows: Run/RunOnce keys, Winlogon, IFEO/SilentProcessExit, accessibility
 backdoors, AppInit/AppCert DLLs, LSA packages, BootExecute, Startup folders,
-scheduled tasks (XML), services & drivers, WMI event subscriptions, COM
-hijacks, Office add-ins, Active Setup, logon scripts, screensavers.
+scheduled tasks (XML) and tasks hidden from Task Scheduler (TaskCache entries
+without a security descriptor), services & drivers, WMI event subscriptions,
+COM hijacks, Office add-ins, Active Setup, logon scripts, screensavers.
 Linux/macOS: cron, systemd, rc.local, shell rc files, ld.so.preload, ssh keys,
 udev, XDG autostart, launchd.
 """
@@ -1040,6 +1041,205 @@ def collect_tasks(tasks_dir: Optional[Path] = None) -> List[Entry]:
     return out
 
 
+# --------------------------------------------------------------------------- Windows: hidden scheduled tasks
+
+TASKCACHE_KEY = r"SOFTWARE\Microsoft\Windows NT\CurrentVersion\Schedule\TaskCache"
+MAX_TASKCACHE_KEYS = 20000
+MAX_TASKCACHE_DEPTH = 32
+# Task paths (lower case) that ship without an SD value on a clean Windows install. The Task Scheduler service gives every
+# task it registers a security descriptor and none of the public hunting guides (Microsoft's Tarrask analysis, Qualys,
+# Binary Defense, Velociraptor) names a built-in task without one, so nothing is allow-listed. Add a path here only after
+# confirming it on a clean image; a single finding can also be allow-listed by its fingerprint.
+SDLESS_TASK_ALLOWLIST: Set[str] = set()
+
+
+@dataclass
+class TaskKey:
+    """One task key under TaskCache\\Tree (a key that has an Id value; folder keys have none)."""
+
+    path: str  # Task Scheduler path, e.g. \Microsoft\Windows\Foo\Bar
+    task_id: str  # GUID, also the name of the key under TaskCache\Tasks
+    has_sd: bool
+    sd_empty: bool = False
+    index: Optional[int] = None
+
+    @property
+    def registry_key(self) -> str:
+        return f"HKLM\\{TASKCACHE_KEY}\\Tree{self.path}"
+
+
+def collect_task_cache(subkeys: Optional[Callable[[str], List[str]]] = None,
+                       values: Optional[Callable[[str], Dict[str, Any]]] = None,
+                       limit: int = MAX_TASKCACHE_KEYS) -> Tuple[List[TaskKey], bool]:
+    """(task keys, truncated) from TaskCache\\Tree. Folders are subkeys, a task is a key with an Id value. Raises OSError
+    when the tree cannot be read (every Windows install has hundreds of tasks), so a read failure never looks like a clean
+    machine. Value names are matched case-insensitively."""
+    subkeys = subkeys or (lambda key: reg_subkeys("HKLM", key))
+    values = values or (lambda key: reg_values("HKLM", key))
+    root = TASKCACHE_KEY + "\\Tree"
+    first = subkeys(root)
+    if not first:
+        raise OSError(f"HKLM\\{root} could not be read")
+    stack: List[Tuple[str, int]] = [(name, 1) for name in reversed(first)]
+    tasks: List[TaskKey] = []
+    visited = 0
+    truncated = False
+    while stack:
+        rel, depth = stack.pop()
+        if visited >= limit:
+            truncated = True
+            break
+        visited += 1
+        key = f"{root}\\{rel}"
+        vals = {str(k).lower(): v for k, v in values(key).items()}
+        task_id = vals.get("id")
+        if isinstance(task_id, str) and task_id.strip():
+            index = vals.get("index")
+            tasks.append(TaskKey("\\" + rel, task_id.strip(), "sd" in vals, "sd" in vals and not vals["sd"],
+                                 index if isinstance(index, int) and not isinstance(index, bool) else None))
+        if depth < MAX_TASKCACHE_DEPTH:
+            stack.extend((f"{rel}\\{sub}", depth + 1) for sub in reversed(subkeys(key)))
+    if not tasks:
+        raise OSError(f"HKLM\\{root} holds no readable task keys")
+    tasks.sort(key=lambda t: t.path.lower())
+    return tasks, truncated
+
+
+def hidden_task_reasons(t: TaskKey) -> List[str]:
+    """Why a task key is hidden from Task Scheduler / schtasks / Get-ScheduledTask while it keeps running: no (or an empty)
+    SD value (the Tarrask technique) or an Index of 0 (documented by Qualys; a missing Index is normal and not reported)."""
+    out: List[str] = []
+    if t.path.lower() not in SDLESS_TASK_ALLOWLIST:
+        if not t.has_sd:
+            out.append("it has no SD (security descriptor) value")
+        elif t.sd_empty:
+            out.append("its SD (security descriptor) value is empty")
+    if t.index == 0:
+        out.append("its Index value is 0")
+    return out
+
+
+_ACTION_EXEC = 0x6666
+_MAX_ACTION_STRING = 64 * 1024
+
+
+def _read_bstr(data: bytes, pos: int) -> Optional[Tuple[str, int]]:
+    """(text, next position) of the length-prefixed UTF-16LE string at *pos* (DWORD byte count, then the characters)."""
+    if pos < 0 or pos + 4 > len(data):
+        return None
+    size = int.from_bytes(data[pos:pos + 4], "little")
+    if size % 2 or size > _MAX_ACTION_STRING or pos + 4 + size > len(data):
+        return None
+    return data[pos + 4:pos + 4 + size].decode("utf-16-le", errors="replace").rstrip("\x00"), pos + 4 + size
+
+
+def extract_utf16_strings(blob: Any, limit: int = 24) -> List[str]:
+    """Readable strings of a binary registry value that stores text as length-prefixed UTF-16LE (the Task Scheduler's
+    layout), found at any byte offset: 3+ printable characters with at least one letter or digit, in order, without repeats.
+    Best effort for values whose structure is not parsed (COM handler actions, other Windows builds)."""
+    if not isinstance(blob, (bytes, bytearray)):
+        return []
+    data = bytes(blob)
+    out: List[str] = []
+    i = 0
+    while i + 4 < len(data):
+        got = _read_bstr(data, i)
+        text = got[0].strip() if got else ""
+        if got and len(text) >= 3 and text.isprintable() and any(c.isalnum() for c in text):
+            if text not in out:
+                out.append(text)
+            i = got[1]
+        else:
+            i += 1
+    return out[:limit]
+
+
+def parse_task_actions(blob: Any) -> List[Dict[str, str]]:
+    """Exec actions of a TaskCache\\Tasks\\{Id} Actions value: a WORD version, a length-prefixed context string, then
+    actions that each start with a WORD magic. Exec (0x6666) carries id, command, arguments and working-directory strings
+    and, from version 3, a WORD of flags. [] when the layout is not recognised; other action kinds (COM handler, e-mail,
+    message box) end the parse."""
+    if not isinstance(blob, (bytes, bytearray)) or len(blob) < 6:
+        return []
+    data = bytes(blob)
+    version = int.from_bytes(data[:2], "little")
+    got = _read_bstr(data, 2)  # context: the principal the actions run as
+    if got is None:
+        return []
+    pos = got[1]
+    out: List[Dict[str, str]] = []
+    while pos + 2 <= len(data) and int.from_bytes(data[pos:pos + 2], "little") == _ACTION_EXEC:
+        pos += 2
+        fields: List[str] = []  # id, command, arguments, working directory
+        for _ in range(4):
+            got = _read_bstr(data, pos)
+            if got is None:
+                return out
+            fields.append(got[0])
+            pos = got[1]
+        if version >= 3:
+            pos += 2
+        out.append({"kind": "Exec", "command": fields[1], "arguments": fields[2], "workdir": fields[3]})
+    return out
+
+
+def describe_task_actions(blob: Any) -> Tuple[str, List[str]]:
+    """(command, readable strings) of an Actions value: the first Exec action as 'command arguments', else the first
+    program-looking string."""
+    strings = extract_utf16_strings(blob)
+    for a in parse_task_actions(blob):
+        if a["command"].strip():
+            return f"{a['command'].strip()} {a['arguments'].strip()}".strip()[:500], strings
+    for s in strings:
+        if re.search(r"\.(?:exe|bat|cmd|com|ps1|vbs|js|hta|scr|dll|msi)\b", s, re.I) or ("\\" in s and ":" in s):
+            return s[:500], strings
+    return "", strings
+
+
+def task_xml_path(task_path: str) -> str:
+    return f"{windows_dir()}\\System32\\Tasks{task_path}"
+
+
+def hidden_task_findings(tasks: Sequence[TaskKey], read_actions: Optional[Callable[[str], Any]] = None,
+                         xml_exists: Optional[Callable[[str], bool]] = None) -> List[Finding]:
+    """HIGH finding for every task that Task Scheduler cannot list but Windows still runs. No automatic fix: restoring an SD
+    or deleting the keys blindly would destroy the evidence of a compromise."""
+    read_actions = read_actions or (lambda tid: None if "\\" in tid or "/" in tid else
+                                    reg_read("HKLM", f"{TASKCACHE_KEY}\\Tasks\\{tid}", "Actions"))
+    xml_exists = xml_exists or os.path.isfile
+    out: List[Finding] = []
+    for t in tasks:
+        reasons = hidden_task_reasons(t)
+        if not reasons:
+            continue
+        command, strings = describe_task_actions(read_actions(t.task_id))
+        xml = task_xml_path(t.path)
+        try:
+            xml_present = bool(xml_exists(xml))
+        except OSError:
+            xml_present = False
+        tasks_key = f"HKLM\\{TASKCACHE_KEY}\\Tasks\\{t.task_id}"
+        out.append(Finding(
+            "AEG-PERS-TASK-HIDDEN", f"Hidden scheduled task: {t.path}", Severity.HIGH, Category.PERSISTENCE,
+            f"The scheduled task {t.path} is registered in the Task Scheduler cache but {' and '.join(reasons)}. That keeps it "
+            "out of Task Scheduler, 'schtasks /query' and Get-ScheduledTask while Windows still runs it - a technique used by "
+            "the Tarrask malware (HAFNIUM) and other attackers to hide persistence. Tasks registered normally have a security "
+            "descriptor and, when they have an Index, one above zero."
+            + (f" It runs: {command}." if command else " Its command could not be read.")
+            + (" Its task file exists." if xml_present else " Its task file under System32\\Tasks is missing."),
+            t.registry_key,
+            {"task": t.path, "task_id": t.task_id, "registry_key": t.registry_key, "tasks_key": tasks_key, "problems": reasons,
+             "has_sd": t.has_sd, "index": t.index, "command": command, "action_strings": strings[:8], "xml_file": xml,
+             "xml_file_exists": xml_present},
+            "Treat this as a likely compromise and run a full scan. Inspect it with: reg query \"" + t.registry_key + "\" /s and "
+            "reg query \"" + tasks_key + "\" /v Actions, then check the program it starts. To remove it, first export both keys "
+            "(reg export), then delete the Tree key, the Tasks key and the task file (this normally needs SYSTEM rights, for "
+            "example from a SYSTEM shell) and restart Windows so the Task Scheduler drops its in-memory copy. Aegis does not fix "
+            "this automatically.",
+            None, scanner="persistence", mitre=["T1053.005", "T1564"]))
+    return out
+
+
 # --------------------------------------------------------------------------- Windows: services
 
 SERVICES_KEY = r"SYSTEM\CurrentControlSet\Services"
@@ -1566,8 +1766,32 @@ def _scan_target_ok(path: str, deep: bool) -> bool:
 class PersistenceScanner(Scanner):
     name = "persistence"
     title = "Autostart / persistence"
-    description = "Autoruns-style analysis: Run keys, tasks, services, WMI, IFEO, Winlogon, startup folders, cron, systemd, launchd"
+    description = "Autoruns-style analysis: Run keys, tasks (also hidden ones), services, WMI, IFEO, Winlogon, startup folders, cron, systemd, launchd"
     platforms = ("windows", "linux", "darwin")
+
+    @staticmethod
+    def _hidden_tasks(admin: bool, collect: Callable[[], Tuple[List[TaskKey], bool]],
+                      review: Callable[[Sequence[TaskKey]], List[Finding]]):
+        def check(status: str, detail: str) -> CheckResult:
+            return CheckResult("AEG-PERS-CHK-HIDDEN-TASKS", "No hidden scheduled tasks", status, detail, Category.PERSISTENCE,
+                               "persistence")
+
+        if not admin:
+            yield check(CheckStatus.SKIP, "Needs administrator rights to read the Task Scheduler registry cache; "
+                                          "run Aegis as Administrator.")
+            return
+        try:
+            tasks, truncated = collect()
+            hidden = review(tasks)
+            yield from hidden
+            note = f" (stopped after {MAX_TASKCACHE_KEYS} registry keys)" if truncated else ""
+            if hidden:
+                yield check(CheckStatus.FAIL, f"{len(hidden)} of {len(tasks)} registered tasks are hidden from Task Scheduler{note}")
+            else:
+                yield check(CheckStatus.WARN if truncated else CheckStatus.PASS,
+                            f"{len(tasks)} registered tasks reviewed, none hidden{note}")
+        except Exception as exc:
+            yield check(CheckStatus.ERROR, f"{type(exc).__name__}: {exc}")
 
     def run(self, ctx: ScanContext):
         from aegis.scanners.files import scan_file
@@ -1648,3 +1872,6 @@ class PersistenceScanner(Scanner):
                           CheckStatus.FAIL if flagged else CheckStatus.PASS,
                           f"{flagged} suspicious of {len(entries)} entries" if flagged else f"{len(entries)} entries reviewed",
                           Category.PERSISTENCE, self.name)
+        if IS_WINDOWS and not ctx.cancelled:
+            ctx.report(self.name, "checking the Task Scheduler registry cache")
+            yield from self._hidden_tasks(ctx.is_admin, collect_task_cache, hidden_task_findings)

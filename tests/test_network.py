@@ -1,6 +1,8 @@
 """Tests for aegis.scanners.network: pure decision logic plus a live Linux run."""
 
 import datetime as dt
+import os
+import re
 
 import pytest
 
@@ -308,9 +310,10 @@ def test_scanner_runs_on_linux_and_emits_checks(ctx, monkeypatch):
     out = list(nw.NetworkScanner().run(ctx))
     assert all(isinstance(o, (Finding, CheckResult)) for o in out)
     ids = {o.check_id: o for o in out if isinstance(o, CheckResult)}
-    for needed in ("AEG-NET-CHK-CONN", "AEG-NET-CHK-HOSTS", "AEG-NET-CHK-PROXY", "AEG-NET-CHK-ROOTCA"):
+    for needed in ("AEG-NET-CHK-CONN", "AEG-NET-CHK-HOSTS", "AEG-NET-CHK-PROXY", "AEG-NET-CHK-ROOTCA", "AEG-NET-CHK-FIREWALL"):
         assert needed in ids
     assert ids["AEG-NET-CHK-ROOTCA"].status == "skip"
+    assert ids["AEG-NET-CHK-FIREWALL"].status in ("skip", "pass", "warn", "fail")  # ufw may be present (and readable) here
     assert ids["AEG-NET-CHK-CONN"].status in ("pass", "warn", "fail")
 
 
@@ -338,6 +341,7 @@ def test_scanner_clean_machine_passes(ctx, tmp_path, monkeypatch):
     monkeypatch.setattr(nw, "hosts_path", lambda: hosts)
     monkeypatch.setattr(nw, "collect_connections", lambda: ([C(1, "chrome", "93.184.216.34", 443)], None))
     monkeypatch.setattr(nw, "collect_dns", lambda: [("eth0", "192.168.1.1"), ("eth0", "1.1.1.1")])
+    monkeypatch.setattr(nw, "collect_ufw_rules", lambda: (None, "not reviewed in this test"))  # not the CI host's firewall
     out = list(nw.NetworkScanner().run(ctx))
     assert not [o for o in out if isinstance(o, Finding)]
     checks = {o.check_id: o.status for o in out if isinstance(o, CheckResult)}
@@ -518,3 +522,479 @@ def test_saved_wifi_check_statuses():
     assert len(out) == 1 and out[0].status == CheckStatus.SKIP and "no adapter" in out[0].detail
     out = list(net.NetworkScanner._saved_wifi(lambda: ([P("Home", "Home", "wpa2psk", "aes", True)], "")))
     assert out[-1].status == CheckStatus.PASS and "1 saved network(s), 1 joined automatically" in out[-1].detail
+
+
+# --------------------------------------------------------------------------- firewall rules
+
+def FW(name="{R1}", display="Custom rule", program="Any", ports=("Any",), remote=("Any",), profile="Any", group="",
+       display_group="", protocol="TCP", package="Any", service="Any", owner=""):
+    """A custom enabled inbound allow rule; the defaults describe the 'allow everything' shape."""
+    return nw.FirewallRule(name, display, group, display_group, profile, owner, program, package, service, protocol,
+                           None if ports is None else list(ports), None if remote is None else list(remote))
+
+
+def fw_findings(*rules, exists=lambda p: True):
+    return nw.firewall_rule_findings(rules, exists)
+
+
+def fw_by_rule(*rules, exists=lambda p: True):
+    return {f.evidence["rule"]: f for f in nw.firewall_rule_findings(rules, exists) if "rule" in f.evidence}
+
+
+BUILTIN = {"group": "@FirewallAPI.dll,-28752", "display_group": "Remote Desktop", "display": "Remote Desktop - User Mode (TCP-In)"}
+
+
+def test_parse_firewall_rules_handles_single_objects_lists_and_missing_filters():
+    one = {"Name": "{A}", "DisplayName": "Remote Desktop - User Mode (TCP-In)", "Group": "@FirewallAPI.dll,-28752",
+           "DisplayGroup": "Remote Desktop", "Profile": "Any", "Owner": "", "Program": "System", "Package": "Any",
+           "Service": "Any", "Protocol": "TCP", "LocalPort": "3389", "RemoteAddress": "Any"}
+    (r,) = nw.parse_firewall_rules(one)  # PowerShell prints a lone object, not a list
+    assert r.name == "{A}" and r.group == "@FirewallAPI.dll,-28752" and r.windows_owned and r.has_group
+    assert r.local_ports == ["3389"] and r.remote_addresses == ["Any"] and r.program == "System" and r.label == one["DisplayName"]
+    rules = nw.parse_firewall_rules([one, "junk", 5, {"DisplayName": "no name"}, {"Name": "{B}", "DisplayName": "Mine"},
+                                     {"Name": "{C}", "Program": None, "LocalPort": [], "RemoteAddress": ["10.0.0.0/8", "LocalSubnet"]}])
+    assert [x.name for x in rules] == ["{A}", "{B}", "{C}"]
+    b, c = rules[1], rules[2]
+    assert b.program is None and b.local_ports is None and b.remote_addresses is None  # filters missing: unknown, not "Any"
+    assert b.group == "" and not b.has_group and not b.windows_owned and b.label == "Mine"
+    assert c.program is None and c.local_ports == [] and c.remote_addresses == ["10.0.0.0/8", "LocalSubnet"]
+    assert nw.parse_firewall_rules(None) == [] and nw.parse_firewall_rules([]) == []
+    nameless = nw.parse_firewall_rules({"Name": "{D}"})[0]
+    assert nameless.label == "{D}"
+    store = nw.parse_firewall_rules({"Name": "{E}", "DisplayName": "@{Microsoft.XboxApp_1?ms-resource://x}"})[0]
+    assert store.windows_owned
+
+
+@pytest.mark.parametrize("program", [
+    r"C:\Users\bob\AppData\Local\Temp\evil.exe", r"C:\Users\bob\Downloads\tool.exe", r"C:\Users\Public\x.exe",
+    r"C:\Users\bob\AppData\Roaming\svc.exe", r"C:\Users\bob\AppData\Local\svc.exe", r"C:\ProgramData\svc.exe",
+    r"C:\$Recycle.Bin\S-1-5-21-1\x.exe", r"C:\Windows\Temp\a.exe", r"c:\users\BOB\appdata\local\temp\Evil.EXE",
+    r"C:\Users\bob\Desktop\setup.exe"])
+def test_user_writable_programs_are_flagged(program):
+    assert nw.firewall_program_in_user_path(program)
+    (f,) = fw_findings(FW(program=program, ports=("8080",), remote=("LocalSubnet",), profile="Private"))
+    expected = S.MEDIUM if ("\\Downloads\\" in program or "\\Desktop\\" in program) else S.HIGH  # firewall-prompt rules
+    assert f.rule_id == "AEG-NET-FW-USERPATH" and f.severity == expected and f.category == "suspicious"
+    assert f.mitre == ["T1686.003"] and f.scanner == "network" and program in f.description and f.evidence["program"] == program
+
+
+@pytest.mark.parametrize("program", [
+    r"C:\Program Files\Mozilla Firefox\firefox.exe", r"C:\Program Files (x86)\Steam\steam.exe",
+    r"C:\Windows\System32\svchost.exe", r"%SystemRoot%\system32\svchost.exe", r"C:\Users\bob\AppData\Local\Programs\Python\python.exe",
+    r"C:\Users\bob\AppData\Roaming\Spotify\Spotify.exe", r"C:\Users\bob\AppData\Local\Discord\app-1.0\Discord.exe",
+    r"C:\ProgramData\Microsoft\Windows Defender\Platform\4.18\MsMpEng.exe", r"C:\Tools\nmap\nmap.exe",
+    "Any", "System", "", None])
+def test_normal_programs_are_not_flagged_as_user_writable(program):
+    assert not nw.firewall_program_in_user_path(program)
+    assert not [f for f in fw_findings(FW(program=program, ports=("8080",), remote=("LocalSubnet",), profile="Private"))
+                if f.rule_id == "AEG-NET-FW-USERPATH"]
+
+
+def test_user_path_check_does_not_trust_builtin_groups_or_owners():
+    r = FW(program=r"C:\Users\bob\Downloads\x.exe", ports=("3389",), remote=("Any",), owner="S-1-5-21-1-2-3",
+           group=BUILTIN["group"], display_group=BUILTIN["display_group"], display=BUILTIN["display"])
+    (f,) = fw_findings(r)  # a rule can claim any name or group, so only the program matters
+    assert f.rule_id == "AEG-NET-FW-USERPATH"
+
+
+def test_allow_all_rule_is_medium_outside_builtin_groups():
+    (f,) = fw_findings(FW(display="Allow everything"))
+    assert f.rule_id == "AEG-NET-FW-ALLOWALL" and f.severity == S.MEDIUM and f.category == "network" and f.mitre == ["T1686.003"]
+    assert f.evidence["rule"] == "{R1}" and f.evidence["profile"] == "Any" and f.location == "Windows Firewall rule: Allow everything [{R1}]"
+    assert f.remediation.action == "run_command" and f.remediation.params["command"][-3:] == ["dir=in", "new", "enable=no"]
+    for kw in (dict(profile="Domain, Public"), dict(profile="Public"), dict(remote=("0.0.0.0/0",)), dict(remote=("Internet",)),
+               dict(remote=("10.0.0.1", "*")), dict(ports=("1-65535",)), dict(ports=("0-65535",)), dict(ports=("80", "Any")),
+               dict(protocol="Any"), dict(protocol="UDP"), dict(protocol="6"), dict(remote=("0.0.0.0-255.255.255.255",))):
+        assert [x.rule_id for x in fw_findings(FW(**kw))] == ["AEG-NET-FW-ALLOWALL"], kw
+
+
+@pytest.mark.parametrize("kw", [
+    dict(group="@FirewallAPI.dll,-28502"),  # Windows' own group
+    dict(group="Custom Tools"), dict(display_group="Custom Tools"),  # any group: outside the 'created ad hoc' class
+    dict(display="@{Microsoft.WindowsStore_1?ms-resource://x}"),
+    dict(owner="S-1-5-21-1-2-3"),
+    dict(program=r"C:\Program Files\App\app.exe"), dict(package="S-1-15-2-1"), dict(service="dnscache"),
+    dict(ports=("80",)), dict(ports=("1000-2000",)), dict(ports=("RPC",)), dict(ports=()),
+    dict(protocol="ICMPv4"), dict(protocol="47"), dict(protocol=""),
+    dict(profile="Domain, Private"), dict(profile="Private"), dict(profile=""),
+    dict(remote=("LocalSubnet",)), dict(remote=("192.168.0.0/16",)), dict(remote=()),
+    dict(program=None), dict(ports=None), dict(remote=None), dict(package=None), dict(service=None)])
+def test_rules_that_are_not_allow_all_are_not_reported(kw):
+    assert not nw.firewall_allows_everything(FW(**kw))
+    assert [f for f in fw_findings(FW(**kw)) if f.rule_id == "AEG-NET-FW-ALLOWALL"] == []
+
+
+@pytest.mark.parametrize("ports,services", [
+    (("3389",), ["Remote Desktop (RDP)"]), (("5900-5903",), ["VNC"]), (("5985", "5986"), ["WinRM (HTTP)", "WinRM (HTTPS)"]),
+    (("22",), ["SSH"]), (("445",), ["SMB file sharing"]), (("80,443,3389",), ["Remote Desktop (RDP)"]),
+    (("3000-4000",), ["Remote Desktop (RDP)"]), (("21", "445-445", "22"), ["SSH", "SMB file sharing"])])
+def test_admin_ports_open_to_the_public_are_medium(ports, services):
+    r = FW(display="Remote access", ports=ports)
+    assert sorted(set(nw.firewall_public_admin_ports(r).values())) == sorted(services)
+    (f,) = [x for x in fw_findings(FW(display="Remote access", ports=ports, program="C:\\Tools\\srv.exe"))]
+    assert f.rule_id == "AEG-NET-FW-PUBLICADMIN" and f.severity == S.MEDIUM and f.mitre == ["T1021", "T1686.003"]
+    assert sorted(f.evidence["services"]) == sorted(services) and f.remediation is None  # restricting it is the user's call
+    assert "Set-NetFirewallRule" in f.recommendation and all(s in f.title for s in services[:1])
+
+
+@pytest.mark.parametrize("kw", [
+    dict(group="@FirewallAPI.dll,-28752"), dict(display="@FirewallAPI.dll,-28753"),  # the built-in feature rule groups
+    dict(profile="Domain, Private"), dict(profile="Private"), dict(remote=("LocalSubnet",)), dict(remote=("Intranet",)),
+    dict(ports=("8080",)), dict(ports=("23",)), dict(ports=("RPC",)), dict(ports=None), dict(remote=None),
+    dict(protocol="ICMPv4"), dict(protocol="47")])
+def test_admin_port_rules_that_are_not_exposed_are_not_reported(kw):
+    base = dict(ports=("3389",))
+    base.update(kw)
+    r = FW(program="C:\\Tools\\srv.exe", **base)
+    assert nw.firewall_public_admin_ports(r) == {}
+    assert fw_findings(r) == []
+
+
+def test_admin_port_exposure_by_third_party_group_is_still_reported_and_allow_all_ports_is_not_admin_specific():
+    third = FW(display="OpenSSH SSH Server (sshd)", ports=("22",), display_group="OpenSSH Server", group="OpenSSH Server")
+    assert [f.rule_id for f in fw_findings(third)] == ["AEG-NET-FW-PUBLICADMIN"]
+    everything = FW(program="C:\\Tools\\srv.exe", ports=("Any",))  # program-specific, every port: not an admin-port rule
+    assert fw_findings(everything) == []
+    allow_all = fw_findings(FW(ports=("1-65535",)))
+    assert [f.rule_id for f in allow_all] == ["AEG-NET-FW-ALLOWALL"]  # reported once, as allow-all
+
+
+def test_one_finding_per_rule_most_serious_class_wins_and_findings_are_capped():
+    both = FW("{X}", "dropper", program=r"C:\Users\bob\AppData\Local\Temp\a.exe", ports=("3389",))
+    allow = FW("{Y}", "open", ports=("Any",))
+    fs = fw_findings(both, allow)
+    assert [f.rule_id for f in fs] == ["AEG-NET-FW-USERPATH", "AEG-NET-FW-ALLOWALL"]
+    many = [FW(f"{{{i}}}", f"Dropper {i}", program=rf"C:\Users\bob\Downloads\d{i}.exe") for i in range(60)]
+    capped = fw_findings(*many)
+    assert len(capped) == nw.MAX_FW_FINDINGS and len({f.fingerprint for f in capped}) == nw.MAX_FW_FINDINGS
+
+
+def test_rules_sharing_a_display_name_get_distinct_findings_and_id_based_fixes():
+    tcp = FW("{T}", "Zoom", program=r"C:\Users\bob\Downloads\zoom.exe", protocol="TCP", ports=("8080",))
+    udp = FW("{U}", "Zoom", program=r"C:\Users\bob\Downloads\zoom.exe", protocol="UDP", ports=("8080",))
+    fs = fw_findings(tcp, udp)
+    assert len(fs) == 2 and len({f.fingerprint for f in fs}) == 2  # ScanResult would otherwise keep only the first
+    assert [f.remediation.params["command"] for f in fs] == ["Disable-NetFirewallRule -Name '{T}'",
+                                                             "Disable-NetFirewallRule -Name '{U}'"]
+    assert all(f.remediation.params["powershell"] is True for f in fs)
+    single = fw_findings(tcp)[0].remediation.params["command"]
+    assert single[:5] == ["netsh", "advfirewall", "firewall", "set", "rule"] and "name=Zoom" in single
+
+
+def test_stale_rules_for_missing_programs_are_one_low_summary():
+    gone = [FW(f"{{{i}}}", f"Old app {i}", program=rf"C:\Program Files\Old{i}\old.exe", ports=("8080",), remote=("LocalSubnet",))
+            for i in range(30)]
+    present = FW("{P}", "Installed", program=r"C:\Program Files\App\app.exe", ports=("8080",))
+    calls = []
+
+    def exists(p):
+        calls.append(p)
+        return "Old" not in p
+
+    fs = fw_findings(present, *gone, FW("{Q}", "Dup", program=r"C:\Program Files\Old3\old.exe", ports=("1",)), exists=exists)
+    assert [f.rule_id for f in fs] == ["AEG-NET-FW-STALE"]
+    f = fs[0]
+    assert f.severity == S.LOW and f.evidence["count"] == 31 and len(f.evidence["rules"]) == 25 and "31" in f.title
+    assert f.remediation is None and f.mitre == ["T1686.003"]
+    assert sorted(calls) == sorted(set(calls))  # each program is looked up once
+
+
+def test_stale_check_skips_builtin_unknown_and_already_flagged_rules():
+    never = lambda p: False  # noqa: E731
+    rules = [FW("{1}", "builtin", program=r"C:\Windows\System32\gone.exe", group="@FirewallAPI.dll,-1", ports=("8080",)),
+             FW("{2}", "any", program="Any", ports=("8080",)), FW("{3}", "svc", program="System", ports=("8080",)),
+             FW("{4}", "unknown", program=None, ports=None, remote=None),
+             FW("{5}", "dropper", program=r"C:\Users\bob\Downloads\x.exe", ports=("8080",)),
+             FW("{6}", "open", ports=("Any",))]
+    assert [f.rule_id for f in fw_findings(*rules, exists=never)] == ["AEG-NET-FW-USERPATH", "AEG-NET-FW-ALLOWALL"]
+
+    def boom(p):
+        raise RuntimeError("probe failed")
+
+    assert fw_findings(FW("{7}", "x", program=r"C:\Gone\x.exe", ports=("1",)), exists=boom) == []  # cannot tell: not stale
+
+
+def test_program_exists_is_conservative(tmp_path):
+    real = tmp_path / "real.exe"
+    real.write_text("x")
+    assert nw.program_exists(str(real)) and not nw.program_exists(str(tmp_path / "missing.exe"))
+    assert nw.program_exists(r"\\server\share\x.exe")  # network path: not probed
+    assert nw.program_exists(r"%NO_SUCH_VARIABLE_XYZ%\x.exe")  # unexpanded variable: cannot tell
+    assert nw.program_exists("")
+    if not os.path.exists("Q:\\"):
+        assert nw.program_exists(r"Q:\drive\that\is\not\mounted.exe")  # unmounted drive: cannot tell
+
+
+@pytest.mark.parametrize("profile,public", [
+    ("Any", True), ("any", True), ("Public", True), ("Domain, Public", True), ("Domain, Private, Public", True),
+    ("Domain", False), ("Private", False), ("Domain, Private", False), ("", False), ("NotApplicable", False),
+    ("0", True), ("4", True), ("7", True), ("3", False), ("1", False)])
+def test_profile_includes_public(profile, public):
+    assert nw._fw_public(profile) is public
+
+
+def test_ps_quote_and_netsh_fix_handle_quotes_spaces_and_hostile_names():
+    assert nw._ps_quote("Bob's rule") == "Bob''s rule"
+    assert nw._ps_quote("a\u2019b\u2018c\u201ad\u201be") == "a\u2019\u2019b\u2018\u2018c\u201a\u201ad\u201b\u201be"
+    assert nw._ps_quote("plain {GUID}") == "plain {GUID}"
+
+    fix = nw.firewall_disable_fix(FW("{G1}", "Spotify Music", program=r"C:\Users\bob\Downloads\a b\a.exe"), ambiguous=False)
+    assert fix.action == "run_command" and fix.params["powershell"] is False and "Spotify Music" in fix.description
+    assert fix.params["command"] == ["netsh", "advfirewall", "firewall", "set", "rule", "name=Spotify Music", "dir=in",
+                                     r"program=C:\Users\bob\Downloads\a b\a.exe", "new", "enable=no"]
+    assert all(isinstance(a, str) for a in fix.params["command"])  # an argument list: no shell is involved
+
+    # the program filter is only added for a plain, specific path
+    for program in ("Any", "System", None, "", r"%ProgramFiles%\x\a.exe", 'C:\\a"b.exe'):
+        cmd = nw.firewall_disable_fix(FW(display="Rule", program=program), ambiguous=False).params["command"]
+        assert cmd == ["netsh", "advfirewall", "firewall", "set", "rule", "name=Rule", "dir=in", "new", "enable=no"], program
+
+    # shell metacharacters stay inside one argument
+    nasty = "a & b | c ; $(calc) %PATH% ^x"
+    assert nw.firewall_disable_fix(FW("{G}", nasty), False).params["command"][5] == f"name={nasty}"
+
+    # ambiguous names, "all", resource strings: address the rule by its unique id instead
+    for display, ambiguous in (("Shared name", True), ("all", False), ("ALL", False), ("@{Pkg?x}", False), ("", False)):
+        ps_fix = nw.firewall_disable_fix(FW("{ID-1}", display), ambiguous)
+        assert ps_fix.params == {"command": "Disable-NetFirewallRule -Name '{ID-1}'", "powershell": True}, display
+
+    # a name with quotes: not for netsh, but fine for PowerShell once the quote is doubled (and it round-trips)
+    quoted = FW("Bob's \"rule\"", 'My "rule"')
+    assert nw.firewall_disable_fix(quoted, False) is None  # double quotes in the id: no automatic fix
+    tricky = FW("x'; calc; '", 'q"x')
+    fix = nw.firewall_disable_fix(tricky, False)
+    m = re.fullmatch(r"Disable-NetFirewallRule -Name '((?:[^']|'')*)'", fix.params["command"])
+    assert m and m.group(1).replace("''", "'") == "x'; calc; '"  # everything stays inside the string literal
+    smart = nw.firewall_disable_fix(FW("it\u2019s", 'q"x'), False).params["command"]
+    assert smart == "Disable-NetFirewallRule -Name 'it\u2019\u2019s'"
+
+    # wildcards, control characters and over-long names are never passed on
+    assert nw.firewall_disable_fix(FW("rule*", "ok name"), False).params["command"][5] == "name=ok name"
+    for bad in ("rule*", "ru?le", "ru[le]", "line\nbreak", "tab\there", "x" * 201, "nul\x00"):
+        assert nw.firewall_disable_fix(FW(bad, bad), False) is None, repr(bad)
+    assert nw.firewall_disable_fix(FW("rule*", "ru?le"), False) is None
+    assert nw.firewall_disable_fix(FW("{ID}", "x" * 200), False).params["command"][5] == "name=" + "x" * 200
+
+
+def test_firewall_findings_carry_the_fix_and_explain_how_to_undo_it():
+    f = fw_findings(FW("{ID-7}", "Updater", program=r"C:\Users\bob\AppData\Local\Temp\u.exe", ports=("9999",)))[0]
+    assert f.remediation.description.startswith("Disable the firewall rule 'Updater'")
+    assert "Enable-NetFirewallRule -Name '{ID-7}'" in f.recommendation  # disabled, never deleted: reversible
+    quoted = fw_findings(FW("it's", "x'y", program=r"C:\Users\bob\Downloads\u.exe", ports=("1",)))[0]
+    assert "Enable-NetFirewallRule -Name 'it''s'" in quoted.recommendation
+    admin = fw_findings(FW("{ID-8}", "Custom RDP", ports=("3389",)))[0]
+    assert "Set-NetFirewallRule -Name '{ID-8}' -Profile Domain,Private -RemoteAddress LocalSubnet" in admin.recommendation
+
+
+@pytest.mark.parametrize("name", ["*", "rule*", "ru?le", "ru[le]", 'a"b', "line\nbreak"])
+def test_recommendations_never_contain_a_command_with_a_wildcard_or_unquotable_rule_id(name):
+    """Pasting `-Name '*'` would touch every rule, so such ids only get the plain-language advice."""
+    dropper = fw_findings(FW(name, "x" + name, program=r"C:\Users\bob\Downloads\u.exe", ports=("1",)))[0]
+    admin = fw_findings(FW(name, "x" + name, ports=("3389",)))[0]
+    for f in (dropper, admin):
+        assert "NetFirewallRule" not in f.recommendation
+    assert dropper.remediation is None and "Disabling keeps the rule." in dropper.recommendation
+
+
+def test_collect_windows_firewall_rules_uses_one_batched_call_and_reports_gaps():
+    calls = []
+
+    def reader(script, timeout=0):
+        calls.append((script, timeout))
+        return {"Name": "{A}", "DisplayName": "x", "Program": "Any", "LocalPort": ["Any"], "RemoteAddress": ["Any"]}
+
+    rules, note = nw.collect_windows_firewall_rules(reader)
+    assert len(calls) == 1 and calls[0][0] == nw.FIREWALL_SCRIPT and calls[0][1] >= 60  # one call, with a timeout
+    assert [r.name for r in rules] == ["{A}"] and note == ""
+    assert nw.collect_windows_firewall_rules(lambda s, timeout=0: [])[0] == []  # no rules is an answer, not a failure
+    rules, why = nw.collect_windows_firewall_rules(lambda s, timeout=0: None)
+    assert rules is None and "could not list" in why
+    big = [{"Name": f"r{i}"} for i in range(nw.MAX_FW_RULES)]
+    rules, note = nw.collect_windows_firewall_rules(lambda s, timeout=0: big)
+    assert len(rules) == nw.MAX_FW_RULES and f"first {nw.MAX_FW_RULES}" in note and f"{nw.MAX_FW_RULES} rule(s)" in note
+
+
+def test_firewall_script_is_one_well_formed_batched_query():
+    from tests.test_persistence import _balanced
+
+    s = nw.FIREWALL_SCRIPT
+    assert _balanced(s) and '"' not in s  # survives Windows command-line quoting unchanged
+    assert "@MAX@" not in s and f"-First {nw.MAX_FW_RULES}" in s
+    for needle in ("Get-NetFirewallRule -Enabled True -Direction Inbound -Action Allow", "Get-NetFirewallApplicationFilter -All",
+                   "Get-NetFirewallPortFilter -All", "Get-NetFirewallAddressFilter -All", "Get-NetFirewallServiceFilter -All",
+                   "ConvertTo-Json -InputObject $o"):
+        assert needle in s
+    assert s.count("Get-NetFirewallRule") == 1  # filters are fetched in bulk, never per rule
+
+
+# ---- Linux: ufw
+
+UFW = """Status: active
+
+     To                         Action      From
+     --                         ------      ----
+[ 1] 22/tcp                     ALLOW IN    Anywhere
+[ 2] 3389                       ALLOW IN    Anywhere
+[ 3] 5900:5903/tcp              ALLOW IN    192.168.1.0/24
+[ 4] 80,443/tcp                 ALLOW IN    Anywhere
+[ 5] Nginx Full                 ALLOW IN    Anywhere
+[ 6] 22/tcp (v6)                ALLOW IN    Anywhere (v6)
+[ 7] 445/tcp                    LIMIT IN    Anywhere
+[ 8] Anywhere                   ALLOW OUT   10.0.0.0/8
+[ 9] 5985/tcp                   DENY IN     Anywhere
+[10] OpenSSH                    ALLOW IN    Anywhere
+[11] 5986                       ALLOW       Anywhere                   # winrm
+"""
+
+
+def test_parse_ufw_status():
+    active, rules = nw.parse_ufw_status(UFW)
+    assert active and len(rules) == 11
+    assert (rules[0].to, rules[0].action, rules[0].direction, rules[0].source) == ("22/tcp", "allow", "in", "Anywhere")
+    assert (rules[6].action, rules[7].direction, rules[8].action) == ("limit", "out", "deny")
+    assert rules[10].to == "5986" and rules[10].direction == "in" and rules[10].source == "Anywhere"  # comment dropped
+    assert rules[4].to == "Nginx Full"
+    assert nw.parse_ufw_status("Status: inactive\n") == (False, [])
+    assert nw.parse_ufw_status("") == (False, [])
+    assert nw.parse_ufw_status("Status: active\n[ 1] garbage line\n[ 2] 22/tcp ALLOW IN Anywhere\n")[1] == []  # single spaces: not columns
+
+
+@pytest.mark.parametrize("to,ports", [
+    ("22/tcp", [22]), ("22/tcp (v6)", [22]), ("3389", [3389]), ("5900:5903/tcp", [5900, 5901, 5902, 5903]),
+    ("80,443/tcp", []), ("80,3389/udp", [3389]), ("OpenSSH", [22]), ("OpenSSH (v6)", [22]), ("Samba", [445]),
+    ("Nginx Full", []), ("Anywhere", []), ("10.0.0.5 22/tcp", [22]), ("22/tcp on eth0", [22]), ("192.168.1.5", []),
+    ("1000:2000/tcp", []), ("", [])])
+def test_ufw_admin_ports(to, ports):
+    assert sorted(nw.ufw_admin_ports(to)) == ports
+
+
+def test_ufw_findings_report_admin_ports_open_to_anywhere():
+    _active, rules = nw.parse_ufw_status(UFW)
+    by = {f.evidence["service"]: f for f in nw.ufw_findings(rules)}
+    assert set(by) == {"SSH", "Remote Desktop (RDP)", "SMB file sharing", "WinRM (HTTPS)"}  # VNC is limited to a subnet
+    assert by["SSH"].severity == S.LOW and by["SSH"].evidence["ports"] == [22] and len(by["SSH"].evidence["rules"]) == 3
+    for svc in ("Remote Desktop (RDP)", "SMB file sharing", "WinRM (HTTPS)"):
+        assert by[svc].severity == S.MEDIUM and by[svc].rule_id == "AEG-NET-FW-PUBLICADMIN"
+    assert by["Remote Desktop (RDP)"].mitre == ["T1021", "T1686"] and by["SSH"].remediation is None
+    assert by["SSH"].location == "ufw: SSH allowed from anywhere" and "ufw limit" in by["SSH"].description
+    limit_ssh = nw.parse_ufw_status("Status: active\n[ 1] 22/tcp                     LIMIT IN    Anywhere\n")[1]
+    assert nw.ufw_findings(limit_ssh) == []  # rate-limited SSH is the recommended setup
+    restricted = nw.parse_ufw_status("Status: active\n[ 1] 3389                       ALLOW IN    192.168.1.0/24\n")[1]
+    assert nw.ufw_findings(restricted) == []
+    anywhere4 = nw.parse_ufw_status("Status: active\n[ 1] 5900                       ALLOW IN    0.0.0.0/0\n")[1]
+    assert [f.evidence["service"] for f in nw.ufw_findings(anywhere4)] == ["VNC"]
+
+
+def test_collect_ufw_rules_statuses():
+    ok = lambda cmd, timeout=60: (0, UFW, "")  # noqa: E731
+    rules, why = nw.collect_ufw_rules(ok)
+    assert len(rules) == 11 and why == ""
+    seen = []
+    nw.collect_ufw_rules(lambda cmd, timeout=60: seen.append(cmd) or (0, UFW, ""))
+    assert seen == [["ufw", "status", "numbered"]]
+    rules, why = nw.collect_ufw_rules(lambda cmd, timeout=60: (1, "", "ERROR: You need to be root to run this script\n"))
+    assert rules is None and "root" in why
+    rules, why = nw.collect_ufw_rules(lambda cmd, timeout=60: (-1, "", "not found: ufw"))
+    assert rules is None and "not found" in why
+    rules, why = nw.collect_ufw_rules(lambda cmd, timeout=60: (0, "Status: inactive\n", ""))
+    assert rules is None and "not active" in why
+    assert nw.collect_ufw_rules(lambda cmd, timeout=60: (3, "", ""))[1] == "ufw exited with 3"
+
+
+# ---- check result and scanner
+
+def test_firewall_check_statuses():
+    def run_check(collect, review, what="rule(s)"):
+        return list(nw.NetworkScanner._firewall_rules(collect, review, what))
+
+    out = run_check(lambda: (None, "needs root"), lambda r: [])
+    assert len(out) == 1 and out[0].status == CheckStatus.SKIP and "needs root" in out[0].detail
+    assert out[0].check_id == "AEG-NET-CHK-FIREWALL" and out[0].title == "Firewall rules only allow expected programs"
+    assert out[0].category == "network" and out[0].scanner == "network"
+
+    out = run_check(lambda: ([FW(), FW("{2}")], ""), lambda r: [], "enabled inbound allow rule(s)")
+    assert [type(o).__name__ for o in out] == ["CheckResult"] and out[0].status == CheckStatus.PASS
+    assert out[0].detail == "2 enabled inbound allow rule(s) reviewed; 0 need attention."
+
+    medium = _f_for_test(S.MEDIUM)
+    low = _f_for_test(S.LOW)
+    out = run_check(lambda: ([FW()], ""), lambda r: [medium, low])
+    assert [type(o).__name__ for o in out] == ["Finding", "Finding", "CheckResult"] and out[-1].status == CheckStatus.FAIL
+    assert "2 need attention" in out[-1].detail
+    out = run_check(lambda: ([FW()], ""), lambda r: [low])
+    assert out[-1].status == CheckStatus.WARN
+    out = run_check(lambda: ([FW()], "only the first 5000 rules were reviewed"), lambda r: [])
+    assert out[-1].status == CheckStatus.WARN and "only the first 5000 rules were reviewed" in out[-1].detail
+
+    def boom():
+        raise RuntimeError("boom")
+
+    out = run_check(boom, lambda r: [])
+    assert out[0].status == CheckStatus.ERROR and "boom" in out[0].detail
+    out = run_check(lambda: ([FW()], ""), lambda r: 1 / 0)
+    assert out[-1].status == CheckStatus.ERROR and "ZeroDivisionError" in out[-1].detail
+
+
+def _f_for_test(sev):
+    return Finding("AEG-NET-FW-TEST", "t", sev, "network", scanner="network")
+
+
+def _isolate_network_run(monkeypatch, tmp_path):
+    """Nothing but the code under test touches the host: no psutil, registry, PowerShell, netsh or hosts file."""
+    monkeypatch.setattr(nw, "collect_connections", lambda: ([], None))
+    monkeypatch.setattr(nw, "collect_dns", lambda: [])
+    monkeypatch.setattr(nw, "hosts_path", lambda: tmp_path / "no-hosts")
+    monkeypatch.setattr(nw, "powershell_json", lambda *a, **k: None)
+    monkeypatch.setattr(nw, "run", lambda *a, **k: (-1, "", "not found"))
+    monkeypatch.setattr(nw, "reg_values", lambda *a, **k: {})
+    monkeypatch.setattr(nw, "reg_subkeys", lambda *a, **k: [])
+    monkeypatch.setattr(nw, "collect_windows_wifi_profiles", lambda *a, **k: (None, "test"))
+    monkeypatch.setattr(nw, "collect_nm_wifi_profiles", lambda *a, **k: (None, "test"))
+
+
+def test_scanner_reviews_firewall_rules_on_windows(ctx, tmp_path, monkeypatch):
+    _isolate_network_run(monkeypatch, tmp_path)
+    monkeypatch.setattr(nw, "IS_WINDOWS", True)
+    rules = [FW("{1}", "Dropper", program=r"C:\Users\bob\AppData\Local\Temp\evil.exe", ports=("4444",)),
+             FW("{2}", "Remote Desktop - User Mode (TCP-In)", group="@FirewallAPI.dll,-28752", display_group="Remote Desktop",
+                ports=("3389",), program="System"),
+             FW("{3}", "Firefox", program=r"C:\Program Files\Mozilla Firefox\firefox.exe", ports=("8080",), profile="Private")]
+    monkeypatch.setattr(nw, "collect_windows_firewall_rules", lambda: (rules, ""))
+    out = list(nw.NetworkScanner().run(ctx))
+    fw = [o for o in out if isinstance(o, Finding) and o.rule_id.startswith("AEG-NET-FW")]
+    assert [f.rule_id for f in fw] == ["AEG-NET-FW-USERPATH"] and fw[0].evidence["rule"] == "{1}"
+    check = {o.check_id: o for o in out if isinstance(o, CheckResult)}["AEG-NET-CHK-FIREWALL"]
+    assert check.status == CheckStatus.FAIL and "3 enabled inbound allow rule(s) reviewed; 1 need attention" in check.detail
+
+
+def test_scanner_skips_firewall_review_when_windows_cannot_list_rules(ctx, tmp_path, monkeypatch):
+    _isolate_network_run(monkeypatch, tmp_path)
+    monkeypatch.setattr(nw, "IS_WINDOWS", True)
+    monkeypatch.setattr(nw, "collect_windows_firewall_rules", lambda: (None, "service stopped"))
+    out = list(nw.NetworkScanner().run(ctx))
+    check = {o.check_id: o for o in out if isinstance(o, CheckResult)}["AEG-NET-CHK-FIREWALL"]
+    assert check.status == CheckStatus.SKIP and "service stopped" in check.detail
+
+
+def test_scanner_reviews_ufw_on_linux_and_skips_elsewhere(ctx, tmp_path, monkeypatch):
+    _isolate_network_run(monkeypatch, tmp_path)
+    monkeypatch.setattr(nw, "IS_WINDOWS", False)
+    monkeypatch.setattr(nw, "IS_LINUX", True)
+    monkeypatch.setattr(nw, "collect_ufw_rules", lambda: (nw.parse_ufw_status(UFW)[1], ""))
+    out = list(nw.NetworkScanner().run(ctx))
+    fw = [o for o in out if isinstance(o, Finding) and o.rule_id == "AEG-NET-FW-PUBLICADMIN"]
+    assert {f.evidence["service"] for f in fw} == {"SSH", "Remote Desktop (RDP)", "SMB file sharing", "WinRM (HTTPS)"}
+    check = {o.check_id: o for o in out if isinstance(o, CheckResult)}["AEG-NET-CHK-FIREWALL"]
+    assert check.status == CheckStatus.FAIL and "11 ufw rule(s) reviewed" in check.detail
+
+    monkeypatch.setattr(nw, "collect_ufw_rules", lambda: (None, "ufw is not active"))
+    check = {o.check_id: o for o in nw.NetworkScanner().run(ctx) if isinstance(o, CheckResult)}["AEG-NET-CHK-FIREWALL"]
+    assert check.status == CheckStatus.SKIP and "ufw is not active" in check.detail
+
+    def linux_only():
+        raise AssertionError("ufw is Linux only")
+
+    monkeypatch.setattr(nw, "IS_LINUX", False)  # macOS and others
+    monkeypatch.setattr(nw, "collect_ufw_rules", linux_only)
+    check = {o.check_id: o for o in nw.NetworkScanner().run(ctx) if isinstance(o, CheckResult)}["AEG-NET-CHK-FIREWALL"]
+    assert check.status == CheckStatus.SKIP

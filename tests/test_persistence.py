@@ -750,3 +750,331 @@ def test_privilege_modifier_alone_does_not_make_a_vendor_agent_high():
     assert ps.combined_severity([loc, mod]) == S.MEDIUM
     weak = ps.Reason(S.LOW, "name looks randomly generated", "random")
     assert ps.combined_severity([weak, mod]) == S.MEDIUM  # weak evidence + modifier still gets a look
+
+
+# --------------------------------------------------------------------------- hidden scheduled tasks (TaskCache without SD)
+
+TREE = ps.TASKCACHE_KEY + "\\Tree"
+SD = b"\x01\x00\x04\x80\x14\x00\x00\x00"  # opaque stand-in for a self-relative security descriptor
+
+
+def fake_tree(spec):
+    """(subkeys, values) readers over {path relative to Tree: values}; folders are implied by the path prefixes."""
+    values = {f"{TREE}\\{rel}".lower(): vals for rel, vals in spec.items()}
+    subs = {}
+    for rel in spec:
+        parts = rel.split("\\")
+        for i, part in enumerate(parts):
+            parent = TREE if i == 0 else TREE + "\\" + "\\".join(parts[:i])
+            kids = subs.setdefault(parent.lower(), [])
+            if part not in kids:
+                kids.append(part)
+    return (lambda key: list(subs.get(key.lower(), []))), (lambda key: dict(values.get(key.lower(), {})))
+
+
+def bstr(text):
+    raw = text.encode("utf-16-le")
+    return len(raw).to_bytes(4, "little") + raw
+
+
+def actions_blob(*actions, version=3, context="Author"):
+    """Synthetic Actions value: version, context string, then one Exec action (magic 0x6666) per (command, args, workdir)."""
+    blob = version.to_bytes(2, "little") + bstr(context)
+    for command, args, workdir in actions:
+        blob += b"\x66\x66" + bstr("") + bstr(command) + bstr(args) + bstr(workdir) + (b"\x00\x00" if version >= 3 else b"")
+    return blob
+
+
+def task(path, tid="{11111111-2222-3333-4444-555555555555}", sd=True, index=3, empty=False):
+    return ps.TaskKey(path, tid, has_sd=sd, sd_empty=empty, index=index)
+
+
+def test_collect_task_cache_walks_folders_and_reads_values_case_insensitively():
+    spec = {
+        "Microsoft": {"SD": SD},
+        r"Microsoft\Windows": {"SD": SD},
+        r"Microsoft\Windows\Defrag\ScheduledDefrag": {"Id": "{A}", "Index": 3, "SD": SD},
+        "WinUpdate": {"Id": "{B}", "Index": 3},  # the Tarrask shape: a task without SD
+        r"Vendor\Helper": {"id": "{C}", "sd": b""},  # value names are case-insensitive; empty SD
+        r"Vendor\Quiet": {"ID": "{D}", "Index": 0, "SD": SD},
+        "NoIndex": {"Id": "{E}", "SD": SD},  # Index is optional
+        r"Vendor\Odd": {"Id": " {F} ", "Index": True, "SD": SD},  # a bool is not a DWORD
+        r"Vendor\NotATask": {"SD": SD},  # no Id: a folder
+    }
+    subkeys, values = fake_tree(spec)
+    tasks, truncated = ps.collect_task_cache(subkeys, values)
+    assert not truncated
+    by = {t.path: t for t in tasks}
+    assert sorted(by) == [r"\Microsoft\Windows\Defrag\ScheduledDefrag", r"\NoIndex", r"\Vendor\Helper", r"\Vendor\Odd",
+                          r"\Vendor\Quiet", r"\WinUpdate"]
+    assert [t.path for t in tasks] == sorted(by, key=str.lower)
+    assert by["\\WinUpdate"].task_id == "{B}" and not by["\\WinUpdate"].has_sd
+    assert by["\\Vendor\\Helper"].has_sd and by["\\Vendor\\Helper"].sd_empty
+    assert by["\\Vendor\\Quiet"].index == 0 and by["\\NoIndex"].index is None and by["\\Vendor\\Odd"].index is None
+    assert by["\\Vendor\\Odd"].task_id == "{F}"
+    assert by["\\WinUpdate"].registry_key == "HKLM\\" + TREE + "\\WinUpdate"
+    assert ps.hidden_task_reasons(by[r"\Microsoft\Windows\Defrag\ScheduledDefrag"]) == []
+    assert ps.hidden_task_reasons(by["\\NoIndex"]) == []
+
+
+def test_hidden_task_reasons_cover_sd_and_index_zero():
+    assert ps.hidden_task_reasons(task("\\a", sd=False)) == ["it has no SD (security descriptor) value"]
+    assert ps.hidden_task_reasons(task("\\a", empty=True)) == ["its SD (security descriptor) value is empty"]
+    assert ps.hidden_task_reasons(task("\\a", index=0)) == ["its Index value is 0"]
+    assert len(ps.hidden_task_reasons(task("\\a", sd=False, index=0))) == 2
+    for ok in (task("\\a"), task("\\a", index=None), task("\\a", index=1), task("\\a", index=4)):
+        assert ps.hidden_task_reasons(ok) == []
+
+
+def test_task_without_sd_can_be_allow_listed_but_index_zero_cannot(monkeypatch):
+    monkeypatch.setattr(ps, "SDLESS_TASK_ALLOWLIST", {r"\vendor\known"})
+    assert ps.hidden_task_reasons(task(r"\Vendor\Known", sd=False)) == []
+    assert ps.hidden_task_reasons(task(r"\Vendor\Known", sd=False, index=0)) == ["its Index value is 0"]
+    assert ps.hidden_task_reasons(task(r"\Vendor\Other", sd=False))
+
+
+def test_nothing_is_allow_listed_by_default():
+    """No public hunting guide names a built-in task without an SD value, so none is trusted without confirmation."""
+    assert ps.SDLESS_TASK_ALLOWLIST == set()
+
+
+def test_collect_task_cache_refuses_to_report_an_unreadable_tree_as_clean():
+    with pytest.raises(OSError):
+        ps.collect_task_cache(lambda key: [], lambda key: {})  # access denied reads as no subkeys
+    subkeys, _values = fake_tree({r"Folder\Sub": {"SD": SD}})
+    with pytest.raises(OSError):  # keys are listed but no value can be read, so no task has an Id
+        ps.collect_task_cache(subkeys, lambda key: {})
+
+
+def test_collect_task_cache_limits_keys_and_depth():
+    subkeys, values = fake_tree({f"T{i}": {"Id": f"{{{i}}}", "SD": SD} for i in range(10)})
+    tasks, truncated = ps.collect_task_cache(subkeys, values, limit=4)
+    assert truncated and len(tasks) == 4
+    deep = "\\".join(f"d{i}" for i in range(ps.MAX_TASKCACHE_DEPTH + 5))
+    subkeys, values = fake_tree({deep: {"Id": "{deep}"}, "Shallow": {"Id": "{s}", "SD": SD}})
+    tasks, truncated = ps.collect_task_cache(subkeys, values)
+    assert [t.path for t in tasks] == ["\\Shallow"] and not truncated  # runaway nesting is not followed forever
+
+
+def test_collect_task_cache_defaults_to_the_hklm_registry_helpers(monkeypatch):
+    subkeys, values = fake_tree({"A": {"Id": "{1}", "SD": SD}, "B": {"Id": "{2}"}})
+    monkeypatch.setattr(ps, "reg_subkeys", lambda hive, key, view64=True: subkeys(key) if hive == "HKLM" else [])
+    monkeypatch.setattr(ps, "reg_values", lambda hive, key, view64=True: values(key) if hive == "HKLM" else {})
+    tasks, _ = ps.collect_task_cache()
+    assert [(t.path, t.has_sd) for t in tasks] == [("\\A", True), ("\\B", False)]
+
+
+# ---- Actions blob
+
+def test_synthetic_actions_blob_matches_the_documented_layout():
+    documented = bytes.fromhex(
+        "03 00  0c 00 00 00 41 00 75 00 74 00 68 00 6f 00 72 00  66 66  00 00 00 00  08 00 00 00 63 00 61 00 6c 00 63 00"
+        "  00 00 00 00  00 00 00 00  00 00")
+    assert actions_blob(("calc", "", "")) == documented
+    assert ps.parse_task_actions(documented) == [{"kind": "Exec", "command": "calc", "arguments": "", "workdir": ""}]
+
+
+def test_parse_task_actions_reads_every_exec_action():
+    blob = actions_blob((r"C:\Windows\System32\cmd.exe", "/c whoami > C:\\x.txt", r"C:\Windows"),
+                        (r"C:\Users\Public\a.exe", "-s", ""))
+    acts = ps.parse_task_actions(blob)
+    assert [(a["command"], a["arguments"], a["workdir"]) for a in acts] == [
+        (r"C:\Windows\System32\cmd.exe", "/c whoami > C:\\x.txt", r"C:\Windows"), (r"C:\Users\Public\a.exe", "-s", "")]
+    old = ps.parse_task_actions(actions_blob(("a.exe", "-q", ""), ("b.exe", "", ""), version=2))  # no flags WORD before v3
+    assert [(a["command"], a["arguments"]) for a in old] == [("a.exe", "-q"), ("b.exe", "")]
+    wide = ps.parse_task_actions(actions_blob(("C:\\Users\u7528\u6237\\x.exe", "", "")))
+    assert wide[0]["command"] == "C:\\Users\u7528\u6237\\x.exe"  # non-Latin text survives the structured parse
+
+
+def test_parse_task_actions_is_defensive():
+    good = actions_blob(("cmd.exe", "/c dir", ""))
+    assert len(ps.parse_task_actions(good)) == 1
+    assert ps.parse_task_actions(good[:-8]) == []  # truncated inside the arguments string
+    two = actions_blob(("a.exe", "", ""), ("b.exe", "", ""))
+    assert [a["command"] for a in ps.parse_task_actions(two[:-8])] == ["a.exe"]  # keeps what was decoded before the cut
+    for bad in (b"", b"\x03\x00", b"\x03\x00\xff\xff\xff\x7f", good[:12],
+                b"\x03\x00" + bstr("Author") + b"\x66\x66\xff\xff\xff\xff",
+                b"\x03\x00" + (7).to_bytes(4, "little") + b"x" * 7,  # odd byte count
+                b"\x03\x00" + (10 ** 6).to_bytes(4, "little") + b"A\x00" * 10,  # absurd length
+                b"\x03\x00" + bstr("Author") + b"\x77\x77" + b"\x00" * 24):  # COM handler: not decoded
+        assert ps.parse_task_actions(bad) == []
+    assert ps.parse_task_actions("not bytes") == [] and ps.parse_task_actions(None) == []
+
+
+def test_extract_utf16_strings_best_effort():
+    cmd, args, workdir = r"C:\ProgramData\svc\update.exe", "-run /silent", r"C:\ProgramData\svc"
+    blob = actions_blob((cmd, args, workdir))
+    got = ps.extract_utf16_strings(blob)
+    assert got == ["Author", cmd, args, workdir]  # length prefixes and the 0x6666 magic are not text
+    assert ps.extract_utf16_strings(b"\x00" + blob) == got  # any byte alignment
+    assert ps.extract_utf16_strings(bytearray(blob)) == got
+    assert ps.extract_utf16_strings(b"") == [] and ps.extract_utf16_strings(None) == [] and ps.extract_utf16_strings("x") == []
+    cyrillic = "\u041f\u0440\u0438\u0432\u0435\u0442 \u043c\u0438\u0440"
+    noise = bytes(range(1, 41)) + bstr("ab") + bstr("Ok1") + b"\xff\xfe\x00\x80" * 3 + bstr(cyrillic)
+    assert ps.extract_utf16_strings(noise) == ["Ok1", cyrillic]  # a 2-character string and binary junk are dropped
+    assert ps.extract_utf16_strings(bstr("same") + bstr("same") + bstr("other")) == ["same", "other"]
+    assert ps.extract_utf16_strings(bstr("tab\there") + bstr("....")) == []  # control characters / no letters or digits
+    assert len(ps.extract_utf16_strings(b"".join(bstr(f"string-{i}") for i in range(100)))) == 24  # capped
+
+
+def test_describe_task_actions_prefers_structure_and_falls_back_to_strings():
+    cmd, strings = ps.describe_task_actions(actions_blob((r"C:\Windows\System32\cmd.exe", "/c echo hi", "")))
+    assert cmd == r"C:\Windows\System32\cmd.exe /c echo hi" and "/c echo hi" in strings
+    assert ps.describe_task_actions(actions_blob((r"C:\x\a.exe", "", "")))[0] == r"C:\x\a.exe"  # no trailing space
+    com = b"\x03\x00" + bstr("Author") + b"\x77\x77" + bstr("") + b"\x00" * 16 + bstr(r"C:\Temp\handler.dll")
+    cmd, strings = ps.describe_task_actions(com)
+    assert cmd == r"C:\Temp\handler.dll" and strings[0] == "Author"
+    assert ps.describe_task_actions(b"\x03\x00" + bstr("Author")) == ("", ["Author"])
+    assert ps.describe_task_actions(None) == ("", [])
+    assert len(ps.describe_task_actions(actions_blob(("c:\\" + "a" * 900 + ".exe", "", "")))[0]) == 500
+
+
+# ---- findings
+
+def test_hidden_task_findings_report_sd_index_command_and_xml_state():
+    blob = actions_blob((r"C:\ProgramData\svc\update.exe", "-run", ""))
+    t_sd = task("\\WinUpdate", "{AAAA}", sd=False)
+    t_idx = task(r"\Vendor\Quiet", "{BBBB}", index=0)
+    t_both = task("\\Both", "{CCCC}", sd=False, index=0)
+    ok = task(r"\Microsoft\Windows\Defrag\ScheduledDefrag", "{DDDD}")
+    asked = []
+
+    def read_actions(tid):
+        asked.append(tid)
+        return blob if tid == "{AAAA}" else None
+
+    fs = ps.hidden_task_findings([ok, t_sd, t_idx, t_both], read_actions, lambda p: p.endswith("\\WinUpdate"))
+    assert asked == ["{AAAA}", "{BBBB}", "{CCCC}"]  # healthy tasks are never read
+    by = {f.evidence["task"]: f for f in fs}
+    assert set(by) == {"\\WinUpdate", r"\Vendor\Quiet", "\\Both"}
+    f = by["\\WinUpdate"]
+    assert f.rule_id == "AEG-PERS-TASK-HIDDEN" and f.severity == S.HIGH and f.category == "persistence"
+    assert f.mitre == ["T1053.005", "T1564"] and f.scanner == "persistence"
+    assert f.remediation is None  # restoring an SD or deleting the keys blindly is not an automatic fix
+    assert f.location == "HKLM\\" + TREE + "\\WinUpdate"
+    assert f.evidence["command"] == r"C:\ProgramData\svc\update.exe -run" and f.evidence["task_id"] == "{AAAA}"
+    assert f.evidence["xml_file_exists"] is True and f.evidence["xml_file"].endswith(r"\System32\Tasks\WinUpdate")
+    assert f.evidence["problems"] == ["it has no SD (security descriptor) value"]
+    assert r"C:\ProgramData\svc\update.exe -run" in f.description and "no SD" in f.description
+    assert "reg query" in f.recommendation and "reg export" in f.recommendation and "full scan" in f.recommendation
+    assert f.evidence["tasks_key"].endswith("\\Tasks\\{AAAA}") and "Tasks\\{AAAA}" in f.recommendation
+    q = by[r"\Vendor\Quiet"]
+    assert q.evidence["problems"] == ["its Index value is 0"] and q.evidence["xml_file_exists"] is False
+    assert "could not be read" in q.description and "missing" in q.description
+    assert len(by["\\Both"].evidence["problems"]) == 2 and "and its Index value is 0" in by["\\Both"].description
+    assert len({x.fingerprint for x in fs}) == 3  # one stable fingerprint per task key
+
+
+def test_hidden_task_findings_default_readers_use_the_registry_and_the_task_folder(monkeypatch, tmp_path):
+    seen = []
+
+    def fake_read(hive, key, value, view64=True):
+        seen.append((hive, key, value))
+        return actions_blob(("cmd.exe", "/c dir", ""))
+
+    monkeypatch.setattr(ps, "reg_read", fake_read)
+    monkeypatch.setattr(ps, "task_xml_path", lambda p: str(tmp_path / "Tasks" / p.lstrip("\\")))
+    (tmp_path / "Tasks").mkdir()
+    (tmp_path / "Tasks" / "X").write_text("<Task/>")
+    fs = ps.hidden_task_findings([task("\\X", "{GUID-X}", sd=False), task("\\Y", r"..\..\evil", sd=False),
+                                  task("\\Z", "a/b", sd=False)])
+    assert seen == [("HKLM", ps.TASKCACHE_KEY + "\\Tasks\\{GUID-X}", "Actions")]  # ids that could escape the key are not read
+    assert fs[0].evidence["command"] == "cmd.exe /c dir" and fs[0].evidence["xml_file_exists"] is True
+    assert fs[1].evidence["command"] == "" and fs[1].evidence["xml_file_exists"] is False
+
+
+def test_task_xml_path_is_under_system32_tasks():
+    assert ps.task_xml_path("\\Vendor\\Quiet").endswith("\\System32\\Tasks\\Vendor\\Quiet")
+
+
+# ---- check result and scanner
+
+def test_hidden_tasks_check_statuses():
+    def run(admin, collect, review=ps.hidden_task_findings):
+        return list(ps.PersistenceScanner._hidden_tasks(admin, collect, review))
+
+    def must_not_run():
+        raise AssertionError("the registry must not be read without administrator rights")
+
+    out = run(False, must_not_run)
+    assert len(out) == 1 and out[0].status == "skip" and "administrator" in out[0].detail.lower()
+    assert out[0].check_id == "AEG-PERS-CHK-HIDDEN-TASKS" and out[0].title == "No hidden scheduled tasks"
+    assert out[0].category == "persistence" and out[0].scanner == "persistence"
+
+    healthy = [task("\\A"), task("\\B")]
+    out = run(True, lambda: (healthy, False))
+    assert [type(o).__name__ for o in out] == ["CheckResult"] and out[0].status == "pass" and "2 registered tasks" in out[0].detail
+
+    review = lambda ts: ps.hidden_task_findings(ts, lambda tid: None, lambda p: False)  # noqa: E731
+    out = run(True, lambda: (healthy + [task("\\Evil", sd=False)], False), review)
+    assert [type(o).__name__ for o in out] == ["Finding", "CheckResult"]
+    assert out[-1].status == "fail" and "1 of 3" in out[-1].detail
+
+    out = run(True, lambda: (healthy, True))
+    assert out[0].status == "warn" and str(ps.MAX_TASKCACHE_KEYS) in out[0].detail  # a partial walk is never a clean pass
+
+    def unreadable():
+        raise OSError("TaskCache could not be read")
+
+    out = run(True, unreadable)
+    assert out[0].status == "error" and "TaskCache" in out[0].detail
+
+
+def _isolate_windows_run(monkeypatch):
+    monkeypatch.setattr(ps, "IS_WINDOWS", True)
+    monkeypatch.setattr(ps, "collect_all", lambda errors=None, linux_paths=None: [])
+
+
+def test_scanner_reports_hidden_tasks_on_windows(monkeypatch, ctx):
+    _isolate_windows_run(monkeypatch)
+    ctx.is_admin = True
+    tasks = [task("\\WinUpdate", "{AAAA}", sd=False), task("\\Fine", "{BBBB}")]
+    monkeypatch.setattr(ps, "collect_task_cache", lambda: (tasks, False))
+    monkeypatch.setattr(ps, "reg_read", lambda hive, key, value, view64=True: actions_blob((r"C:\Users\Public\a.exe", "", "")))
+    out = list(ps.PersistenceScanner().run(ctx))
+    findings = [o for o in out if isinstance(o, Finding)]
+    checks = {o.check_id: o for o in out if isinstance(o, CheckResult)}
+    assert [f.rule_id for f in findings] == ["AEG-PERS-TASK-HIDDEN"]
+    assert findings[0].evidence["command"] == r"C:\Users\Public\a.exe"
+    assert checks["AEG-PERS-CHK-HIDDEN-TASKS"].status == "fail"
+    assert checks["AEG-PERS-CHK-AUTOSTART"].status == "pass"
+    assert out[-1].check_id == "AEG-PERS-CHK-HIDDEN-TASKS"
+
+
+def test_scanner_skips_the_hidden_task_check_without_admin_and_never_reads_the_registry(monkeypatch, ctx):
+    _isolate_windows_run(monkeypatch)
+    ctx.is_admin = False
+
+    def boom():
+        raise AssertionError("TaskCache must not be read without administrator rights")
+
+    monkeypatch.setattr(ps, "collect_task_cache", boom)
+    out = list(ps.PersistenceScanner().run(ctx))
+    check = [o for o in out if isinstance(o, CheckResult) and o.check_id == "AEG-PERS-CHK-HIDDEN-TASKS"][0]
+    assert check.status == "skip" and not [o for o in out if isinstance(o, Finding)]
+
+
+def test_scanner_reports_an_unreadable_task_cache_as_an_error_not_a_pass(monkeypatch, ctx):
+    _isolate_windows_run(monkeypatch)
+    ctx.is_admin = True
+
+    def unreadable():
+        raise OSError("HKLM\\...\\Tree could not be read")
+
+    monkeypatch.setattr(ps, "collect_task_cache", unreadable)
+    out = list(ps.PersistenceScanner().run(ctx))
+    assert out[-1].check_id == "AEG-PERS-CHK-HIDDEN-TASKS" and out[-1].status == "error"
+
+
+@posix_only
+def test_scanner_does_not_run_the_hidden_task_check_off_windows(monkeypatch, ctx, linux_tree):
+    root, lp = linux_tree
+    monkeypatch.setattr(ps, "IS_WINDOWS", False)
+    monkeypatch.setattr(ps, "LinuxPaths", lambda: lp)
+
+    def boom():
+        raise AssertionError("Windows only")
+
+    monkeypatch.setattr(ps, "collect_task_cache", boom)
+    out = list(ps.PersistenceScanner().run(ctx))
+    assert not [o for o in out if isinstance(o, CheckResult) and o.check_id == "AEG-PERS-CHK-HIDDEN-TASKS"]

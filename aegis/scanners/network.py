@@ -1,10 +1,12 @@
 """Network scanner: live connections, listening services, hosts file, proxy/PAC
-hijack, DNS servers, root certificates, Wi-Fi security and SMB shares.
+hijack, DNS servers, root certificates, Wi-Fi security, SMB shares and inbound
+firewall rules.
 
 Collection (psutil / registry / PowerShell JSON) is kept apart from the pure
 decision functions (``bad_ip_findings``, ``hosts_findings``, ``proxy_findings``,
-``dns_findings``, ``rootca_findings``, ``smb_findings`` ...) so they can be unit
-tested on any OS with synthetic data.
+``dns_findings``, ``rootca_findings``, ``smb_findings``,
+``firewall_rule_findings`` ...) so they can be unit tested on any OS with
+synthetic data.
 """
 
 from __future__ import annotations
@@ -14,10 +16,12 @@ import ipaddress
 import logging
 import os
 import re
+from collections import Counter
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Sequence, Set, Tuple
 
+from aegis.core import cmdline as cl
 from aegis.core.models import Category, CheckResult, CheckStatus, Finding, Remediation, Severity
 from aegis.core.platform import IS_LINUX, IS_WINDOWS, as_list, powershell_json, reg_subkeys, reg_values, run, windows_dir
 from aegis.scanners.base import ScanContext, Scanner, register
@@ -904,13 +908,431 @@ def smb_findings(shares: Sequence[Dict[str, Any]]) -> List[Finding]:
     return out
 
 
+# --------------------------------------------------------------------------- firewall rules
+
+MAX_FW_RULES = 5000
+MAX_FW_FINDINGS = 25
+# One batched query: the enabled inbound allow rules joined in memory (by InstanceID) with the application, port, address
+# and service filters, which is far faster than asking for each rule's filters separately on machines with thousands of rules.
+FIREWALL_SCRIPT = (
+    "$r=@(Get-NetFirewallRule -Enabled True -Direction Inbound -Action Allow -ErrorAction Stop | Select-Object -First @MAX@);"
+    "$a=@{};Get-NetFirewallApplicationFilter -All -ErrorAction SilentlyContinue | ForEach-Object { $a[[string]$_.InstanceID]=$_ };"
+    "$p=@{};Get-NetFirewallPortFilter -All -ErrorAction SilentlyContinue | ForEach-Object { $p[[string]$_.InstanceID]=$_ };"
+    "$d=@{};Get-NetFirewallAddressFilter -All -ErrorAction SilentlyContinue | ForEach-Object { $d[[string]$_.InstanceID]=$_ };"
+    "$s=@{};Get-NetFirewallServiceFilter -All -ErrorAction SilentlyContinue | ForEach-Object { $s[[string]$_.InstanceID]=$_ };"
+    "$o=@($r | ForEach-Object { $k=[string]$_.Name; $x=$a[$k]; $y=$p[$k]; $z=$d[$k]; $w=$s[$k]; $lp=$null; $ra=$null; "
+    "if($y){$lp=@($y.LocalPort | ForEach-Object { [string]$_ })}; if($z){$ra=@($z.RemoteAddress | ForEach-Object { [string]$_ })}; "
+    "[pscustomobject]@{Name=$k;DisplayName=[string]$_.DisplayName;Group=[string]$_.Group;DisplayGroup=[string]$_.DisplayGroup;"
+    "Profile=[string]$_.Profile;Owner=[string]$_.Owner;Program=$(if($x){[string]$x.Program});Package=$(if($x){[string]$x.Package});"
+    "Service=$(if($w){[string]$w.Service});Protocol=$(if($y){[string]$y.Protocol});LocalPort=$lp;RemoteAddress=$ra} });"
+    "ConvertTo-Json -InputObject $o -Depth 4 -Compress").replace("@MAX@", str(MAX_FW_RULES))
+
+# well-known remote-access / administration ports (the system audit already reports RDP being switched on; the rule review
+# adds who the firewall lets reach it)
+FW_ADMIN_PORTS: Dict[int, str] = {22: "SSH", 445: "SMB file sharing", 3389: "Remote Desktop (RDP)", 5900: "VNC", 5901: "VNC",
+                                  5902: "VNC", 5903: "VNC", 5985: "WinRM (HTTP)", 5986: "WinRM (HTTPS)"}
+_FW_PORT_PROTOCOLS = {"any", "tcp", "udp", "6", "17"}  # the protocols that have ports (not ICMP, GRE, ESP ...)
+_FW_OPEN_REMOTE = re.compile(r"^(?:any|\*|internet|0\.0\.0\.0/0|::/0|0\.0\.0\.0-255\.255\.255\.255)$", re.I)
+_FW_APPDATA_ROOT = re.compile(r"^[a-z]:\\users\\[^\\]+\\appdata\\(?:local|roaming)\\[^\\]+\.(?:exe|dll|scr|bat|cmd|vbs|js|ps1)$")
+_FW_NAME_OK = re.compile(r"^[^\x00-\x1f\x7f\"*?\[\]]{1,200}$")  # no control characters, quotes or wildcards
+
+
+@dataclass
+class FirewallRule:
+    """An enabled inbound allow rule of Windows Firewall joined with its filters. A filter field is ``None`` when its
+    filter could not be read (so it is never mistaken for "Any") and ``"Any"`` when the rule does not restrict it."""
+
+    name: str  # unique rule id (InstanceID): what Disable-NetFirewallRule -Name takes
+    display_name: str  # what the firewall UI shows and netsh addresses; several rules may share it
+    group: str = ""  # Windows' own groups are resource strings such as @FirewallAPI.dll,-28502
+    display_group: str = ""
+    profile: str = ""  # "Any" or a list such as "Domain, Private"
+    owner: str = ""
+    program: Optional[str] = None
+    package: Optional[str] = None
+    service: Optional[str] = None
+    protocol: Optional[str] = None
+    local_ports: Optional[List[str]] = None
+    remote_addresses: Optional[List[str]] = None
+
+    @property
+    def label(self) -> str:
+        return self.display_name or self.name
+
+    @property
+    def windows_owned(self) -> bool:
+        """Rules shipped with Windows and Store apps name themselves with resource strings (``@FirewallAPI.dll,-28502``)."""
+        return any(x.startswith("@") for x in (self.group, self.display_group, self.display_name))
+
+    @property
+    def has_group(self) -> bool:
+        return bool(self.group or self.display_group)
+
+
+def parse_firewall_rules(data: Any) -> List[FirewallRule]:
+    """Rules from FIREWALL_SCRIPT's JSON (a single object or a list; fields may be null or a single value instead of a list)."""
+    def text(row: Dict[str, Any], key: str) -> str:
+        v = row.get(key)
+        return "" if v is None else str(v).strip()
+
+    def opt(row: Dict[str, Any], key: str) -> Optional[str]:
+        return None if row.get(key) is None else text(row, key)
+
+    def opt_list(row: Dict[str, Any], key: str) -> Optional[List[str]]:
+        if row.get(key) is None:
+            return None
+        return [str(x).strip() for x in as_list(row[key]) if x is not None and str(x).strip()]
+
+    out: List[FirewallRule] = []
+    for row in as_list(data):
+        if not isinstance(row, dict) or not text(row, "Name"):
+            continue
+        out.append(FirewallRule(text(row, "Name"), text(row, "DisplayName"), text(row, "Group"), text(row, "DisplayGroup"),
+                                text(row, "Profile"), text(row, "Owner"), opt(row, "Program"), opt(row, "Package"),
+                                opt(row, "Service"), opt(row, "Protocol"), opt_list(row, "LocalPort"),
+                                opt_list(row, "RemoteAddress")))
+    return out
+
+
+def collect_windows_firewall_rules(reader: Callable[..., Any] = powershell_json) -> Tuple[Optional[List[FirewallRule]], str]:
+    """(rules, note) from one PowerShell call; (None, reason) when the rules cannot be listed. *note* says what was not
+    reviewed (rule cap reached, filters that could not be read)."""
+    data = reader(FIREWALL_SCRIPT, timeout=120)
+    if data is None:
+        return None, "PowerShell could not list the rules (the Windows Firewall service may be stopped or access was denied)"
+    rules = parse_firewall_rules(data)
+    notes = []
+    if len(rules) >= MAX_FW_RULES:
+        notes.append(f"only the first {MAX_FW_RULES} rules were reviewed")
+    blind = sum(1 for r in rules if r.program is None or r.local_ports is None or r.remote_addresses is None)
+    if blind:
+        notes.append(f"program/port details were unavailable for {blind} rule(s)")
+    return rules, "; ".join(notes)
+
+
+def program_exists(path: str) -> bool:
+    """Does the program a firewall rule names exist? True when that cannot be told (network path, unexpanded variable, a
+    drive that is not mounted), so only a program that is certainly gone counts as missing."""
+    p = cl.clean_path(path)
+    if not p or p.startswith("\\\\") or "%" in p:
+        return True
+    m = re.match(r"^([A-Za-z]:)[\\/]", p)
+    try:
+        if m and not os.path.exists(m.group(1) + "\\"):
+            return True
+        return os.path.exists(p)
+    except OSError:
+        return True
+
+
+def _is_any(value: Optional[str]) -> bool:
+    return value is not None and value.strip().lower() in ("any", "*")
+
+
+def _specific_program(program: Optional[str]) -> bool:
+    return bool(program) and not _is_any(program) and str(program).strip().lower() != "system"
+
+
+def firewall_program_in_user_path(program: Optional[str]) -> bool:
+    """Program lives where malware drops and runs files: Temp, Downloads, Public, the Recycle Bin, the root of AppData or
+    ProgramData ... (cmdline.path_risk 2, which already tolerates well-known per-user installs such as Spotify or Zoom)."""
+    if not _specific_program(program):
+        return False
+    p = str(program).strip()
+    return cl.path_risk(p) >= 2 or bool(_FW_APPDATA_ROOT.match(cl.norm_win(p)))
+
+
+def _fw_public(profile: str) -> bool:
+    """Profile includes Public: 'Any' means every profile; a bare number is the flag value (Domain 1, Private 2, Public 4)."""
+    p = profile.strip().lower()
+    if p.isdigit():
+        return int(p) == 0 or bool(int(p) & 4)
+    return "public" in p or p in ("any", "all")
+
+
+def _fw_remote_open(addresses: Optional[List[str]]) -> bool:
+    return any(_FW_OPEN_REMOTE.match(a.strip()) for a in addresses or [])
+
+
+def _fw_port_ranges(tokens: Optional[List[str]]) -> List[Tuple[int, int]]:
+    """Numeric (low, high) ranges of a rule's local ports; ``Any`` is the whole range, names such as RPC are skipped."""
+    out: List[Tuple[int, int]] = []
+    for tok in tokens or []:
+        for part in str(tok).split(","):
+            part = part.strip().lower()
+            m = re.fullmatch(r"(\d{1,5})(?:-(\d{1,5}))?", part)
+            if part in ("any", "*"):
+                out.append((0, 65535))
+            elif m:
+                out.append((int(m.group(1)), int(m.group(2) or m.group(1))))
+    return out
+
+
+def _fw_all_ports(ranges: List[Tuple[int, int]]) -> bool:
+    return any(lo <= 1 and hi >= 65535 for lo, hi in ranges)
+
+
+def firewall_admin_ports(ranges: List[Tuple[int, int]]) -> Dict[int, str]:
+    return {p: n for p, n in FW_ADMIN_PORTS.items() if any(lo <= p <= hi for lo, hi in ranges)}
+
+
+def firewall_allows_everything(r: FirewallRule) -> bool:
+    """Any program, service and port from any address on a profile that includes Public, outside Windows' own groups."""
+    return (not r.has_group and not r.windows_owned and not r.owner
+            and _is_any(r.program) and _is_any(r.package) and _is_any(r.service)
+            and (r.protocol or "").strip().lower() in _FW_PORT_PROTOCOLS
+            and _fw_all_ports(_fw_port_ranges(r.local_ports)) and _fw_remote_open(r.remote_addresses) and _fw_public(r.profile))
+
+
+def firewall_public_admin_ports(r: FirewallRule) -> Dict[int, str]:
+    """Admin ports a rule opens to any address on a profile that includes Public. Windows' own rule groups are trusted: the
+    feature behind them (RDP, file sharing ...) is reported by the system audit and the listening-services check."""
+    ranges = _fw_port_ranges(r.local_ports)
+    if (r.windows_owned or not _fw_public(r.profile) or not _fw_remote_open(r.remote_addresses)
+            or (r.protocol or "").strip().lower() not in _FW_PORT_PROTOCOLS or _fw_all_ports(ranges)):
+        return {}
+    return firewall_admin_ports(ranges)
+
+
+_PS_QUOTES = "'" + "".join(chr(c) for c in (0x2018, 0x2019, 0x201A, 0x201B))  # PowerShell reads all of these as quotes
+
+
+def _ps_quote(text: str) -> str:
+    """Body of a single-quoted PowerShell string: every quote character is doubled."""
+    return "".join(c * 2 if c in _PS_QUOTES else c for c in text)
+
+
+def firewall_disable_fix(r: FirewallRule, ambiguous: bool) -> Optional[Remediation]:
+    """Disable (never delete) one rule. netsh addresses rules by display name, so it is used only when that name is unique
+    and safe, and then limited to inbound rules of the same program; otherwise Disable-NetFirewallRule -Name targets the
+    rule's unique id. Names with quotes, control characters or wildcards get no automatic fix, and neither does the
+    display name "all" (which netsh reads as every rule)."""
+    name = r.display_name
+    desc = f"Disable the firewall rule '{r.label}' (it stays in the list; turn it back on if it was needed)"
+    if name and not ambiguous and name.lower() != "all" and not name.startswith("@") and _FW_NAME_OK.match(name):
+        cmd = ["netsh", "advfirewall", "firewall", "set", "rule", f"name={name}", "dir=in"]
+        program = (r.program or "").strip()
+        if _specific_program(program) and '"' not in program and "%" not in program:
+            cmd.append(f"program={program}")
+        return Remediation("run_command", {"command": cmd + ["new", "enable=no"], "powershell": False}, desc)
+    if _FW_NAME_OK.match(r.name):
+        return Remediation("run_command", {"command": f"Disable-NetFirewallRule -Name '{_ps_quote(r.name)}'", "powershell": True},
+                           desc)
+    return None
+
+
+def _fw_location(r: FirewallRule) -> str:
+    return f"Windows Firewall rule: {r.label} [{r.name}]" if r.label != r.name else f"Windows Firewall rule: {r.name}"
+
+
+def _fw_evidence(r: FirewallRule) -> Dict[str, Any]:
+    return {"rule": r.name, "display_name": r.display_name, "group": r.group or r.display_group, "profile": r.profile,
+            "program": r.program, "service": r.service, "protocol": r.protocol, "local_ports": r.local_ports,
+            "remote_addresses": r.remote_addresses}
+
+
+def _fw_command_hint(r: FirewallRule, command: str, tail: str = "") -> str:
+    """A PowerShell command that addresses one rule by its id, for the recommendation text. Empty when the id has quotes,
+    control characters or wildcards: a pasted ``-Name '*'`` would touch every rule."""
+    return f"{command} -Name '{_ps_quote(r.name)}'{tail}" if _FW_NAME_OK.match(r.name) else ""
+
+
+def _fw_undo_hint(r: FirewallRule) -> str:
+    cmd = _fw_command_hint(r, "Enable-NetFirewallRule")
+    return f"Disabling keeps the rule; turn it back on with: {cmd}." if cmd else "Disabling keeps the rule."
+
+
+def firewall_rule_findings(rules: Sequence[FirewallRule], exists: Callable[[str], bool] = program_exists) -> List[Finding]:
+    """Review enabled inbound allow rules. Malware opens the firewall for itself (netsh advfirewall firewall add rule ...
+    action=allow program=...) so a backdoor or miner can accept connections. Per rule, most serious first:
+    HIGH   program in a user-writable / staging folder (also for Windows' own groups: any rule can be given any name);
+           MEDIUM for Downloads / Desktop (Windows' own "allow access" prompt creates such rules for portable apps),
+    MEDIUM any program on any port from any address on Public/Any, outside built-in groups,
+    MEDIUM an admin port (RDP, VNC, WinRM, SSH, SMB) open to any address on Public/Any, outside Windows' own groups.
+    LOW    one summary finding for rules whose program no longer exists (stale, or left behind by removed malware)."""
+    names = Counter(r.display_name.lower() for r in rules)
+    out: List[Finding] = []
+    flagged: Set[str] = set()
+
+    for r in rules:
+        if len(out) >= MAX_FW_FINDINGS:
+            break
+        if not firewall_program_in_user_path(r.program):
+            continue
+        flagged.add(r.name)
+        # Windows' own "allow access" prompt creates such rules for portable apps run from Downloads or the Desktop:
+        # MEDIUM there, HIGH for Temp, Public, the Recycle Bin and the AppData / ProgramData roots (dropper territory)
+        prog = str(r.program or "").replace("/", "\\").lower()
+        sev = Severity.MEDIUM if ("\\downloads\\" in prog or "\\desktop\\" in prog) else Severity.HIGH
+        out.append(_f(
+            "AEG-NET-FW-USERPATH", f"Firewall allows inbound connections to a program in a user-writable folder "
+            f"({cl.basename(r.program or '')})", sev,
+            f"The rule '{r.label}' lets {r.program} accept connections from the network. Programs that run from Temp, "
+            "Downloads, Public or the root of AppData/ProgramData are where malware lives, and opening the firewall for itself is "
+            "how a backdoor or miner receives connections. A rule can carry any name, so a harmless-looking one proves nothing.",
+            _fw_location(r), _fw_evidence(r),
+            "Find out what this program is and who created the rule; scan the program and its folder. If you do not recognise "
+            "it, disable the rule (the fix below keeps it) and remove the program. " + _fw_undo_hint(r),
+            firewall_disable_fix(r, names[r.display_name.lower()] > 1), ["T1686.003"], Category.SUSPICIOUS))
+
+    for r in rules:
+        if len(out) >= MAX_FW_FINDINGS:
+            break
+        if r.name in flagged or not firewall_allows_everything(r):
+            continue
+        flagged.add(r.name)
+        out.append(_f(
+            "AEG-NET-FW-ALLOWALL", f"Firewall rule allows all inbound traffic from anywhere ({r.label})", Severity.MEDIUM,
+            f"The rule '{r.label}' is outside Windows' built-in rule groups and lets any program receive connections on any "
+            "port from any address on the Public network profile, which effectively turns the firewall off for inbound traffic there.",
+            _fw_location(r), _fw_evidence(r),
+            "Delete the rule or limit it to the program, ports and addresses you need; if you created it for testing, remove it "
+            "now. " + _fw_undo_hint(r),
+            firewall_disable_fix(r, names[r.display_name.lower()] > 1), ["T1686.003"]))
+
+    for r in rules:
+        if len(out) >= MAX_FW_FINDINGS:
+            break
+        hits = firewall_public_admin_ports(r) if r.name not in flagged else {}
+        if not hits:
+            continue
+        flagged.add(r.name)
+        svc = ", ".join(dict.fromkeys(hits.values()))
+        fix_hint = _fw_command_hint(r, "Set-NetFirewallRule", " -Profile Domain,Private -RemoteAddress LocalSubnet")
+        out.append(_f(
+            "AEG-NET-FW-PUBLICADMIN", f"Firewall exposes {svc} to any address on public networks ({r.label})", Severity.MEDIUM,
+            f"The rule '{r.label}' allows inbound connections to {svc} (port {', '.join(str(p) for p in hits)}) from any address "
+            "on the Public profile, e.g. cafe Wi-Fi or the internet. Remote-access and administration ports are the first "
+            "thing attackers and worms try.",
+            _fw_location(r), {**_fw_evidence(r), "services": sorted(set(hits.values())), "ports": sorted(hits)},
+            "Limit the rule to your own network (Profile: Domain/Private, remote addresses: local subnet) or reach the service "
+            "through a VPN" + (f": {fix_hint}" if fix_hint else "") + ". Never expose RDP, SMB, WinRM or VNC to the internet.",
+            None, ["T1021", "T1686.003"]))
+
+    cache: Dict[str, bool] = {}
+    stale = []
+    for r in rules:
+        if r.name in flagged or r.windows_owned or not _specific_program(r.program):
+            continue
+        prog = str(r.program)
+        if prog not in cache:
+            try:
+                cache[prog] = bool(exists(prog))
+            except Exception:
+                cache[prog] = True
+        if not cache[prog]:
+            stale.append(r)
+    if stale:
+        out.append(_f(
+            "AEG-NET-FW-STALE", f"{len(stale)} firewall rule(s) allow inbound traffic to programs that no longer exist",
+            Severity.LOW,
+            "These rules were left behind when their program was removed. That is usually harmless, but malware that was "
+            "cleaned up later leaves its opening in the firewall in exactly this way.",
+            "Windows Firewall: inbound rules for missing programs",
+            {"count": len(stale), "rules": [{"rule": r.name, "display_name": r.display_name, "program": r.program}
+                                            for r in stale[:25]]},
+            "Review the list and delete rules for programs you no longer use (Remove-NetFirewallRule -Name <rule>). Rules for "
+            "programs you never installed deserve a closer look.", None, ["T1686.003"]))
+    return out
+
+
+# ---- Linux: ufw
+
+@dataclass
+class UfwRule:
+    to: str
+    action: str  # allow | limit | deny | reject
+    direction: str  # in | out | fwd
+    source: str
+
+
+_UFW_APPS = {"openssh": 22, "ssh": 22, "samba": 445}
+
+
+def parse_ufw_status(text: str) -> Tuple[bool, List[UfwRule]]:
+    """(active, rules) from ``ufw status numbered``; columns are separated by two or more spaces."""
+    active = False
+    rules: List[UfwRule] = []
+    for line in text.replace("\r", "").splitlines():
+        line = line.strip()
+        if line.lower().startswith("status:"):
+            active = line.split(":", 1)[1].strip().lower() == "active"
+            continue
+        m = re.match(r"^\[\s*\d+\]\s+(.+)$", line)
+        if not m:
+            continue
+        cols = re.split(r"\s{2,}", re.sub(r"\s+#.*$", "", m.group(1)).strip())
+        am = re.fullmatch(r"(ALLOW|DENY|REJECT|LIMIT)(?:\s+(IN|OUT|FWD))?", cols[1].strip(), re.I) if len(cols) >= 3 else None
+        if am:
+            rules.append(UfwRule(cols[0].strip(), am.group(1).lower(), (am.group(2) or "in").lower(), cols[2].strip()))
+    return active, rules
+
+
+def ufw_admin_ports(to: str) -> Dict[int, str]:
+    """Admin ports a ufw 'To' column names (22/tcp, 5900:5903/tcp, 80,443/tcp, 3389 (v6), OpenSSH); 'Anywhere' names none."""
+    t = re.sub(r"\s*\(v6\)\s*$", "", to.strip(), flags=re.I)
+    t = re.sub(r"\s+on\s+\S+$", "", t)
+    if t.lower() in _UFW_APPS:
+        return {_UFW_APPS[t.lower()]: FW_ADMIN_PORTS[_UFW_APPS[t.lower()]]}
+    m = re.search(r"(?:^|\s)(\d{1,5}(?::\d{1,5})?(?:,\d{1,5}(?::\d{1,5})?)*)(?:/(?:tcp|udp))?$", t)
+    if not m:
+        return {}
+    ranges = []
+    for part in m.group(1).split(","):
+        lo, _, hi = part.partition(":")
+        ranges.append((int(lo), int(hi or lo)))
+    return firewall_admin_ports(ranges)
+
+
+def ufw_findings(rules: Sequence[UfwRule]) -> List[Finding]:
+    """Admin ports that ufw allows from any address, one finding per service. SSH is only LOW (it is what most servers
+    need, and `ufw limit` rules for it are the recommended setup, so they are not reported)."""
+    by_service: Dict[str, Dict[str, Any]] = {}
+    for r in rules:
+        if r.direction != "in" or r.action not in ("allow", "limit"):
+            continue
+        if not (r.source.lower().startswith("anywhere") or r.source in ("0.0.0.0/0", "::/0")):
+            continue
+        for port, svc in ufw_admin_ports(r.to).items():
+            if port == 22 and r.action == "limit":
+                continue
+            entry = by_service.setdefault(svc, {"ports": set(), "rules": []})
+            entry["ports"].add(port)
+            entry["rules"].append(f"{r.to}  {r.action.upper()}  {r.source}")
+    out: List[Finding] = []
+    for svc, entry in sorted(by_service.items()):
+        ports = sorted(entry["ports"])
+        out.append(_f(
+            "AEG-NET-FW-PUBLICADMIN", f"ufw allows {svc} from any address (port {', '.join(str(p) for p in ports)})",
+            Severity.LOW if svc == "SSH" else Severity.MEDIUM,
+            f"ufw lets any address on the network or internet connect to {svc}. Remote-access and administration ports are "
+            "the first thing attackers and worms try." + (" Key-only logins and `ufw limit` reduce the risk." if svc == "SSH" else ""),
+            f"ufw: {svc} allowed from anywhere", {"service": svc, "ports": ports, "rules": entry["rules"][:10]},
+            f"Allow it only from your own network (sudo ufw allow from 192.168.0.0/24 to any port {ports[0]}) and delete the "
+            "open rule (sudo ufw status numbered, then sudo ufw delete <number>), or reach it through a VPN.",
+            None, ["T1021", "T1686"]))
+    return out
+
+
+def collect_ufw_rules(runner: Callable[..., Tuple[int, str, str]] = run) -> Tuple[Optional[List[UfwRule]], str]:
+    """Rules from ``ufw status numbered`` (needs root); (None, reason) when ufw is missing, not allowed to run or inactive."""
+    rc, out, err = runner(["ufw", "status", "numbered"], timeout=20)
+    if rc != 0:
+        first = next(iter((err or out).strip().splitlines()), "")
+        return None, first[:200] or f"ufw exited with {rc}"
+    active, rules = parse_ufw_status(out)
+    if not active:
+        return None, "ufw is not active"
+    return rules, ""
+
+
 # --------------------------------------------------------------------------- scanner
 
 @register
 class NetworkScanner(Scanner):
     name = "network"
     title = "Network exposure"
-    description = "Connections, listening services, hosts file, proxy/DNS hijack, root certificates, Wi-Fi, SMB shares"
+    description = "Connections, listening services, hosts file, proxy/DNS hijack, root certificates, Wi-Fi, SMB shares, firewall rules"
     platforms = ("windows", "linux", "darwin")
 
     @staticmethod
@@ -930,6 +1352,24 @@ class NetworkScanner(Scanner):
                          f"{len(profiles)} saved network(s), {auto} joined automatically; {len(wf)} need attention.")
         except Exception as exc:
             yield _check("AEG-NET-CHK-WIFI-SAVED", title, CheckStatus.ERROR, f"{type(exc).__name__}: {exc}")
+
+    @staticmethod
+    def _firewall_rules(collect: Callable[[], Tuple[Optional[List[Any]], str]], review: Callable[[Sequence[Any]], List[Finding]],
+                        what: str):
+        title = "Firewall rules only allow expected programs"
+        try:
+            rules, note = collect()
+            if rules is None:
+                yield _check("AEG-NET-CHK-FIREWALL", title, CheckStatus.SKIP, f"Firewall rules could not be reviewed ({note}).")
+                return
+            ff = review(rules)
+            yield from ff
+            status = (CheckStatus.FAIL if any(f.severity >= Severity.MEDIUM for f in ff) else
+                      (CheckStatus.WARN if ff or note else CheckStatus.PASS))
+            yield _check("AEG-NET-CHK-FIREWALL", title, status,
+                         f"{len(rules)} {what} reviewed; {len(ff)} need attention" + (f" ({note})" if note else "") + ".")
+        except Exception as exc:
+            yield _check("AEG-NET-CHK-FIREWALL", title, CheckStatus.ERROR, f"{type(exc).__name__}: {exc}")
 
     def run(self, ctx: ScanContext):
         sigs = ctx.signatures
@@ -1032,7 +1472,13 @@ class NetworkScanner(Scanner):
                              CheckStatus.WARN if sf else CheckStatus.PASS, f"{len(shares)} non-default shares")
             except Exception as exc:
                 yield _check("AEG-NET-CHK-SMB", "No unexpected SMB shares", CheckStatus.ERROR, f"{type(exc).__name__}: {exc}")
+            yield from self._firewall_rules(collect_windows_firewall_rules, firewall_rule_findings,
+                                            "enabled inbound allow rule(s)")
         else:
             if IS_LINUX:
                 yield from self._saved_wifi(collect_nm_wifi_profiles)
+                yield from self._firewall_rules(collect_ufw_rules, ufw_findings, "ufw rule(s)")
+            else:
+                yield _check("AEG-NET-CHK-FIREWALL", "Firewall rules only allow expected programs", CheckStatus.SKIP,
+                             "Windows and Linux (ufw) only")
             yield _check("AEG-NET-CHK-ROOTCA", "No rogue root CAs", CheckStatus.SKIP, "Windows only")
