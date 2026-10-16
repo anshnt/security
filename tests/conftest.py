@@ -11,6 +11,18 @@ def aegis_home(tmp_path, monkeypatch):
     return home
 
 
+@pytest.fixture(autouse=True)
+def _fresh_btm_cache():
+    """The persistence scanner keeps the last `sfltool dumpbtm` output while the BTM database is unchanged. On a real Mac
+    that database exists, so one test's fake dump would be served to the next test: every test starts without it."""
+    import sys
+
+    ps = sys.modules.get("aegis.scanners.persistence")
+    if ps is not None:
+        ps._BTM_CACHE.clear()
+    yield
+
+
 @pytest.fixture
 def eicar_bytes() -> bytes:
     # Built at runtime so this repository never contains the literal test string.

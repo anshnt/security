@@ -2600,7 +2600,8 @@ _MACHO_MAGIC = {b"\xfe\xed\xfa\xce", b"\xfe\xed\xfa\xcf", b"\xce\xfa\xed\xfe", b
                 b"\xca\xfe\xba\xbe", b"\xbe\xba\xfe\xca", b"\xca\xfe\xba\xbf", b"\xbf\xba\xfe\xca"}  # thin, fat and fat64
 _CODESIGN_INVALID = ("sealed resource", "invalid signature", "have been modified", "failed strict validation",
                      "invalid or unsupported format", "file modified")
-_APPLE_SIGNERS = ("Software Signing", "Apple Mac OS Application Signing")  # Apple's own identities, only Apple holds them
+# Apple's own signing identities, only Apple holds them ("macOS Software Signing" signs the system apps of current macOS)
+_APPLE_SIGNERS = ("Software Signing", "macOS Software Signing", "Apple Mac OS Application Signing")
 
 
 @dataclass

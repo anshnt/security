@@ -907,3 +907,14 @@ def test_the_btm_dump_is_run_again_only_when_its_database_changed(monkeypatch, t
     (db / "BackgroundItems-v13.btm").write_bytes(b"changed again")
     assert ps.cached_btm_dump() == (None, "needs root") and ps.cached_btm_dump() == (None, "needs root")
     assert len(calls) == 4  # a skip is never cached: running with sudo later must read the dump
+
+
+def test_current_macos_system_apps_are_signed_by_apple():
+    """Real macOS CI: Calculator.app's first Authority is "macOS Software Signing"."""
+    assert ps.CodeSignature("signed", "macOS Software Signing").apple
+    assert not ps.CodeSignature("signed", "Developer ID Application: macOS Software Signing (ABCDE12345)").apple
+
+
+def test_the_btm_cache_is_empty_at_the_start_of_every_test():
+    assert ps._BTM_CACHE == {}  # tests/conftest.py clears it: on a Mac one test's fake dump would reach the next
+    ps._BTM_CACHE.update(stamp=("x",), result=("leak", ""))  # cleared again before the next test
