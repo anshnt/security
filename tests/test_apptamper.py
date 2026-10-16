@@ -310,6 +310,49 @@ def _same_path(a, b):
     return os.path.normcase(_long_path(a)) == os.path.normcase(_long_path(b))
 
 
+SHELL_LINK_CS = r"""
+using System;
+using System.Runtime.InteropServices;
+using System.Runtime.InteropServices.ComTypes;
+using System.Text;
+
+[ComImport, Guid("00021401-0000-0000-C000-000000000046")]
+class AegisShellLink {}
+
+[ComImport, InterfaceType(ComInterfaceType.InterfaceIsIUnknown), Guid("000214F9-0000-0000-C000-000000000046")]
+interface IAegisShellLinkW {
+    void GetPath([Out, MarshalAs(UnmanagedType.LPWStr)] StringBuilder file, int cch, IntPtr fd, int flags);
+    void GetIDList(out IntPtr pidl);
+    void SetIDList(IntPtr pidl);
+    void GetDescription([Out, MarshalAs(UnmanagedType.LPWStr)] StringBuilder name, int cch);
+    void SetDescription([MarshalAs(UnmanagedType.LPWStr)] string name);
+    void GetWorkingDirectory([Out, MarshalAs(UnmanagedType.LPWStr)] StringBuilder dir, int cch);
+    void SetWorkingDirectory([MarshalAs(UnmanagedType.LPWStr)] string dir);
+    void GetArguments([Out, MarshalAs(UnmanagedType.LPWStr)] StringBuilder args, int cch);
+    void SetArguments([MarshalAs(UnmanagedType.LPWStr)] string args);
+    void GetHotkey(out short hotkey);
+    void SetHotkey(short hotkey);
+    void GetShowCmd(out int cmd);
+    void SetShowCmd(int cmd);
+    void GetIconLocation([Out, MarshalAs(UnmanagedType.LPWStr)] StringBuilder path, int cch, out int index);
+    void SetIconLocation([MarshalAs(UnmanagedType.LPWStr)] string path, int index);
+    void SetRelativePath([MarshalAs(UnmanagedType.LPWStr)] string rel, int reserved);
+    void Resolve(IntPtr hwnd, int flags);
+    void SetPath([MarshalAs(UnmanagedType.LPWStr)] string file);
+}
+
+public static class AegisTestLnk {
+    public static void Save(string lnk, string target, string args, string workDir) {
+        IAegisShellLinkW link = (IAegisShellLinkW)new AegisShellLink();
+        link.SetPath(target);
+        link.SetArguments(args);
+        link.SetWorkingDirectory(workDir);
+        ((IPersistFile)link).Save(lnk, false);
+    }
+}
+"""
+
+
 @pytest.mark.skipif(sys.platform != "win32", reason="creates shortcuts with WScript.Shell, which only exists on Windows")
 def test_parse_real_windows_shortcuts(tmp_path):
     """Shortcuts written by Windows itself (WScript.Shell) parse to the same target, arguments and working directory.
@@ -320,10 +363,13 @@ def test_parse_real_windows_shortcuts(tmp_path):
     ps = shutil.which("powershell") or shutil.which("pwsh")
     if not ps:
         pytest.skip("PowerShell not found")
-    names = [("plain.exe", '--profile-directory="Profile 1" --app-id=abcdefghijklmnop'),
-             ("quoted.exe", '--load-extension="C:\\Some Dir\\ext one" --flag=a b "quoted arg" \'single\' --end'),
-             ("тест-Ünïcödé-日本語.exe", "--new-window https://example.com/a?b=1&c=2"),
-             ("no args.exe", "")]
+    # (target file name, arguments, writer): WScript.Shell goes through the ANSI code page and rejects targets it cannot
+    # represent, so the Unicode case is written through the shell's own IShellLinkW + IPersistFile
+    names = [("plain.exe", '--profile-directory="Profile 1" --app-id=abcdefghijklmnop', "wsh"),
+             ("quoted.exe", '--load-extension="C:\\Some Dir\\ext one" --flag=a b "quoted arg" \'single\' --end', "wsh"),
+             ("тест-Ünïcödé-日本語.exe", "--new-window https://example.com/a?b=1&c=2", "shell"),
+             ("no args.exe", "", "wsh"),
+             ("Ünïcödé café.exe", "--incognito", "shell")]
 
     def q(text):  # PowerShell single-quoted literal
         return "'" + text.replace("'", "''") + "'"
@@ -335,13 +381,18 @@ def test_parse_real_windows_shortcuts(tmp_path):
              "$work = New-Item -ItemType Directory -Path (Join-Path $base 'work dir') -Force",
              "[IO.File]::WriteAllText((Join-Path $base 'probe.txt'), 'x')",
              "Write-Output \"BASE=$base\"",
-             "$ws = New-Object -ComObject WScript.Shell"]
-    for i, (name, args) in enumerate(names):
+             "$ws = New-Object -ComObject WScript.Shell",
+             "Add-Type -TypeDefinition @'",
+             SHELL_LINK_CS,
+             "'@"]
+    for i, (name, args, writer) in enumerate(names):
         lines += [f"Write-Output 'case {i}'",
                   f"$t = Join-Path $tools.FullName {q(name)}",
-                  "[IO.File]::WriteAllBytes($t, [byte[]](77, 90, 0, 0))",
-                  f"$s = $ws.CreateShortcut((Join-Path $base 'case{i}.lnk'))",
-                  "$s.TargetPath = $t"]
+                  "[IO.File]::WriteAllBytes($t, [byte[]](77, 90, 0, 0))"]
+        if writer == "shell":
+            lines.append(f"[AegisTestLnk]::Save((Join-Path $base 'case{i}.lnk'), $t, {q(args)}, $work.FullName)")
+            continue
+        lines += [f"$s = $ws.CreateShortcut((Join-Path $base 'case{i}.lnk'))", "$s.TargetPath = $t"]
         if args:
             lines.append(f"$s.Arguments = {q(args)}")
         lines += ["$s.WorkingDirectory = $work.FullName", "$s.Save()"]
@@ -353,7 +404,7 @@ def test_parse_real_windows_shortcuts(tmp_path):
     try:
         if done.returncode != 0:
             pytest.fail(f"PowerShell could not create the shortcuts (exit {done.returncode}):\n{done.stdout}\n{done.stderr}")
-        for i, (name, args) in enumerate(names):
+        for i, (name, args, _writer) in enumerate(names):
             lnk = Path(base) / f"case{i}.lnk"
             info = read_lnk(str(lnk))
             assert info is not None, (str(lnk), lnk.stat().st_size, lnk.read_bytes()[:96].hex())
