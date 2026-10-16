@@ -720,7 +720,8 @@ def test_the_sources_are_plain_ascii():
 
 # =========================================================================== real operating system
 def write_real_origin(path, host_url, referrer_url):
-    """Record an origin the way the OS does: an alternate data stream (Windows) or user.xdg.* attributes (Linux)."""
+    """Record an origin the way the OS does: an alternate data stream (Windows), user.xdg.* attributes (Linux), or the
+    quarantine record and kMDItemWhereFroms that Safari writes (macOS)."""
     if sys.platform == "win32":
         text = f"[ZoneTransfer]\r\nZoneId=3\r\nReferrerUrl={referrer_url}\r\nHostUrl={host_url}\r\n"
         try:
@@ -734,6 +735,17 @@ def write_real_origin(path, host_url, referrer_url):
             os.setxattr(path, "user.xdg.referrer.url", referrer_url.encode())
         except OSError as exc:
             pytest.skip(f"this file system keeps no user extended attributes ({exc})")
+    elif sys.platform == "darwin":
+        import plistlib
+        import subprocess
+
+        froms = plistlib.dumps([host_url, referrer_url], fmt=plistlib.FMT_BINARY).hex()
+        try:
+            subprocess.run(["xattr", "-w", "com.apple.quarantine", "0083;65a1b2c3;Safari;", str(path)], check=True, timeout=20)
+            subprocess.run(["xattr", "-w", "-x", "com.apple.metadata:kMDItemWhereFroms", froms, str(path)], check=True,
+                           timeout=20)
+        except (OSError, subprocess.SubprocessError) as exc:
+            pytest.skip(f"xattr is not usable here ({exc})")
     else:
         pytest.skip("no way to record a download origin on this platform")
 
@@ -750,7 +762,7 @@ def test_scanner_reads_a_real_recorded_origin(ctx, home):
     assert sorted(found) == ["Invoice.pdf.exe", "setup.exe"]
     f = found["setup.exe"]
     assert f.rule_id == "AEG-DL-RAWIP" and f.severity == Severity.MEDIUM
-    assert f.evidence["origin_source"] == ("zone.identifier" if sys.platform == "win32" else "xattr")
+    assert f.evidence["origin_source"] == {"win32": "zone.identifier", "darwin": "quarantine"}.get(sys.platform, "xattr")
     assert f.evidence["host_url"] == f"http://{IP}/dl/setup.exe"
     assert f.evidence["referrer_url"] == "https://free-software.example/page"
     assert f.evidence["zone"] == (3 if sys.platform == "win32" else None)

@@ -818,7 +818,7 @@ def test_malicious_package_is_critical_with_guidance(tmp_path, monkeypatch):
     mal = by_rule(findings, "AEG-SC-MALPKG")
     assert len(mal) == 1 and mal[0].severity == Severity.CRITICAL
     f = mal[0]
-    assert f.title == "Known malicious package npm/@ctrl/tinycolor@4.1.1" and f.category == "malware"
+    assert f.title == "Known malicious package npm/@ctrl/tinycolor@4.1.1 in app" and f.category == "malware"
     assert f.location.startswith(str(tmp_path / "app" / "package-lock.json"))
     assert f.evidence["advisories"] == ["MAL-2025-47141"] and f.evidence["file"].endswith("package-lock.json")
     assert "rotate" in f.recommendation.lower() and "persistence" in f.recommendation.lower()
@@ -826,6 +826,18 @@ def test_malicious_package_is_critical_with_guidance(tmp_path, monkeypatch):
     assert not by_rule(findings, "AEG-SC-VULN")
     osv_check = [c for c in checks if c.check_id == "AEG-SC-OSV"][0]
     assert osv_check.status == CheckStatus.PASS
+
+
+def test_the_same_vulnerable_package_in_two_projects_names_each_project(tmp_path, monkeypatch):
+    """Real macOS CI: two Node installs held js-yaml@3.14.1 and the report showed the same title twice."""
+    for proj in ("site", "admin-tool"):
+        write(tmp_path, f"{proj}/package-lock.json", lock_v3({"lodash": {"version": "4.17.15"}}, {"lodash": "^4"}))
+    docs = {"GHSA-aaaa-aaaa-aaaa": ghsa("GHSA-aaaa-aaaa-aaaa", "HIGH", fixed=("4.17.21",))}
+    osv_env(monkeypatch, {"npm/lodash@4.17.15": list(docs)}, docs)
+    findings, _ = run_scan(make_ctx(tmp_path))
+    titles = sorted(f.title for f in by_rule(findings, "AEG-SC-VULN"))
+    assert titles == ["Vulnerable npm package lodash@4.17.15 in admin-tool: 1 known advisory (high)",
+                      "Vulnerable npm package lodash@4.17.15 in site: 1 known advisory (high)"]
 
 
 def test_vulnerable_packages_aggregate_advisories_per_package(tmp_path, monkeypatch):

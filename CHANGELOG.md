@@ -30,6 +30,15 @@
 - **Fleet overview in the GUI** (Tools > Fleet overview): pick the folder with your PCs' scan results, build the overview
   and open the HTML report, without the command line.
 
+### Fixes
+- **Network connections on macOS as a normal user:** the per-process fallback (used when the system-wide list is refused)
+  failed with "unexpected field names: ['pid']", so the connection check always ended in an error. Found by the new
+  real-macOS CI job, which now runs the tests, the audit, a quick scan, the hunting scanners and a root scan on a Mac.
+- **GUI on macOS:** the real-Tk tests pump the event loop the way the app does; `update()` never returned on macOS while
+  a progress bar was animating.
+- **Supply-chain findings name the project:** the same vulnerable package in two projects no longer reads as one finding
+  listed twice.
+
 ## [1.4.0] - 2026-10-16
 
 ### Detection

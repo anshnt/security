@@ -939,6 +939,12 @@ def _osv_url(vid: str) -> str:
     return f"https://osv.dev/{vid}"
 
 
+def _in_project(proj: Project) -> str:
+    """' in <folder>' for a title, so the same package in two projects does not read as one finding listed twice."""
+    name = proj.path.name or str(proj.path)
+    return f" in {name}" if name else ""
+
+
 def _malicious_finding(proj: Project, use: Use, infos: List[VulnInfo]) -> Finding:
     d = use.dep
     mal = [i for i in infos if i.malicious]
@@ -946,7 +952,7 @@ def _malicious_finding(proj: Project, use: Use, infos: List[VulnInfo]) -> Findin
     ids = [i.id for i in mal]
     summaries = [i.summary for i in mal if i.summary][:3]
     return _finding(
-        "AEG-SC-MALPKG", f"Known malicious package {d.ecosystem}/{d.name}@{d.version}", Severity.CRITICAL,
+        "AEG-SC-MALPKG", f"Known malicious package {d.ecosystem}/{d.name}@{d.version}{_in_project(proj)}", Severity.CRITICAL,
         Category.MALWARE,
         f"OSV.dev lists {d.ecosystem} package {d.name} {d.version} as malicious ({', '.join(ids)}). "
         + (summaries[0] + ". " if summaries else "")
@@ -993,7 +999,8 @@ def _vuln_finding(proj: Project, use: Use, infos: List[VulnInfo]) -> Optional[Fi
     rec += (f" - e.g. `{cmd}`" if cmd else "") + ". Then regenerate and commit the lockfile."
     return _finding(
         "AEG-SC-VULN",
-        f"Vulnerable {d.ecosystem} package {d.name}@{d.version}: {n} known advisor{'y' if n == 1 else 'ies'} ({sev.name.lower()})",
+        f"Vulnerable {d.ecosystem} package {d.name}@{d.version}{_in_project(proj)}: {n} known "
+        f"advisor{'y' if n == 1 else 'ies'} ({sev.name.lower()})",
         sev, Category.VULNERABILITY,
         f"{d.name} {d.version} is affected by {n} published advisor{'y' if n == 1 else 'ies'}. Most severe: {top.id}"
         + (f" - {top.summary}" if top.summary else "") + ".",
