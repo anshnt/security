@@ -915,6 +915,6 @@ def test_current_macos_system_apps_are_signed_by_apple():
     assert not ps.CodeSignature("signed", "Developer ID Application: macOS Software Signing (ABCDE12345)").apple
 
 
-def test_the_btm_cache_is_empty_at_the_start_of_every_test():
-    assert ps._BTM_CACHE == {}  # tests/conftest.py clears it: on a Mac one test's fake dump would reach the next
-    ps._BTM_CACHE.update(stamp=("x",), result=("leak", ""))  # cleared again before the next test
+def test_tests_run_without_the_btm_cache():
+    """tests/conftest.py points the cache at a missing folder: on a real Mac a fake dump was served to the next call."""
+    assert ps._BTM_CACHE == {} and not ps.BTM_DB_DIR.exists() and ps._btm_db_stamp() is None

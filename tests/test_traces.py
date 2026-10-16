@@ -1705,21 +1705,32 @@ def test_real_windows_dns_cache_is_read_and_checked():
     from aegis.core.config import Config
     from aegis.scanners.base import ScanContext
 
-    try:
-        socket.getaddrinfo("github.com", 443)
-    except OSError:
-        pytest.skip("no DNS resolution on this machine")
-    rows = tr.powershell_json(tr.DNS_SCRIPT, timeout=60)
-    assert rows is not None, "Get-DnsClientCache failed"
-    records = tr.parse_dns_cache(rows)
-    assert any(r.entry.lower().rstrip(".") == "github.com" for r in records), [r.entry for r in records][:20]
+    # A cache entry lives only for its TTL (about 60 s for github.com), so resolve and read again until one is there.
+    host, records = "", []
+    for _attempt in range(3):
+        for name in ("github.com", "pypi.org", "www.python.org"):
+            try:
+                socket.getaddrinfo(name, 443)
+            except OSError:
+                continue
+            rows = tr.powershell_json(tr.DNS_SCRIPT, timeout=60)
+            assert rows is not None, "Get-DnsClientCache failed"
+            records = tr.parse_dns_cache(rows)
+            if any(r.entry.lower().rstrip(".") == name for r in records):
+                host = name
+                break
+        if host:
+            break
+    if not records:
+        pytest.skip("no DNS resolution on this machine, or the DNS client cache is empty")
     assert all(r.rtype for r in records)
+    assert host, f"no resolved name stayed in the DNS client cache: {[r.entry for r in records][:20]}"
 
-    bad = {"github.com"}
+    bad = {host}
     sigs = SimpleNamespace(bad_domains=bad, is_bad_domain=lambda d: d.lower().strip(".") in bad,
                            is_bad_ip=lambda ip: False)
     ctx = ScanContext(config=Config(), signatures=sigs)
     out = list(tr.check_dns_cache(ctx))
     findings = [x for x in out if getattr(x, "rule_id", "") == "AEG-TRACE-DNS"]
-    assert findings and findings[0].location == "dns-cache:github.com" and findings[0].severity.name == "HIGH"
+    assert findings and findings[0].location == f"dns-cache:{host}" and findings[0].severity.name == "HIGH"
     assert out[-1].status == "fail" and ctx.stats["traces_dns_entries"] > 0

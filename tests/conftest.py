@@ -12,15 +12,14 @@ def aegis_home(tmp_path, monkeypatch):
 
 
 @pytest.fixture(autouse=True)
-def _fresh_btm_cache():
-    """The persistence scanner keeps the last `sfltool dumpbtm` output while the BTM database is unchanged. On a real Mac
-    that database exists, so one test's fake dump would be served to the next test: every test starts without it."""
-    import sys
+def _no_btm_cache(tmp_path, monkeypatch):
+    """The persistence scanner keeps the last `sfltool dumpbtm` output while the Background Task Management database is
+    unchanged. On a real Mac that database exists, so a fake dump would be served to the next call, in the same test or
+    the next one. Tests run with a database folder that does not exist (no caching); a cache test sets its own."""
+    from aegis.scanners import persistence as ps
 
-    ps = sys.modules.get("aegis.scanners.persistence")
-    if ps is not None:
-        ps._BTM_CACHE.clear()
-    yield
+    monkeypatch.setattr(ps, "BTM_DB_DIR", tmp_path / "no-btm-database")
+    monkeypatch.setattr(ps, "_BTM_CACHE", {})
 
 
 @pytest.fixture
