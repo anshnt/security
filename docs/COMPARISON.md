@@ -44,6 +44,8 @@ be honest, because a security tool that overstates what it does is a risk in its
 | ClickFix / fake-CAPTCHA traces (Run dialog, PowerShell and shell history), malicious domains in DNS cache and browser history | ✅ | 🟡 (behaviour blocking) | 🟡 Browser Guard | 🟡 EDR 💲 | ❌ | ❌ | ❌ |
 | Ransomware recovery readiness (restore points, File History, cloud versioning, Time Machine) with a grade | ✅ | 🟡 (CFA, OneDrive prompt) | ❌ | 🟡 (own backup 💲) | ❌ | ❌ | ❌ |
 | Exploit-protection audit (DEP, ASLR, CFG, SEHOP switched off) | ✅ | 🟡 (settings page) | ✅ 💲 (exploit protection) | ✅ | ❌ | ❌ | ❌ |
+| Linux kernel hardening & hidden kernel module check (sysctls, rootkit LKMs, module-list cross-check, taint, AppArmor / SELinux) | ✅ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ |
+| Automatic screen-lock audit (idle lock on Windows, macOS and Linux desktops) | ✅ | 🟡 (Defender for Endpoint 💲) | ❌ | ❌ | ❌ | ❌ | ❌ |
 | Saved Wi-Fi review (WEP, auto-joined open networks, hidden networks) | ✅ | ❌ | ❌ | ✅ (Wi-Fi inspector) | ❌ | ❌ | ❌ |
 | Phishing / malicious URL checker | ✅ (offline heuristics + URLhaus + optional Safe Browsing) | ✅ SmartScreen | ✅ 💲 | ✅ | ❌ | ❌ | ❌ |
 | Password breach check (HIBP k-anonymity) | ✅ | ✅ (Edge) | ❌ | ✅ 💲 | ❌ | ❌ | ❌ |

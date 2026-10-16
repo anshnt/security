@@ -35,6 +35,7 @@ import shutil
 import stat as statmod
 import time
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any, Callable, Dict, Iterable, Iterator, List, Optional, Sequence, Tuple
 
 from aegis.core.models import Category, CheckResult, CheckStatus, Finding, Remediation, Severity
@@ -1062,7 +1063,7 @@ def _expiry_text(today: dt.date) -> str:
 
 def check_secure_boot_certs(env: AuditEnv) -> List[Check]:
     """Status of the move from Microsoft's 2011 Secure Boot certificates to the 2023 ones, from the servicing values
-    Microsoft documents for this (``UEFICA2023Status`` / ``UEFICA2023Error`` under ``...\SecureBoot\Servicing``).
+    Microsoft documents for this (``UEFICA2023Status`` / ``UEFICA2023Error`` under ``...\\SecureBoot\\Servicing``).
     ``WindowsUEFICA2023Capable`` is kept as evidence only: Microsoft says not to use it for status."""
     if rd_int("HKLM", SECURE_BOOT_KEY + r"\State", "UEFISecureBootEnabled") != 1:
         return [skipped("SECURE-BOOT-CERTS", _SB_CERT_TITLE, "Secure Boot is not enabled, so its certificates are not in use.")]
@@ -1836,21 +1837,6 @@ def check_linux_files(env: AuditEnv) -> List[Check]:
     else:
         out.append(passed("LINUX-ETC-WORLD-WRITABLE", t))
 
-    # ASLR
-    t = "Address space layout randomisation (ASLR) is fully enabled"
-    val = (_read_text("/proc/sys/kernel/randomize_va_space") or "").strip()
-    if not val:
-        out.append(skipped("LINUX-ASLR", t, "Kernel setting unreadable."))
-    elif val == "2":
-        out.append(passed("LINUX-ASLR", t))
-    else:
-        out.append(failed(
-            "LINUX-ASLR", "ASLR is not fully enabled", Severity.MEDIUM,
-            f"kernel.randomize_va_space is {val}; memory-corruption exploits become far easier.",
-            "Run: sudo sysctl -w kernel.randomize_va_space=2 and persist it in /etc/sysctl.d/.",
-            "/proc/sys/kernel/randomize_va_space", {"value": val},
-            run_cmd(["sysctl", "-w", "kernel.randomize_va_space=2"], "Enable full ASLR"), ["T1068"]))
-
     # ld.so.preload
     t = "/etc/ld.so.preload is empty"
     pre = _read_text("/etc/ld.so.preload")
@@ -1986,6 +1972,365 @@ def check_linux_suid(env: AuditEnv) -> List[Check]:
     return out
 
 
+# =========================================================================== Linux kernel hardening and integrity
+KERNEL_TITLE = "Kernel hardening and integrity"
+# `aegis harden` (linux.aslr) rewrites 60-aegis-hardening.conf as a whole, so the fixes below keep their lines in a
+# drop-in of their own instead of sharing that file and losing them.
+KERNEL_DROPIN = "/etc/sysctl.d/61-aegis-kernel.conf"
+# Exact names of public Linux loadable-kernel-module rootkits ('-' and '_' are the same in a module name). A match is
+# reported as HIGH, so only names specific to a rootkit are listed, never generic words. User-space LD_PRELOAD rootkits
+# (bdvl, Azazel, Jynx) are not kernel modules; the /etc/ld.so.preload check covers them.
+ROOTKIT_MODULES = frozenset({
+    "diamorphine", "reptile", "reptile_module", "suterusu", "adore", "adore_ng", "kovid", "enyelkm", "nuk3gh0st",
+    "puszek", "rootfoo", "singularity",
+})
+TAINT_OOT_MODULE = 1 << 12  # 'O': an externally built (out-of-tree) module was loaded
+TAINT_UNSIGNED_MODULE = 1 << 13  # 'E': an unsigned module was loaded
+MAC_LSMS = frozenset({"apparmor", "selinux", "smack", "tomoyo"})  # mandatory access control modules
+SYSRQ_ALL = frozenset({1, 511})  # kernel.sysrq values that enable every Magic SysRq function
+KERNEL_SYSCTLS = (
+    "kernel.randomize_va_space", "kernel.kptr_restrict", "kernel.dmesg_restrict", "kernel.yama.ptrace_scope",
+    "kernel.unprivileged_bpf_disabled", "fs.protected_symlinks", "fs.protected_hardlinks", "fs.protected_fifos",
+    "fs.protected_regular", "fs.suid_dumpable", "kernel.sysrq",
+)
+_CONTAINER_CGROUP = (("/docker/", "docker"), ("/docker-", "docker"), ("/kubepods", "kubernetes"), ("/lxc/", "lxc"),
+                     ("/libpod-", "podman"), ("/crio-", "cri-o"))
+
+
+def _sysctl_path(name: str) -> str:
+    return "/proc/sys/" + name.replace(".", "/")
+
+
+def _kread(root: Path, path: str, limit: int = 1_000_000) -> Optional[str]:
+    """Text of an absolute kernel path (/proc/..., /sys/...) below ``root``; None when it is missing or unreadable."""
+    return _read_text(str(root / path.lstrip("/")), limit)
+
+
+def _kint(root: Path, path: str) -> Optional[int]:
+    text = _kread(root, path, 256)
+    return to_int(text.strip()) if text is not None and text.strip() else None
+
+
+def _mod_key(name: str) -> str:
+    return name.strip().lower().replace("-", "_")
+
+
+def parse_proc_modules(text: str) -> Dict[str, str]:
+    """{module: taint letters} from /proc/modules ('name size refcount deps state address (flags)'). The flags are the
+    letters of the taint bits the module set, for example (OE) for an out-of-tree module that is not signed."""
+    out: Dict[str, str] = {}
+    for line in text.splitlines():
+        parts = line.split(None, 1)
+        if parts:
+            out[_mod_key(parts[0])] = "".join(re.findall(r"\(([A-Za-z]*)[+-]?\)", line))
+    return out
+
+
+def _read_proc_modules(root: Path) -> Optional[Dict[str, str]]:
+    text = _kread(root, "/proc/modules")
+    return None if text is None else parse_proc_modules(text)
+
+
+def scan_sys_modules(root: Path) -> Optional[Dict[str, Optional[str]]]:
+    """Every directory of /sys/module as {module: initstate}; the value is None for a built-in (non-loadable) module.
+
+    Only loadable modules have an ``initstate`` file (the kernel creates it for every module it loads, ``live`` /
+    ``coming`` / ``going``) and, when the kernel supports unloading, a ``refcnt`` file. Built-in code that only has
+    parameters also gets a directory, but with nothing except ``parameters`` and sometimes ``version``. None when
+    /sys/module cannot be listed."""
+    try:
+        entries = sorted(p for p in (root / "sys/module").iterdir() if p.is_dir())
+    except OSError:
+        return None
+    out: Dict[str, Optional[str]] = {}
+    for p in entries:
+        loadable = (p / "initstate").exists() or (p / "refcnt").exists()
+        out[_mod_key(p.name)] = (_read_text(str(p / "initstate"), 64) or "").strip().lower() if loadable else None
+    return out
+
+
+def find_hidden_modules(root: Path, listed: Dict[str, str], sysmods: Dict[str, Optional[str]]) -> List[str]:
+    """Loadable modules that /sys/module has but /proc/modules does not list.
+
+    A module the kernel loaded is in both: the kernel adds it to the module list before it creates its sysfs
+    directory and removes the directory before it takes it off the list, so a module that sysfs shows as ``live``
+    but the list lacks has been taken off the list on purpose (``list_del`` on its own entry, the way Diamorphine
+    and other rootkits hide). Built-in modules never count (no ``initstate`` / ``refcnt``), and a module that is
+    ``coming`` or ``going`` is only in transition. Both sources are read again before anything is reported, so a
+    module that loads or unloads during the scan is not mistaken for a hidden one. Rootkits that also remove their
+    sysfs entry (Reptile does) are invisible to this rule; the taint rule can still catch them."""
+    candidates = [k for k, state in sysmods.items() if state is not None and k not in listed]
+    if not candidates:
+        return []
+    again = _read_proc_modules(root)
+    now = scan_sys_modules(root)
+    if again is None or now is None:
+        return []
+    return sorted(k for k in candidates if k not in again and now.get(k) in ("live", ""))
+
+
+def detect_container(root: Path = Path("/")) -> str:
+    """Name of the container runtime this process runs in, or '' on a normal host or virtual machine. Inside a
+    container /proc/sys and /sys describe the host's kernel, which the container's owner cannot change. WSL is a
+    virtual machine with its own kernel, so it counts as a host."""
+    if (root / ".dockerenv").exists():
+        return "docker"
+    if (root / "run/.containerenv").exists():
+        return "podman"
+    kind = (_kread(root, "/run/systemd/container", 64) or "").strip().lower()
+    if kind and kind != "wsl":
+        return kind
+    cgroup = _kread(root, "/proc/1/cgroup") or ""
+    for marker, name in _CONTAINER_CGROUP:
+        if marker in cgroup:
+            return name
+    return ""
+
+
+def sysctl_fix(settings: Dict[str, str], description: str) -> Remediation:
+    """Set sysctls now and keep them after a reboot in Aegis' own drop-in. The script is built only from constants of
+    this module (never from scanned data), changes nothing when ``sysctl -w`` fails (not root, unknown key) and
+    replaces the line an earlier run wrote, so it can be repeated."""
+    steps = ["set -e"] + [f"sysctl -w {name}={value}" for name, value in settings.items()]
+    steps += [f"f={KERNEL_DROPIN}", '[ -s "$f" ] || echo "# Kernel hardening written by Aegis" > "$f"']
+    for name, value in settings.items():
+        steps.append("sed -i '/^" + name.replace(".", "[.]") + "[[:space:]]*=/d' \"$f\"")
+        steps.append(f"echo '{name} = {value}' >> \"$f\"")
+    return run_cmd(["sh", "-c", "; ".join(steps)], description)
+
+
+def _sysctl_check(key: str, title: str, severity: Severity, why: str, fix: Dict[str, str],
+                  current: Dict[str, Optional[int]], mitre: Sequence[str] = (), note: str = "",
+                  remediation: Optional[Remediation] = None) -> Check:
+    pairs = ", ".join(f"{n}={v}" for n, v in fix.items())
+    now = "; ".join(f"sysctl -w {n}={v}" for n, v in fix.items())
+    lines = "', '".join(f"{n} = {v}" for n, v in fix.items())
+    how = (f"Run as root: {now}. Add '{lines}' to {KERNEL_DROPIN} (or any file in /etc/sysctl.d/) so it survives a reboot; "
+           "`aegis fix` does both." + (" " + note if note else ""))
+    return failed(key, title, severity, why, how, _sysctl_path(next(iter(fix))),
+                  {"current": {n: current.get(n) for n in fix}, "recommended": dict(fix)},
+                  remediation or sysctl_fix(fix, f"Set {pairs} now and after every reboot"), mitre)
+
+
+def kernel_sysctl_checks(v: Dict[str, Optional[int]]) -> List[Check]:
+    """One failed Check per weak kernel setting group; settings that are fine (or missing on this kernel) add nothing."""
+    out: List[Check] = []
+
+    def weak(key: str, title: str, severity: Severity, why: str, fix: Dict[str, str], mitre: Sequence[str] = (),
+             note: str = "", remediation: Optional[Remediation] = None) -> None:
+        out.append(_sysctl_check(key, title, severity, why, fix, v, mitre, note, remediation))
+
+    aslr = v.get("kernel.randomize_va_space")
+    if aslr in (0, 1):
+        full_aslr = Remediation("harden", {"ids": ["linux.aslr"]},
+                                "Turn full ASLR on now and after every reboot (reversible with `aegis undo`)")
+        if aslr == 0:
+            weak("KERNEL-ASLR", "Address space layout randomisation (ASLR) is disabled", Severity.HIGH,
+                 "kernel.randomize_va_space is 0, so programs, libraries, the stack and the heap load at predictable "
+                 "addresses. Memory-corruption exploits depend on knowing those addresses; with ASLR off, bugs that "
+                 "would normally crash a program become reliable ways to take it over, and from there often the whole "
+                 "machine. Malware and 'tuning' scripts turn it off for this reason.",
+                 {"kernel.randomize_va_space": "2"}, ["T1068"], remediation=full_aslr)
+        else:
+            weak("KERNEL-ASLR", "ASLR does not randomise the heap", Severity.LOW,
+                 "kernel.randomize_va_space is 1: the stack and libraries move around but the heap does not, so an "
+                 "attacker who finds a heap bug still knows where the data they want to corrupt will be. The secure "
+                 "value is 2, the default on current distributions.",
+                 {"kernel.randomize_va_space": "2"}, ["T1068"], remediation=full_aslr)
+    if v.get("kernel.kptr_restrict") == 0:
+        weak("KERNEL-KPTR", "Any user can read kernel memory addresses (kptr_restrict is 0)", Severity.LOW,
+             "kernel.kptr_restrict is 0, so any user can read kernel memory addresses from /proc/kallsyms and similar "
+             "files. Kernel exploits use those addresses to defeat kernel address randomisation (KASLR) and aim "
+             "reliably.", {"kernel.kptr_restrict": "1"}, ["T1068"],
+             "Use 2 instead of 1 to hide the addresses from root as well.")
+    if v.get("kernel.dmesg_restrict") == 0:
+        weak("KERNEL-DMESG", "Any user can read the kernel log (dmesg_restrict is 0)", Severity.LOW,
+             "kernel.dmesg_restrict is 0, so any user can read the kernel log with dmesg. It holds kernel addresses, "
+             "hardware details and crash information that help a local attacker plan a privilege-escalation attack.",
+             {"kernel.dmesg_restrict": "1"}, ["T1068"])
+    if v.get("kernel.yama.ptrace_scope") == 0:
+        weak("KERNEL-PTRACE", "Any program can inspect your other programs (ptrace_scope is 0)", Severity.LOW,
+             "kernel.yama.ptrace_scope is 0, so any program running as you can attach to your other programs "
+             "(browser, SSH agent, password manager, terminal) and read their memory or inject code. Malware uses this "
+             "to steal logins and keys without needing root.", {"kernel.yama.ptrace_scope": "1"},
+             ["T1055.008", "T1003.007"],
+             "Debuggers such as `gdb -p` and `strace -p` can then only attach to their own child processes unless run "
+             "with sudo.")
+    if v.get("kernel.unprivileged_bpf_disabled") == 0:
+        weak("KERNEL-BPF", "Unprivileged users can load eBPF programs", Severity.MEDIUM,
+             "kernel.unprivileged_bpf_disabled is 0, so ordinary users can load eBPF programs into the kernel. Bugs in "
+             "the eBPF verifier have repeatedly let unprivileged users become root (for example CVE-2021-3490 and "
+             "CVE-2022-23222), which is why distributions turn this off.", {"kernel.unprivileged_bpf_disabled": "1"},
+             ["T1068"], "On kernel 5.13 and later the value 2 also works and root can change it back at runtime; 1 "
+                        "stays until the next reboot.")
+    links = {n: "1" for n in ("fs.protected_symlinks", "fs.protected_hardlinks") if v.get(n) == 0}
+    if links:
+        zero = " and ".join(f"{n} is 0" for n in links)
+        weak("KERNEL-LINKS", f"Link protection is off in shared folders ({', '.join(f'{n}=0' for n in links)})",
+             Severity.MEDIUM,
+             f"{zero}. Protected links stop a program running as root from being tricked into following a link that "
+             "another user planted in a shared folder such as /tmp, the classic way to overwrite or expose files you "
+             "should never reach. Current distributions turn them on by default.", links, ["T1068"])
+    fifos = {n: "1" for n in ("fs.protected_fifos", "fs.protected_regular") if v.get(n) == 0}
+    if fifos:
+        zero = " and ".join(f"{n} is 0" for n in fifos)
+        weak("KERNEL-FIFOS", f"File and FIFO protection is off in shared folders ({', '.join(f'{n}=0' for n in fifos)})",
+             Severity.LOW,
+             f"{zero}. These settings stop programs from being tricked into opening or writing a file or named pipe "
+             "that another user pre-created in a shared folder such as /tmp (data spoofing and privilege-escalation "
+             "tricks).", fifos, ["T1068"])
+    if v.get("fs.suid_dumpable") == 1:
+        weak("KERNEL-DUMP", "Set-uid programs can leave readable core dumps", Severity.LOW,
+             "fs.suid_dumpable is 1, so set-uid programs (passwd, sudo, su) that crash may write core dump files that "
+             "their owner can read. A dump can hold password hashes, keys and other secrets from the program's memory. "
+             "The safe values are 0 (no dump) and 2 (dump readable by root only).", {"fs.suid_dumpable": "0"})
+    if v.get("kernel.sysrq") in SYSRQ_ALL:
+        weak("KERNEL-SYSRQ", "Every Magic SysRq function is enabled", Severity.LOW,
+             f"kernel.sysrq is {v.get('kernel.sysrq')}, so every Magic SysRq function is enabled. Anyone at the keyboard "
+             "can then kill every process on the console, remount disks read-only, dump system information or reboot "
+             "the machine without signing in.", {"kernel.sysrq": "176"}, (),
+             "176 keeps only sync, remount read-only and reboot (the Ubuntu default); 0 turns SysRq off completely.")
+    return out
+
+
+def _kernel_integrity_checks(root: Path, facts: Dict[str, Any]) -> List[Check]:
+    """Known rootkit modules, modules hidden from the module list, and kernel taint that no listed module explains."""
+    out: List[Check] = []
+    listed = _read_proc_modules(root)
+    sysmods = scan_sys_modules(root)
+    tainted = _kint(root, "/proc/sys/kernel/tainted")
+    flagged = {k: f for k, f in (listed or {}).items() if f}
+    facts.update(tainted=tainted, modules_listed=None if listed is None else len(listed),
+                 sys_modules=None if sysmods is None else len(sysmods), flagged_modules=flagged,
+                 unsigned_or_out_of_tree=sorted(k for k, f in flagged.items() if set(f) & {"O", "E"}))
+    seen: Dict[str, List[str]] = {}
+    for source, names in (("/proc/modules", listed or {}), ("/sys/module", sysmods or {})):
+        for name in names:
+            if name in ROOTKIT_MODULES:
+                seen.setdefault(name, []).append(source)
+    if seen:
+        names = sorted(seen)
+        out.append(failed(
+            "KERNEL-ROOTKIT", "Known Linux rootkit module found: " + ", ".join(names), Severity.HIGH,
+            f"The kernel module {', '.join(names)} matches the name of a public Linux rootkit (seen in "
+            f"{' and '.join(sorted({s for v in seen.values() for s in v}))}). Kernel rootkits hide files, processes and "
+            "network connections from every tool on the machine, including this scan, and give an attacker permanent "
+            "root access.",
+            "Treat the machine as compromised: disconnect it from the network, keep a disk and memory image if you need "
+            "evidence, rebuild it from known-good media and change every password and SSH key used on it from a clean "
+            "device. Do not rely on rmmod, because a rootkit can refuse to unload or load itself again. Ignore this only "
+            "on a lab machine where you load such a module on purpose.",
+            "kernel module " + names[0], {"modules": seen}, None, ["T1014", "T1547.006"], Category.MALWARE))
+    hidden = find_hidden_modules(root, listed, sysmods) if listed is not None and sysmods is not None else []
+    facts["hidden_modules"] = hidden
+    if hidden:
+        out.append(failed(
+            "KERNEL-HIDDENMOD", "Kernel module hidden from the module list: " + ", ".join(hidden), Severity.HIGH,
+            f"/sys/module has the loadable kernel module {', '.join(hidden)} (it has an initstate entry) but "
+            "/proc/modules, and so lsmod, does not list it. A module the kernel loaded is in both. One that is missing "
+            "from the list was removed from it on purpose, which is how many kernel rootkits hide.",
+            "Boot from a clean live USB and compare the module files with your distribution's packages, or look for the "
+            "module's load message with `sudo dmesg | grep -iE 'taint|module verification failed'`. If you cannot "
+            "identify it, treat the machine as compromised: back up your data, rebuild it from known-good media and "
+            "change your passwords from a clean device.",
+            "kernel module " + hidden[0], {"modules": hidden}, None, ["T1014", "T1547.006"], Category.SUSPICIOUS))
+    if tainted and listed is not None:
+        flags = "".join(listed.values())
+        lost = [(letter, what) for bit, letter, what in ((TAINT_UNSIGNED_MODULE, "E", "an unsigned module"),
+                                                          (TAINT_OOT_MODULE, "O", "an out-of-tree module"))
+                if tainted & bit and letter not in flags]
+        if lost:
+            what = " and ".join(w for _, w in lost)
+            out.append(failed(
+                "KERNEL-TAINT", "A module that tainted the kernel is no longer listed", Severity.LOW,
+                f"The kernel was tainted by {what} ({', '.join(letter for letter, _ in lost)} in /proc/sys/kernel/tainted), "
+                "but no module in /proc/modules carries that flag. Either the module was unloaded afterwards (normal for "
+                "a driver you tested, or an installer that loaded one for a moment) or it is hiding. The flag stays until "
+                "the next reboot.",
+                "Run `sudo dmesg | grep -iE 'taint|module verification failed'` to see which module set the flag. If you "
+                "know it (VirtualBox, NVIDIA, a DKMS or your own driver), restart the PC: the flag clears and this finding "
+                "only returns if something loads a module again. If you cannot explain it, treat it like a hidden module: "
+                "boot a clean live system, compare, and rebuild if you find nothing legitimate.",
+                "/proc/sys/kernel/tainted", {"tainted": tainted, "letters": [letter for letter, _ in lost],
+                                             "modules_with_flags": flagged}, None, ["T1014"], Category.SUSPICIOUS))
+    return out
+
+
+def _kernel_mac_checks(root: Path, facts: Dict[str, Any]) -> List[Check]:
+    """Mandatory access control (AppArmor / SELinux) and the kernel lockdown mode (recorded only)."""
+    out: List[Check] = []
+    lsm_text = _kread(root, "/sys/kernel/security/lsm")
+    lsm = None if lsm_text is None else [x.strip().lower() for x in lsm_text.split(",") if x.strip()]
+    apparmor = (_kread(root, "/sys/module/apparmor/parameters/enabled", 16) or "").strip().upper()
+    enforce = _kint(root, "/sys/fs/selinux/enforce")  # 1 enforcing, 0 permissive
+    lock = re.search(r"\[(\w+)\]", _kread(root, "/sys/kernel/security/lockdown", 256) or "")
+    if lsm is not None:
+        active = [n for n in lsm if n in MAC_LSMS]
+    else:
+        active = (["apparmor"] if apparmor == "Y" else []) + (["selinux"] if enforce is not None else [])
+    facts.update(lsm=lsm, mac=active, apparmor=apparmor or None, lockdown=lock.group(1) if lock else None,
+                 selinux={1: "enforcing", 0: "permissive"}.get(enforce) if enforce is not None else None)
+    title = "Mandatory access control (AppArmor / SELinux) is active"
+    if not active and lsm is None:
+        out.append(skipped("KERNEL-MAC", title, "The kernel's security module list is not readable (securityfs is not mounted)."))
+    elif not active:
+        out.append(failed(
+            "KERNEL-MAC", "No mandatory access control (AppArmor/SELinux) is active", Severity.LOW,
+            "AppArmor and SELinux confine each service to what it needs, so a hacked web server or browser cannot read "
+            "your files or other services' data. The kernel reports none (active modules: "
+            f"{', '.join(lsm or []) or 'none'}), so a compromised service runs with everything its user can do. "
+            "Distributions normally switch one on, so this usually means it was turned off or the kernel lacks it.",
+            "Debian/Ubuntu/openSUSE: install apparmor and apparmor-utils, add `apparmor=1 security=apparmor` to the "
+            "kernel command line and reboot. Fedora/RHEL: set SELINUX=enforcing in /etc/selinux/config and reboot (the "
+            "next boot may relabel files). Arch and other minimal systems: install and enable AppArmor or SELinux first.",
+            "/sys/kernel/security/lsm", {"lsm": lsm}))
+    if "selinux" in active and enforce == 0:
+        out.append(failed(
+            "KERNEL-SELINUX", "SELinux is in permissive mode", Severity.LOW,
+            "SELinux only logs what it would have blocked (permissive mode), so a hacked service is not confined. "
+            "Attackers who get root run `setenforce 0` for this reason.",
+            "Review what it would have blocked with `sudo ausearch -m avc -ts recent` and fix or allow those, then run "
+            "`sudo setenforce 1` and set SELINUX=enforcing in /etc/selinux/config.",
+            "/sys/fs/selinux/enforce", {"enforce": enforce}, None, ["T1685"]))
+    return out
+
+
+def check_linux_kernel(env: AuditEnv, root: Path = Path("/")) -> List[Check]:
+    """Kernel hardening (sysctls under /proc/sys) and kernel integrity (rootkit modules, hidden modules, taint, MAC).
+
+    Everything is read from /proc and /sys below ``root``, so tests can use a fake tree. The first row is a summary
+    (PASS when nothing is weak, WARN / FAIL by the worst severity otherwise, never a finding of its own); a failed row
+    with a finding follows for each weak setting group. What was read is kept in ``env.facts['linux_kernel']``: modules
+    that are listed as unsigned (E) or out-of-tree (O) such as nvidia, VirtualBox, ZFS or DKMS modules are only
+    recorded there and are not a problem by themselves, and neither is the lockdown mode. In a container /proc and
+    /sys belong to the host, so the check is skipped instead of reporting the host's settings."""
+    runtime = detect_container(root)
+    if runtime:
+        return [skipped("KERNEL", KERNEL_TITLE, f"Running inside a {runtime} container: the kernel settings and modules belong "
+                        "to the host, not to this container. Run the audit on the host to check them.")]
+    values = {name: _kint(root, _sysctl_path(name)) for name in KERNEL_SYSCTLS}
+    if all(value is None for value in values.values()):
+        return [skipped("KERNEL", KERNEL_TITLE, "The kernel settings under /proc/sys are not readable here.")]
+    facts: Dict[str, Any] = {"sysctl": {n: val for n, val in values.items() if val is not None}}
+    env.facts["linux_kernel"] = facts
+    rows = kernel_sysctl_checks(values) + _kernel_integrity_checks(root, facts) + _kernel_mac_checks(root, facts)
+    weak = [c for c in rows if c.ok is False]
+    if weak:
+        shown = "; ".join(c.title for c in weak[:5]) + (f"; and {len(weak) - 5} more" if len(weak) > 5 else "")
+        summary = InfoCheck(key="KERNEL", title=KERNEL_TITLE, ok=False, severity=max(c.severity for c in weak),
+                            detail=f"{len(weak)} problem(s) found: {shown}.", evidence=facts)
+    else:
+        notes = [f"{len(facts['sysctl'])} kernel setting(s) checked, none weak"]
+        if facts.get("mac"):
+            notes.append("access control: " + ", ".join(facts["mac"]))
+        if facts.get("lockdown"):
+            notes.append("lockdown: " + facts["lockdown"])
+        if facts.get("unsigned_or_out_of_tree"):
+            notes.append("unsigned or out-of-tree modules loaded: " + ", ".join(facts["unsigned_or_out_of_tree"][:8]))
+        summary = InfoCheck(key="KERNEL", title=KERNEL_TITLE, ok=True, detail="; ".join(notes) + ".", evidence=facts)
+    return [summary] + rows
+
+
 # =========================================================================== macOS checks
 def _mac_cmd(cmd: Sequence[str]) -> Optional[str]:
     rc, out, err = run(cmd, timeout=20)
@@ -2061,16 +2406,250 @@ def check_macos(env: AuditEnv) -> List[Check]:
     return out
 
 
+# =========================================================================== automatic screen lock
+SCREEN_LOCK_MAX_S = 900  # the CIS and Microsoft security baselines allow at most 15 minutes before the screen locks
+_SL_TITLE = "Screen locks automatically when idle"
+_SL_CAVEAT = ("Locking when the computer goes to sleep or the lid is closed is a separate setting; this check is only "
+              "about the idle timeout.")
+_POLICIES_SYSTEM = _UAC_KEY  # holds InactivityTimeoutSecs next to the UAC values
+_SS_USER = r"Control Panel\Desktop"
+_SS_POLICY = r"Software\Policies\Microsoft\Windows\Control Panel\Desktop"
+
+
+def _lock_minutes(secs: int) -> int:
+    return -(-secs // 60)
+
+
+def _lock_finding(noun: str, secs: Optional[int], why: str, fix: str, location: str, evidence: Dict[str, Any],
+                  remediation: Optional[Remediation] = None) -> Check:
+    """LOW finding for a screen that never locks on its own (``secs`` is None) or only after more than 15 minutes."""
+    title = (f"{noun} does not lock itself when left idle" if secs is None
+             else f"{noun} waits {_lock_minutes(secs)} minutes before locking when idle")
+    return failed(
+        "SCREENLOCK", title, Severity.LOW,
+        f"{why} Anyone who walks up to an unattended computer (a visitor, a coworker, a thief who grabs it while you are "
+        f"signed in) can use your open session, mail and saved logins. {_SL_CAVEAT}",
+        fix, location, evidence, remediation)
+
+
+def _screen_lock_windows(env: AuditEnv) -> List[Check]:
+    """Idle lock on Windows: the machine inactivity limit (Interactive logon: Machine inactivity limit, 1 to 900 s) or a
+    password-protected screen saver that starts within 900 s. The screen saver values come from the Group Policy key
+    when it sets them (they win over the user's own settings) and need a screen saver to be selected."""
+    limit = rd_int("HKLM", _POLICIES_SYSTEM, "InactivityTimeoutSecs")
+    limit = limit if limit and limit > 0 else None
+    if str(env.facts.get("user") or "").lower().endswith("\\system"):
+        # running as SYSTEM: HKCU is not a person's profile
+        if limit is None:
+            return [skipped("SCREENLOCK", _SL_TITLE, "Running as the SYSTEM account, so the signed-in user's screen saver "
+                            "settings cannot be read.")]
+        screen_saver: Dict[str, Any] = {}
+    else:
+        def setting(name: str) -> Any:
+            value = rd("HKCU", _SS_POLICY, name)
+            return value if value not in (None, "") else rd("HKCU", _SS_USER, name)
+
+        screen_saver = {"active": to_int(setting("ScreenSaveActive")), "secure": to_int(setting("ScreenSaverIsSecure")),
+                        "timeout": to_int(setting("ScreenSaveTimeOut")), "exe": str(setting("SCRNSAVE.EXE") or "").strip()}
+    timeout = screen_saver.get("timeout")
+    saver_locks = (screen_saver.get("active") == 1 and screen_saver.get("secure") == 1 and bool(screen_saver.get("exe"))
+                   and timeout is not None and timeout > 0)
+    secs = min([s for s in (limit, timeout if saver_locks else None) if s is not None], default=None)
+    evidence = {"InactivityTimeoutSecs": limit, "ScreenSaveActive": screen_saver.get("active"),
+                "ScreenSaverIsSecure": screen_saver.get("secure"), "ScreenSaveTimeOut": timeout,
+                "ScreenSaver": screen_saver.get("exe") or None}
+    if secs is not None and secs <= SCREEN_LOCK_MAX_S:
+        how = "machine inactivity limit" if limit == secs else "password-protected screen saver"
+        return [passed("SCREENLOCK", _SL_TITLE, f"Windows locks after {_lock_minutes(secs)} minute(s) of inactivity ({how}).",
+                       evidence=evidence)]
+    reasons = []
+    if limit is None:
+        reasons.append("no machine inactivity limit is set")
+    elif limit > SCREEN_LOCK_MAX_S:
+        reasons.append(f"the machine inactivity limit is {_lock_minutes(limit)} minutes")
+    if screen_saver:
+        if screen_saver.get("active") != 1:
+            reasons.append("the screen saver is off")
+        elif not screen_saver.get("exe"):
+            reasons.append("no screen saver is selected")
+        elif screen_saver.get("secure") != 1:
+            reasons.append("the screen saver does not ask for a password ('On resume, display logon screen' is off)")
+        elif not saver_locks:
+            reasons.append("the screen saver has no timeout")
+        elif timeout is not None and timeout > SCREEN_LOCK_MAX_S:
+            reasons.append(f"the screen saver starts after {_lock_minutes(timeout)} minutes")
+    why = ("Windows does not lock the screen after a short idle time: " if secs is None
+           else f"Windows locks the screen only after {_lock_minutes(secs)} minutes of inactivity: ")
+    why += "; ".join(reasons) + "."
+    return [_lock_finding(
+        "PC", secs, why,
+        "Set the machine inactivity limit to 900 seconds or less (Local Security Policy > Local Policies > Security Options > "
+        "Interactive logon: Machine inactivity limit, or Group Policy), or turn on a screen saver with 'On resume, display "
+        "logon screen' and a wait of 15 minutes or less (Settings > Personalization > Lock screen > Screen saver settings).",
+        hkey("HKLM", _POLICIES_SYSTEM, "InactivityTimeoutSecs"), evidence,
+        set_reg(_POLICIES_SYSTEM, "InactivityTimeoutSecs", SCREEN_LOCK_MAX_S,
+                "Lock the PC after 15 minutes without keyboard or mouse input (machine inactivity limit)"))]
+
+
+def parse_mac_screen_lock(text: str) -> Tuple[Optional[bool], Optional[int]]:
+    """(password required, delay in seconds) from ``sysadminctl -screenLock status`` ('screenLock delay is 300 seconds',
+    'screenLock delay is immediate', 'screenLock is off'); (None, None) when the output is not understood."""
+    t = text.lower()
+    if re.search(r"screenlock\s+is\s+off", t):
+        return False, None
+    if re.search(r"screenlock\s+delay\s+is\s+immediate", t):
+        return True, 0
+    m = re.search(r"screenlock\s+delay\s+is\s+(\d+)\s*(second|sec|minute|min|hour)?", t)
+    if m:
+        unit = (m.group(2) or "second")[0]
+        return True, int(m.group(1)) * {"s": 1, "m": 60, "h": 3600}[unit]
+    return None, None
+
+
+def _screen_lock_macos(env: AuditEnv) -> List[Check]:
+    if env.is_admin:
+        return [skipped("SCREENLOCK", _SL_TITLE, "Running as root, which has its own screen lock settings; run `aegis audit` "
+                        "as your normal user to check this.")]
+    text = _mac_cmd(["sysadminctl", "-screenLock", "status"])
+    enabled, delay = parse_mac_screen_lock(text or "")
+    if enabled is None:
+        return [skipped("SCREENLOCK", _SL_TITLE, "sysadminctl is unavailable or its screen lock status was not understood.")]
+    evidence = {"password_required": enabled, "delay_seconds": delay, "output": (text or "").strip()[:200]}
+    if enabled and delay is not None and delay <= SCREEN_LOCK_MAX_S:
+        return [passed("SCREENLOCK", _SL_TITLE, "A password is required " + ("immediately" if delay == 0 else f"{delay} s")
+                       + " after the screen saver starts or the display turns off.", evidence=evidence)]
+    fix = ("System Settings > Lock Screen > 'Require password after screen saver begins or display is turned off' > "
+           "Immediately (or 5 minutes at most), and set 'Start Screen Saver when inactive' and 'Turn display off when "
+           "inactive' to 10 minutes or less. In Terminal: sysadminctl -screenLock immediate -password -")
+    why = ("The Mac does not ask for a password after the screen saver starts or the display turns off." if not enabled
+           else f"The Mac waits {delay} seconds after the screen saver starts or the display turns off before it asks for "
+                "a password.")
+    return [_lock_finding("Mac", None if not enabled else delay, why, fix, "sysadminctl -screenLock status", evidence)]
+
+
+# desktop family -> gsettings keys. Schemas: GNOME / Cinnamon keep the idle time in seconds, MATE in minutes.
+_GSETTINGS_DESKTOPS: Dict[str, Dict[str, Any]] = {
+    "cinnamon": {"lock": ("org.cinnamon.desktop.screensaver", "lock-enabled"),
+                 "idle": ("org.cinnamon.desktop.session", "idle-delay"),
+                 "delay": ("org.cinnamon.desktop.screensaver", "lock-delay"), "unit": 1, "active": None},
+    "mate": {"lock": ("org.mate.screensaver", "lock-enabled"), "idle": ("org.mate.session", "idle-delay"),
+             "delay": ("org.mate.screensaver", "lock-delay"), "unit": 60,
+             "active": ("org.mate.screensaver", "idle-activation-enabled")},
+    "gnome": {"lock": ("org.gnome.desktop.screensaver", "lock-enabled"), "idle": ("org.gnome.desktop.session", "idle-delay"),
+              "delay": ("org.gnome.desktop.screensaver", "lock-delay"), "unit": 1, "active": None},
+}
+_DESKTOP_FAMILY = (("cinnamon", "cinnamon"), ("mate", "mate"), ("kde", "kde"), ("plasma", "kde"), ("gnome", "gnome"),
+                   ("unity", "gnome"), ("budgie", "gnome"), ("pantheon", "gnome"))
+
+
+def _desktop_family() -> Tuple[bool, str, str]:
+    """(graphical session?, supported desktop family or '', desktop name) from the session environment."""
+    current = os.environ.get("XDG_CURRENT_DESKTOP", "").strip()
+    session = os.environ.get("DESKTOP_SESSION", "").strip()
+    tokens = [x.lower() for x in re.split(r"[:;]", current) if x] + ([session.lower()] if session else [])
+    graphical = bool(os.environ.get("DISPLAY") or os.environ.get("WAYLAND_DISPLAY") or current)
+    family = next((fam for needle, fam in _DESKTOP_FAMILY if any(needle in t for t in tokens)), "")
+    return graphical, family, current or session
+
+
+def _gsetting(schema: str, key: str) -> Optional[str]:
+    rc, out, _ = run(["gsettings", "get", schema, key], timeout=10)
+    return out.strip() if rc == 0 and out.strip() else None
+
+
+def _gsetting_int(schema: str, key: str) -> Optional[int]:
+    m = re.search(r"(\d+)\s*$", _gsetting(schema, key) or "")  # 'uint32 300': the number, not the 32 of the type
+    return int(m.group(1)) if m else None
+
+
+def _kde_value(tool: str, key: str, default: str) -> Optional[str]:
+    rc, out, _ = run([tool, "--file", "kscreenlockerrc", "--group", "Daemon", "--key", key, "--default", default], timeout=10)
+    return out.strip().lower() if rc == 0 and out.strip() else None
+
+
+def _screen_lock_linux(env: AuditEnv) -> List[Check]:
+    if env.is_admin:
+        return [skipped("SCREENLOCK", _SL_TITLE, "Running as root, which would read root's settings and not the desktop "
+                        "user's; run `aegis audit` as your desktop user to check this.")]
+    graphical, family, desktop = _desktop_family()
+    if not graphical:
+        return [skipped("SCREENLOCK", _SL_TITLE, "No desktop session (DISPLAY, WAYLAND_DISPLAY and XDG_CURRENT_DESKTOP are "
+                        "not set), so there is no screen to lock.")]
+    if not family:
+        return [skipped("SCREENLOCK", _SL_TITLE, f"The desktop environment ({desktop or 'unknown'}) is not supported; "
+                        "GNOME, Cinnamon, MATE and KDE Plasma are.")]
+    evidence: Dict[str, Any] = {"desktop": desktop, "family": family}
+    if family == "kde":
+        tool = next((t for t in ("kreadconfig6", "kreadconfig5") if shutil.which(t)), "")
+        if not tool:
+            return [skipped("SCREENLOCK", _SL_TITLE, "kreadconfig5 / kreadconfig6 is not installed, so the KDE screen locker "
+                            "settings cannot be read.")]
+        auto, timeout = _kde_value(tool, "Autolock", "true"), _kde_value(tool, "Timeout", "5")
+        minutes = to_int(timeout)
+        if auto is None or minutes is None:
+            return [skipped("SCREENLOCK", _SL_TITLE, f"{tool} did not return the screen locker settings.")]
+        lock_on, idle_s = auto == "true", minutes * 60
+        evidence.update(autolock=lock_on, timeout_minutes=minutes, tool=tool)
+        writer = tool.replace("kread", "kwrite")
+        fix = (f"System Settings > Workspace Behavior > Screen Locking > turn on 'Lock screen automatically after' and set it to "
+               f"15 minutes or less. In Terminal: {writer} --file kscreenlockerrc --group Daemon --key Autolock true && "
+               f"{writer} --file kscreenlockerrc --group Daemon --key Timeout 5")
+        location = "kscreenlockerrc [Daemon]"
+        never = not lock_on or idle_s == 0
+        why = "KDE's screen locker is switched off." if not lock_on else f"KDE locks the screen after {minutes} minutes."
+    else:
+        keys = _GSETTINGS_DESKTOPS[family]
+        if not shutil.which("gsettings"):
+            return [skipped("SCREENLOCK", _SL_TITLE, "gsettings is not installed, so the desktop's screen lock settings cannot "
+                            "be read.")]
+        lock_text = _gsetting(*keys["lock"])
+        idle = _gsetting_int(*keys["idle"])
+        if lock_text is None or idle is None:
+            return [skipped("SCREENLOCK", _SL_TITLE, f"gsettings did not return the {desktop} screen lock settings (is the "
+                            f"{keys['lock'][0]} schema installed?).")]
+        delay = (_gsetting_int(*keys["delay"]) or 0) * keys["unit"]
+        active_text = _gsetting(*keys["active"]) if keys["active"] else "true"
+        lock_on = "true" in lock_text.lower() and "false" not in (active_text or "").lower()
+        idle_s = idle * keys["unit"] + delay
+        evidence.update(lock_enabled=lock_on, idle_seconds=idle * keys["unit"], lock_delay_seconds=delay)
+        never = not lock_on or idle == 0
+        schema_lock, schema_idle = keys["lock"][0], keys["idle"][0]
+        value = 5 if keys["unit"] == 60 else 300
+        fix = (f"Settings > Privacy > Screen Lock (or Power) > turn on automatic screen lock and blank the screen after 5 "
+               f"minutes. In Terminal: gsettings set {schema_lock} lock-enabled true && gsettings set {schema_idle} "
+               f"idle-delay {value} && gsettings set {keys['delay'][0]} lock-delay 0")
+        location = f"gsettings {schema_lock}"
+        why = ("The screen lock is switched off." if not lock_on
+               else "The screen never goes idle, so it never locks." if idle == 0
+               else f"The screen locks only after {_lock_minutes(idle_s)} minutes of inactivity.")
+    if not never and idle_s <= SCREEN_LOCK_MAX_S:
+        return [passed("SCREENLOCK", _SL_TITLE, f"The screen locks after {_lock_minutes(idle_s)} minute(s) of inactivity.",
+                       evidence=evidence)]
+    return [_lock_finding("Desktop", None if never else idle_s, why, fix, location, evidence)]
+
+
+def check_screen_lock(env: AuditEnv) -> List[Check]:
+    """Does the screen lock by itself within 15 minutes of inactivity? Windows reads the registry, macOS asks
+    ``sysadminctl``, Linux asks the desktop (GNOME / Cinnamon / MATE through gsettings, KDE through kreadconfig).
+    Anything that cannot be read (no desktop session, unsupported desktop, missing tool) is a SKIP, not a failure."""
+    if IS_WINDOWS:
+        return _screen_lock_windows(env)
+    if IS_MAC:
+        return _screen_lock_macos(env)
+    return _screen_lock_linux(env)
+
+
 # =========================================================================== scanner
 WINDOWS_CHECKS: List[Callable[[AuditEnv], List[Check]]] = [
     check_os_support, check_antivirus, check_defender_prefs, check_firewall, check_uac, check_smb, check_rdp,
     check_bitlocker, check_secure_boot, check_secure_boot_certs, check_exploit_protection, check_windows_update,
-    check_credentials, check_hygiene, check_office, check_asr,
+    check_credentials, check_hygiene, check_office, check_asr, check_screen_lock,
 ]
 LINUX_CHECKS: List[Callable[[AuditEnv], List[Check]]] = [
-    check_linux_firewall, check_linux_ssh, check_linux_updates, check_linux_files, check_linux_suid,
+    check_linux_firewall, check_linux_ssh, check_linux_updates, check_linux_files, check_linux_suid, check_linux_kernel,
+    check_screen_lock,
 ]
-MAC_CHECKS: List[Callable[[AuditEnv], List[Check]]] = [check_macos]
+MAC_CHECKS: List[Callable[[AuditEnv], List[Check]]] = [check_macos, check_screen_lock]
 
 
 def run_checks(env: AuditEnv, checks: Sequence[Callable[[AuditEnv], List[Check]]],
@@ -2099,7 +2678,8 @@ class SystemAuditScanner(Scanner):
     name = "system_audit"
     title = "System hardening audit"
     description = ("Checks antivirus, firewall, updates, UAC, encryption, RDP/SMB exposure, credential hygiene, "
-                   "Office macros and OS end-of-support (CIS / Secure Score style).")
+                   "Office macros, OS end-of-support, Linux kernel hardening and the automatic screen lock "
+                   "(CIS / Secure Score style).")
     platforms = ("windows", "linux", "darwin")
     needs_admin_for_full_results = True
 

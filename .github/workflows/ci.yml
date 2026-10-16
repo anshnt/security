@@ -68,6 +68,44 @@ jobs:
           echo "scan exit code: $rc"
           if [ "$rc" -ne 0 ] && [ "$rc" -ne 1 ]; then exit "$rc"; fi
 
+      - name: Real-Linux end-to-end (hardening audit and autostart review, as the user and as root)
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          # The runner is a virtual machine, not a container: /proc/sys, /sys/module, PAM, systemd and cron are real.
+          run_scan() {  # name, then command
+            local name="$1"; shift
+            rc=0
+            "$@" scan custom --scanners system_audit,persistence --json > "linux-$name.json" || rc=$?
+            echo "$name exit code: $rc"
+            if [ "$rc" -ne 0 ] && [ "$rc" -ne 1 ]; then exit "$rc"; fi
+          }
+          AEGIS_HOME="$RUNNER_TEMP/aegis-home-user" run_scan user python -m aegis
+          sudo env "PATH=$PATH" AEGIS_HOME="$RUNNER_TEMP/aegis-home-root" python -m aegis --version
+          rc=0
+          sudo env "PATH=$PATH" AEGIS_HOME="$RUNNER_TEMP/aegis-home-root" python -m aegis scan custom \
+            --scanners system_audit,persistence --json > linux-root.json || rc=$?
+          echo "root exit code: $rc"
+          if [ "$rc" -ne 0 ] && [ "$rc" -ne 1 ]; then exit "$rc"; fi
+          python - <<'PY'
+          import json, sys
+          bad = False
+          for name in ("user", "root"):
+              d = json.load(open(f"linux-{name}.json", encoding="utf-8"))
+              print(f"{name}: score {d['score']} ({d['grade']}), counts {d['counts']}")
+              for c in d["checks"]:
+                  if c["status"] != "pass" or c["check_id"].startswith(("AEG-AUDIT-KERNEL", "AEG-AUDIT-SCREENLOCK")):
+                      print(f"   {c['status']:<5} {c['check_id']:<34} {c['detail'][:150]}")
+                  if c["status"] == "error":
+                      bad = True
+              for f in d["findings"]:
+                  print(f"   F {f['severity']:<8} {f['rule_id']:<30} {f['title'][:110]}")
+              for e in d["errors"]:
+                  print(f"   SCANNER ERROR: {e}")
+                  bad = True
+          sys.exit(1 if bad else 0)
+          PY
+
   build-windows:
     name: build Windows executables
     runs-on: windows-latest

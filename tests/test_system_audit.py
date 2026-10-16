@@ -562,12 +562,11 @@ def test_linux_file_checks_with_mocks(monkeypatch, tmp_path):
     monkeypatch.setattr(sa.glob, "glob", lambda pat: [])
     c = by_key(sa.check_linux_files(env()))
     assert c["LINUX-LD-PRELOAD"].ok is False and c["LINUX-LD-PRELOAD"].severity == Severity.HIGH
-    assert c["LINUX-ASLR"].ok is False and c["LINUX-ASLR"].remediation.params["command"][0] == "sysctl"
     assert c["LINUX-SUDO-NOPASSWD"].ok is False
+    assert "LINUX-ASLR" not in c  # ASLR is audited by check_linux_kernel (AEG-AUDIT-KERNEL-ASLR)
     files["/etc/ld.so.preload"] = "# nothing\n"
-    files["/proc/sys/kernel/randomize_va_space"] = "2\n"
     c = by_key(sa.check_linux_files(env()))
-    assert c["LINUX-LD-PRELOAD"].ok is True and c["LINUX-ASLR"].ok is True
+    assert c["LINUX-LD-PRELOAD"].ok is True
 
 
 # ---------------------------------------------------------------- macOS
@@ -704,3 +703,323 @@ def test_secure_boot_expiry_wording_follows_the_date():
     assert "expires on 2026-10-19" in sa._expiry_text(dt.date(2026, 10, 1))
     assert "Microsoft Windows Production PCA 2011 expired on 2026-10-19" in sa._expiry_text(dt.date(2026, 10, 20))
     assert "Microsoft Corporation KEK CA 2011 expired on 2026-06-24" in sa._expiry_text(dt.date(2026, 10, 1))
+
+
+# ---------------------------------------------------------------- automatic screen lock
+POLICIES_SYSTEM = r"SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System"
+SS_USER = r"Control Panel\Desktop"
+SS_POLICY = r"Software\Policies\Microsoft\Windows\Control Panel\Desktop"
+
+
+def _lock_win(reg, machine=None, user=None, policy=None, facts=None):
+    values = {("HKLM", POLICIES_SYSTEM, "InactivityTimeoutSecs"): machine} if machine is not None else {}
+    values.update({("HKCU", SS_USER, k): v for k, v in (user or {}).items()})
+    values.update({("HKCU", SS_POLICY, k): v for k, v in (policy or {}).items()})
+    reg(values)
+    checks = sa._screen_lock_windows(env(facts))
+    assert len(checks) == 1 and checks[0].key == "SCREENLOCK"
+    return checks[0]
+
+
+SAVER = {"ScreenSaveActive": "1", "ScreenSaverIsSecure": "1", "ScreenSaveTimeOut": "600", "SCRNSAVE.EXE": "scrnsave.scr"}
+
+
+@pytest.mark.parametrize("secs", [1, 300, 899, 900])
+def test_windows_machine_inactivity_limit_within_15_minutes_passes(reg, secs):
+    c = _lock_win(reg, machine=secs)
+    assert c.ok is True and c.status == CheckStatus.PASS and c.to_finding() is None
+    assert "machine inactivity limit" in c.detail and c.evidence["InactivityTimeoutSecs"] == secs
+
+
+def test_windows_nothing_configured_is_low_with_a_registry_fix(reg):
+    c = _lock_win(reg)
+    assert c.ok is False and c.severity == Severity.LOW and c.status == CheckStatus.WARN
+    f = c.to_finding()
+    assert f.rule_id == "AEG-AUDIT-SCREENLOCK" and f.title == "PC does not lock itself when left idle" and f.mitre == []
+    assert f.remediation.action == "set_registry_value"
+    assert f.remediation.params == {"hive": "HKLM", "key": POLICIES_SYSTEM, "value": "InactivityTimeoutSecs", "data": 900}
+    assert isinstance(f.remediation.params["data"], int)  # reg_set_value stores an int as REG_DWORD
+    assert f.location == "HKLM\\" + POLICIES_SYSTEM + "\\InactivityTimeoutSecs"
+    assert "sleep" in f.description and "idle timeout" in f.description and "no machine inactivity limit" in f.description
+    assert "screen saver is off" in f.description and "900 seconds" in f.recommendation
+
+
+@pytest.mark.parametrize("secs,minutes", [(901, 16), (1800, 30), (3600, 60)])
+def test_windows_limit_above_15_minutes_names_the_actual_minutes(reg, secs, minutes):
+    c = _lock_win(reg, machine=secs)
+    f = c.to_finding()
+    assert c.ok is False and c.severity == Severity.LOW and f"waits {minutes} minutes" in f.title
+    assert f"locks the screen only after {minutes} minutes" in f.description and f.remediation.params["data"] == 900
+
+
+def test_windows_zero_limit_means_not_set(reg):
+    assert "does not lock itself" in _lock_win(reg, machine=0).to_finding().title
+
+
+def test_windows_password_protected_screen_saver_passes(reg):
+    c = _lock_win(reg, user=SAVER)
+    assert c.ok is True and "10 minute(s)" in c.detail and "screen saver" in c.detail
+    assert c.evidence["ScreenSaveTimeOut"] == 600 and c.evidence["ScreenSaver"] == "scrnsave.scr"
+    assert _lock_win(reg, user=dict(SAVER, ScreenSaveTimeOut="900")).ok is True
+    assert _lock_win(reg, machine=7200, user=SAVER).ok is True  # the screen saver locks sooner than the machine limit
+
+
+@pytest.mark.parametrize("change,reason", [
+    ({"ScreenSaveActive": "0"}, "screen saver is off"),
+    ({"SCRNSAVE.EXE": ""}, "no screen saver is selected"),
+    ({"ScreenSaverIsSecure": "0"}, "does not ask for a password"),
+    ({"ScreenSaveTimeOut": "0"}, "no timeout"),
+    ({"ScreenSaveTimeOut": "1200"}, "starts after 20 minutes"),
+])
+def test_windows_weak_screen_saver_is_low(reg, change, reason):
+    c = _lock_win(reg, user=dict(SAVER, **change))
+    assert c.ok is False and c.severity == Severity.LOW and reason in c.description
+
+
+def test_windows_policy_key_wins_over_the_users_screen_saver(reg):
+    assert _lock_win(reg, user=SAVER, policy={"ScreenSaverIsSecure": "0"}).ok is False
+    assert _lock_win(reg, user=dict(SAVER, ScreenSaveTimeOut="3000"), policy={"ScreenSaveTimeOut": "300"}).ok is True
+    assert _lock_win(reg, user=dict(SAVER, ScreenSaveActive="0"), policy={"ScreenSaveActive": "1"}).ok is True
+    assert _lock_win(reg, policy=SAVER).ok is True
+
+
+def test_windows_system_account_has_no_user_settings(reg):
+    system = {"user": "NT AUTHORITY\\SYSTEM"}
+    c = _lock_win(reg, user=SAVER, facts=system)
+    assert c.ok is None and c.status == CheckStatus.SKIP and "SYSTEM" in c.detail
+    assert _lock_win(reg, machine=600, facts=system).ok is True
+
+
+def test_screen_lock_dispatches_by_platform(reg, monkeypatch):
+    reg({("HKLM", POLICIES_SYSTEM, "InactivityTimeoutSecs"): 600})
+    monkeypatch.setattr(sa, "IS_WINDOWS", True)
+    assert sa.check_screen_lock(env())[0].ok is True
+    monkeypatch.setattr(sa, "IS_WINDOWS", False)
+    monkeypatch.setattr(sa, "IS_MAC", True)
+    monkeypatch.setattr(sa, "run", lambda cmd, timeout=60, input_text=None: (0, "", "screenLock is off\n"))
+    c = sa.check_screen_lock(env())[0]
+    assert c.ok is False and c.to_finding().title == "Mac does not lock itself when left idle"
+    monkeypatch.setattr(sa, "IS_MAC", False)
+    for name in ("DISPLAY", "WAYLAND_DISPLAY", "XDG_CURRENT_DESKTOP"):
+        monkeypatch.delenv(name, raising=False)
+    assert sa.check_screen_lock(env())[0].ok is None
+
+
+def test_screen_lock_is_registered_for_every_platform():
+    for checks in (sa.WINDOWS_CHECKS, sa.LINUX_CHECKS, sa.MAC_CHECKS):
+        assert sa.check_screen_lock in checks
+
+
+def test_screen_lock_rows_reach_the_report_as_result_and_finding(reg):
+    reg()
+    items = list(sa.run_checks(env(), [sa._screen_lock_windows]))
+    assert [type(i).__name__ for i in items] == ["CheckResult", "Finding"]
+    assert items[0].check_id == "AEG-AUDIT-SCREENLOCK" and items[0].status == CheckStatus.WARN
+    assert items[1].severity == Severity.LOW and items[1].category == "system" and items[1].recommendation
+
+
+@pytest.mark.skipif(not sa.IS_WINDOWS, reason="reads the real registry")
+def test_windows_screen_lock_reads_the_real_registry():
+    checks = sa._screen_lock_windows(sa.AuditEnv(today=TODAY, facts={}))
+    assert len(checks) == 1 and checks[0].key == "SCREENLOCK"
+    c = checks[0]
+    assert c.ok in (True, False, None) and c.status in (CheckStatus.PASS, CheckStatus.WARN, CheckStatus.SKIP)
+    assert set(c.evidence) >= {"InactivityTimeoutSecs", "ScreenSaveActive", "ScreenSaverIsSecure", "ScreenSaveTimeOut"}
+    f = c.to_finding()
+    if f:
+        assert f.remediation.action == "set_registry_value" and f.remediation.params["data"] == 900
+    items = list(sa.run_checks(sa.AuditEnv(today=TODAY, facts={}), [sa.check_screen_lock]))
+    assert items and not any(isinstance(i, CheckResult) and i.status == CheckStatus.ERROR for i in items)
+
+
+# ---- macOS
+@pytest.mark.parametrize("text,expected", [
+    ("2026-10-15 09:00:00.123 sysadminctl[512:4096] screenLock delay is 300 seconds\n", (True, 300)),
+    ("screenLock delay is 5 seconds", (True, 5)),
+    ("screenLock delay is 1 second", (True, 1)),
+    ("screenLock delay is immediate", (True, 0)),
+    ("sysadminctl[512:4096] screenLock is off\n", (False, None)),
+    ("SCREENLOCK IS OFF", (False, None)),
+    ("screenLock delay is 5 minutes", (True, 300)),
+    ("", (None, None)),
+    ("Usage: sysadminctl -screenLock status", (None, None)),
+])
+def test_parse_mac_screen_lock(text, expected):
+    assert sa.parse_mac_screen_lock(text) == expected
+
+
+def _mac_lock(monkeypatch, out="", err="", rc=0, admin=False):
+    monkeypatch.setattr(sa, "run", lambda cmd, timeout=60, input_text=None: (rc, out, err))
+    checks = sa._screen_lock_macos(env(admin=admin))
+    assert len(checks) == 1 and checks[0].key == "SCREENLOCK"
+    return checks[0]
+
+
+def test_macos_screen_lock_states(monkeypatch):
+    assert _mac_lock(monkeypatch, err="screenLock delay is 300 seconds\n").ok is True  # sysadminctl writes to stderr
+    assert _mac_lock(monkeypatch, out="screenLock delay is immediate").ok is True
+    assert _mac_lock(monkeypatch, err="screenLock delay is 900 seconds").ok is True
+    off = _mac_lock(monkeypatch, err="screenLock is off")
+    assert off.ok is False and off.severity == Severity.LOW and off.to_finding().remediation is None
+    assert off.to_finding().title == "Mac does not lock itself when left idle"
+    assert "sysadminctl -screenLock immediate" in off.to_finding().recommendation
+    slow = _mac_lock(monkeypatch, err="screenLock delay is 1800 seconds")
+    f = slow.to_finding()
+    assert slow.ok is False and "waits 30 minutes" in f.title and f.evidence["delay_seconds"] == 1800
+    assert "screen saver starts or the display turns off" in f.description and "sleep" in f.description
+
+
+def test_macos_screen_lock_unknown_output_or_missing_tool_is_a_skip(monkeypatch):
+    for kwargs in ({"out": "something new from a future macOS"}, {"rc": -1, "err": "not found: sysadminctl"}, {}):
+        c = _mac_lock(monkeypatch, **kwargs)
+        assert c.ok is None and c.status == CheckStatus.SKIP and c.to_finding() is None
+    root = _mac_lock(monkeypatch, err="screenLock is off", admin=True)
+    assert root.ok is None and "normal user" in root.detail
+
+
+# ---- Linux desktops
+class FakeDesktop:
+    """Answers gsettings / kreadconfig from a dict and records every call; sets up the session environment."""
+
+    def __init__(self, monkeypatch, answers, tools=("gsettings",), desktop="GNOME", display=":0"):
+        self.calls = []
+        self.answers = answers
+        for name in ("DISPLAY", "WAYLAND_DISPLAY", "XDG_CURRENT_DESKTOP", "DESKTOP_SESSION"):
+            monkeypatch.delenv(name, raising=False)
+        if display:
+            monkeypatch.setenv("DISPLAY", display)
+        if desktop:
+            monkeypatch.setenv("XDG_CURRENT_DESKTOP", desktop)
+        monkeypatch.setattr(sa.shutil, "which", lambda n: "/usr/bin/" + n if n in tools else None)
+        monkeypatch.setattr(sa, "run", self.run)
+
+    def run(self, cmd, timeout=60, input_text=None):
+        self.calls.append(list(cmd))
+        if cmd[0] == "gsettings":
+            key = tuple(cmd[2:4])  # (schema, key)
+        else:
+            key = (cmd[0], cmd[cmd.index("--key") + 1])
+        out = self.answers.get(key)
+        return (0, out + "\n", "") if out is not None else (1, "", "No such schema")
+
+
+def _lock_linux(admin=False):
+    checks = sa._screen_lock_linux(env(admin=admin))
+    assert len(checks) == 1 and checks[0].key == "SCREENLOCK"
+    return checks[0]
+
+
+GNOME_SCREENSAVER, GNOME_SESSION = "org.gnome.desktop.screensaver", "org.gnome.desktop.session"
+
+
+def gnome_answers(lock="true", idle="uint32 300", delay="uint32 0"):
+    return {(GNOME_SCREENSAVER, "lock-enabled"): lock, (GNOME_SESSION, "idle-delay"): idle,
+            (GNOME_SCREENSAVER, "lock-delay"): delay}
+
+
+def test_gnome_screen_lock_passes_within_15_minutes(monkeypatch):
+    fake = FakeDesktop(monkeypatch, gnome_answers())
+    c = _lock_linux()
+    assert c.ok is True and "5 minute(s)" in c.detail and c.evidence["idle_seconds"] == 300
+    assert ["gsettings", "get", GNOME_SESSION, "idle-delay"] in fake.calls
+    FakeDesktop(monkeypatch, gnome_answers(idle="uint32 900"))
+    assert _lock_linux().ok is True
+
+
+@pytest.mark.parametrize("answers,title,reason", [
+    (gnome_answers(lock="false"), "does not lock itself", "switched off"),
+    (gnome_answers(idle="uint32 0"), "does not lock itself", "never goes idle"),
+    (gnome_answers(idle="uint32 1800"), "waits 30 minutes", "after 30 minutes"),
+    (gnome_answers(idle="uint32 600", delay="uint32 400"), "waits 17 minutes", "after 17 minutes"),  # 1000 s in total
+    (gnome_answers(lock="false", idle="uint32 0"), "does not lock itself", "switched off"),
+])
+def test_gnome_weak_screen_lock_is_low(monkeypatch, answers, title, reason):
+    FakeDesktop(monkeypatch, answers)
+    c = _lock_linux()
+    f = c.to_finding()
+    assert c.ok is False and c.severity == Severity.LOW and f.rule_id == "AEG-AUDIT-SCREENLOCK" and title in f.title
+    assert reason in f.description and f.remediation is None and f.mitre == []
+    assert "gsettings set org.gnome.desktop.screensaver lock-enabled true" in f.recommendation
+    assert "gsettings set org.gnome.desktop.session idle-delay 300" in f.recommendation
+    assert "sleep" in f.description
+
+
+def test_gnome_family_desktops_use_the_gnome_schema(monkeypatch):
+    for desktop in ("ubuntu:GNOME", "Budgie:GNOME", "Unity", "Pantheon", "GNOME-Flashback:GNOME"):
+        FakeDesktop(monkeypatch, gnome_answers(), desktop=desktop)
+        assert _lock_linux().ok is True, desktop
+
+
+def test_cinnamon_and_mate_use_their_own_schemas_and_units(monkeypatch):
+    cin = {("org.cinnamon.desktop.screensaver", "lock-enabled"): "true",
+           ("org.cinnamon.desktop.session", "idle-delay"): "uint32 600",
+           ("org.cinnamon.desktop.screensaver", "lock-delay"): "uint32 0"}
+    fake = FakeDesktop(monkeypatch, cin, desktop="X-Cinnamon")
+    c = _lock_linux()
+    assert c.ok is True and ["gsettings", "get", "org.cinnamon.desktop.session", "idle-delay"] in fake.calls
+    assert not any("org.gnome" in " ".join(call) for call in fake.calls)
+    mate = {("org.mate.screensaver", "lock-enabled"): "true", ("org.mate.session", "idle-delay"): "5",
+            ("org.mate.screensaver", "lock-delay"): "0", ("org.mate.screensaver", "idle-activation-enabled"): "true"}
+    FakeDesktop(monkeypatch, mate, desktop="MATE")
+    ok = _lock_linux()
+    assert ok.ok is True and ok.evidence["idle_seconds"] == 300  # MATE counts minutes
+    FakeDesktop(monkeypatch, {**mate, ("org.mate.session", "idle-delay"): "20"}, desktop="MATE")
+    slow = _lock_linux()
+    assert slow.ok is False and "waits 20 minutes" in slow.to_finding().title
+    assert "gsettings set org.mate.session idle-delay 5" in slow.to_finding().recommendation
+    FakeDesktop(monkeypatch, {**mate, ("org.mate.screensaver", "idle-activation-enabled"): "false"}, desktop="MATE")
+    assert _lock_linux().ok is False
+
+
+def _kde(timeout="5", auto="true"):
+    return {("kreadconfig5", "Autolock"): auto, ("kreadconfig5", "Timeout"): timeout,
+            ("kreadconfig6", "Autolock"): auto, ("kreadconfig6", "Timeout"): timeout}
+
+
+def _kde_lock(monkeypatch, answers, tools=("kreadconfig5",), desktop="KDE"):
+    fake = FakeDesktop(monkeypatch, answers, tools=tools, desktop=desktop)
+    return _lock_linux(), fake
+
+
+def test_kde_screen_locker(monkeypatch):
+    c, fake = _kde_lock(monkeypatch, _kde())
+    assert c.ok is True and c.evidence["timeout_minutes"] == 5 and c.evidence["tool"] == "kreadconfig5"
+    assert fake.calls[0][:7] == ["kreadconfig5", "--file", "kscreenlockerrc", "--group", "Daemon", "--key", "Autolock"]
+    assert "--default" in fake.calls[0]  # the defaults are Autolock=true and Timeout=5 minutes
+    assert _kde_lock(monkeypatch, _kde(timeout="15"))[0].ok is True
+    slow, _ = _kde_lock(monkeypatch, _kde(timeout="30"))
+    f = slow.to_finding()
+    assert slow.ok is False and "waits 30 minutes" in f.title and "kwriteconfig5 --file kscreenlockerrc" in f.recommendation
+    off, _ = _kde_lock(monkeypatch, _kde(auto="false"))
+    assert off.ok is False and "does not lock itself" in off.to_finding().title and "switched off" in off.to_finding().description
+    both, _ = _kde_lock(monkeypatch, _kde(), tools=("kreadconfig5", "kreadconfig6"))
+    assert both.evidence["tool"] == "kreadconfig6"  # Plasma 6 first
+    assert _kde_lock(monkeypatch, _kde(), tools=("kreadconfig6",), desktop="plasma")[0].to_finding() is None
+
+
+def test_linux_screen_lock_is_skipped_when_it_cannot_be_judged(monkeypatch):
+    FakeDesktop(monkeypatch, gnome_answers(), display=None, desktop=None)
+    c = _lock_linux()
+    assert c.ok is None and c.status == CheckStatus.SKIP and "No desktop session" in c.detail
+    FakeDesktop(monkeypatch, gnome_answers(), desktop="XFCE")
+    c = _lock_linux()
+    assert c.ok is None and "XFCE" in c.detail and "not supported" in c.detail
+    FakeDesktop(monkeypatch, gnome_answers(), display=None, desktop="XFCE")
+    assert "not supported" in _lock_linux().detail  # XDG_CURRENT_DESKTOP alone counts as a graphical session
+    FakeDesktop(monkeypatch, gnome_answers(), tools=())
+    assert "gsettings is not installed" in _lock_linux().detail
+    FakeDesktop(monkeypatch, {}, desktop="GNOME")  # schema missing: gsettings exits 1
+    assert "did not return" in _lock_linux().detail
+    FakeDesktop(monkeypatch, {}, tools=(), desktop="KDE")
+    assert "kreadconfig5 / kreadconfig6 is not installed" in _lock_linux().detail
+    FakeDesktop(monkeypatch, {}, tools=("kreadconfig5",), desktop="KDE")
+    assert "did not return" in _lock_linux().detail
+    FakeDesktop(monkeypatch, gnome_answers())
+    root = _lock_linux(admin=True)
+    assert root.ok is None and "desktop user" in root.detail
+
+
+def test_session_without_a_desktop_name_uses_desktop_session(monkeypatch):
+    FakeDesktop(monkeypatch, gnome_answers(), desktop=None)
+    monkeypatch.setenv("DESKTOP_SESSION", "gnome-xorg")
+    assert _lock_linux().ok is True

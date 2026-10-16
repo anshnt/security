@@ -1,5 +1,31 @@
 # Changelog
 
+## [Unreleased]
+
+### Detection
+- **Linux kernel hardening and integrity in the audit (`AEG-AUDIT-KERNEL-*`).** Read-only checks of `/proc` and `/sys`.
+  - **Weak kernel settings:** ASLR off (HIGH) or without heap randomisation, `kptr_restrict`, `dmesg_restrict`, Yama
+    `ptrace_scope`, unprivileged eBPF (MEDIUM), `fs.protected_symlinks` / `hardlinks` (MEDIUM), `protected_fifos` /
+    `regular`, `suid_dumpable` and Magic SysRq. One finding per weak setting group; the fix sets the value now and writes
+    it to `/etc/sysctl.d/61-aegis-kernel.conf`, and the ASLR fix reuses the undoable `aegis harden` action.
+  - **Rootkit modules:** known Linux rootkit module names (Diamorphine, Reptile, Suterusu, Adore-ng, KoviD and others)
+    in `/proc/modules` or `/sys/module` are HIGH.
+  - **Hidden modules:** a loadable module that `/sys/module` has but `/proc/modules` does not list is HIGH. Built-in
+    modules are ignored, and both sources are read twice so a module that loads during the scan is not reported.
+  - **Kernel taint:** an out-of-tree (O) or unsigned (E) taint flag that no module in `/proc/modules` explains is LOW
+    (unloading a VirtualBox or DKMS driver leaves the same flag until the next reboot).
+    Listed unsigned or out-of-tree modules (NVIDIA, VirtualBox, ZFS, DKMS) are recorded, not flagged.
+  - **Access control:** no AppArmor or SELinux, or SELinux in permissive mode, is LOW. The kernel lockdown mode is recorded.
+  - **Containers:** skipped, because `/proc/sys` and `/sys` belong to the host.
+- **Automatic screen lock in the audit (`AEG-AUDIT-SCREENLOCK`, LOW).** Windows (machine inactivity limit or a
+  password-protected screen saver, honouring the Group Policy values; the fix sets `InactivityTimeoutSecs` to 900),
+  macOS (`sysadminctl -screenLock status`) and Linux desktops (GNOME, Cinnamon, MATE through gsettings, KDE Plasma through
+  kreadconfig). Reports a screen that never locks or only after more than 15 minutes.
+
+### Changes
+- **ASLR on Linux** is now reported by the kernel check as `AEG-AUDIT-KERNEL-ASLR` (HIGH when off, LOW when the heap is
+  not randomised) instead of `AEG-AUDIT-LINUX-ASLR`, so the same setting is not reported twice.
+
 ## [1.3.0] - 2026-10-16
 
 ### Detection
