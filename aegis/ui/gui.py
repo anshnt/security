@@ -1251,7 +1251,7 @@ class ProtectionPage(Page):
             "realtime_kill_malicious_processes": "Kill switch: terminate malicious processes",
             "ransomware_canaries": "Ransomware canary files",
             "notifications": "Desktop notifications",
-            "realtime_clipboard_guard": "Clipboard guard (fake CAPTCHA commands)",
+            "realtime_clipboard_guard": "Clipboard guard (fake CAPTCHA commands, crypto address swaps)",
             "realtime_extension_guard": "Extension guard (new browser extensions)",
         }
         for i, (key, var) in enumerate(self.vars.items()):

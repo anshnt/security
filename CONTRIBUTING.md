@@ -14,3 +14,7 @@ Guidelines:
 * Keep false positives low: prefer combining indicators over single weak strings, and allow-list
   well-known legitimate software.
 * Windows checks must be locale-independent (registry / XML / JSON, not localized console text).
+
+Releasing: bump `__version__` in `aegis/__init__.py` and move the `[Unreleased]` notes in CHANGELOG.md under a
+`## [x.y.z] - YYYY-MM-DD` heading. When that commit reaches `main`, the Release workflow tags `vx.y.z` on it, builds
+the Windows executables and publishes the GitHub release. Pushing a `v*` tag by hand still works.
