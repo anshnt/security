@@ -57,6 +57,15 @@ def render_text(result: ScanResult, color: bool = False, verbose: bool = False, 
     w("")
 
     shown = [f for f in result.sorted_findings() if f.severity >= min_severity]
+    plan = action_plan(result, limit=3, min_severity=max(min_severity, Severity.LOW))
+    if len({f.rule_id for f in shown}) > 1 and plan:
+        w(_c("What to do first:", _BOLD, color))
+        for i, p in enumerate(plan, 1):
+            sev = Severity[p["severity"].upper()]
+            fix = p["fix"] if p["fix"] and len(p["fix"]) <= 80 else ("aegis fix" if p["fix"] else "")
+            count = f" (x{p['count']})" if p["count"] > 1 else ""
+            w(f"  {i}. {_c(p['severity'].upper(), _ANSI[sev], color)} {p['title']}{count}" + (f"  ->  {fix}" if fix else ""))
+        w("")
     if not shown:
         w(_c("No threats or issues found at this severity level.", _GREEN, color))
     for f in shown:
@@ -94,12 +103,23 @@ def render_text(result: ScanResult, color: bool = False, verbose: bool = False, 
 
 
 _REPORT_SCRIPT = """<script>
-document.getElementById('filters').addEventListener('click',function(ev){
-  var b=ev.target.closest('button'); if(!b) return;
-  document.querySelectorAll('#filters button').forEach(function(x){x.classList.toggle('on',x===b)});
-  var f=b.dataset.f;
-  document.querySelectorAll('details.finding').forEach(function(d){d.style.display=(f==='all'||d.dataset.sev===f)?'':'none'});
-});
+(function(){
+  var sev='all', q=document.getElementById('q');
+  function apply(){
+    var t=(q&&q.value||'').toLowerCase().trim(), shown=0;
+    document.querySelectorAll('details.finding').forEach(function(d){
+      var ok=(sev==='all'||d.dataset.sev===sev)&&(!t||d.textContent.toLowerCase().indexOf(t)>=0);
+      d.style.display=ok?'':'none'; if(ok) shown++;
+    });
+    var c=document.getElementById('shown'); if(c) c.textContent=shown;
+  }
+  document.getElementById('filters').addEventListener('click',function(ev){
+    var b=ev.target.closest('button'); if(!b) return;
+    document.querySelectorAll('#filters button').forEach(function(x){x.classList.toggle('on',x===b)});
+    sev=b.dataset.f; apply();
+  });
+  if(q) q.addEventListener('input',apply);
+})();
 </script>"""
 
 _SEV_COLORS = {"critical": "#b3261e", "high": "#e8590c", "medium": "#f2c94c", "low": "#4dabf7", "info": "#9aa5b1"}
@@ -196,6 +216,65 @@ def _render_changes(h: Optional[Dict[str, Any]]) -> str:
     return "".join(out)
 
 
+MAX_PLAN_IDS = 6
+
+
+def action_plan(result: ScanResult, limit: int = 6, min_severity: Severity = Severity.LOW) -> List[Dict[str, Any]]:
+    """The few things to do first: findings grouped by rule, worst severity first, then by how many there are.
+
+    Each item: ``severity``, ``title`` (of the worst finding, "+ N similar" when titles differ), ``count``,
+    ``locations`` (up to 3), ``recommendation``, ``fixable`` (how many have an automatic fix) and ``fix`` (the
+    command that applies those fixes, or "")."""
+    groups: Dict[str, List[Finding]] = {}
+    for f in result.sorted_findings():
+        if f.severity >= min_severity:
+            groups.setdefault(f.rule_id, []).append(f)
+    ordered = sorted(groups.values(), key=lambda fs: (-int(fs[0].severity), -len(fs), fs[0].title.lower()))
+    plan: List[Dict[str, Any]] = []
+    for fs in ordered[:limit]:
+        top = fs[0]
+        titles = {f.title for f in fs}
+        fixable = [f for f in fs if f.remediation]
+        fix = ""
+        if fixable:  # by id, so only this group is touched; for many, the interactive fix asks about each one
+            fix = "aegis fix " + " ".join(f"--id {f.fingerprint}" for f in fixable) if len(fixable) <= MAX_PLAN_IDS \
+                else "aegis fix"
+        plan.append({
+            "severity": top.severity.name.lower(),
+            "title": top.title + (f" (+ {len(titles) - 1} similar)" if len(titles) > 1 else ""),
+            "count": len(fs),
+            "locations": [f.location for f in fs if f.location][:3],
+            "recommendation": next((f.recommendation for f in fs if f.recommendation), ""),
+            "fixable": len(fixable),
+            "fix": fix,
+        })
+    return plan
+
+
+def _render_plan(plan: List[Dict[str, Any]], total_groups: int) -> str:
+    if not plan:
+        return ""
+    e = html.escape
+    items = []
+    for i, p in enumerate(plan, 1):
+        where = "".join(f"<code>{e(_short(loc, 110))}</code>" for loc in p["locations"])
+        more = f" and {p['count'] - len(p['locations'])} more" if p["count"] > len(p["locations"]) else ""
+        how = " - it asks about each one" if p["fix"] == "aegis fix" else ""
+        fix = (f'<p class="fix"><b>Fix automatically</b> ({p["fixable"]} of {p["count"]}): <code>{e(p["fix"])}</code>{how}</p>'
+               if p["fix"] else "")
+        items.append(f"""<li><span class="badge" style="background:{_SEV_COLORS[p['severity']]}">{p['severity'].upper()}</span>
+  <div><b>{i}. {e(p['title'])}</b>{f' <span class="cnt">&times; {p["count"]}</span>' if p['count'] > 1 else ''}
+  <div class="where">{where}{e(more)}</div>
+  {f'<p>{e(p["recommendation"])}</p>' if p['recommendation'] else ''}{fix}</div></li>""")
+    rest = f'<p class="meta">{total_groups - len(plan)} more kind(s) of issue are listed under Findings.</p>' \
+        if total_groups > len(plan) else ""
+    return f'<section class="plan"><h2>What to do first</h2><ol>{"".join(items)}</ol>{rest}</section>'
+
+
+def _short(text: str, n: int) -> str:
+    return text if len(text) <= n else text[:n // 2 - 1] + "\u2026" + text[-(n // 2 - 1):]
+
+
 def render_html(result: ScanResult, history: Optional[Dict[str, Any]] = None) -> str:
     """Self-contained HTML report. ``history`` (default: ``result.stats["history"]``, filled in by the scan engine)
     adds the "Changes since previous scan" section and the score sparkline."""
@@ -214,7 +293,7 @@ def render_html(result: ScanResult, history: Optional[Dict[str, Any]] = None) ->
         rows.append(f"""
 <details class="finding sev-{sev}" data-sev="{sev}" data-cat="{e(f['category'])}">
   <summary><span class="badge" style="background:{_SEV_COLORS[sev]}">{sev.upper()}</span>
-    <span class="title">{e(f['title'])}</span><span class="cat">{e(f['category'])}</span></summary>
+    <span class="title">{e(f['title'])}{f'<small class="where">{e(_short(f["location"], 120))}</small>' if f['location'] else ''}</span><span class="cat">{e(f['category'])}</span></summary>
   <div class="body">
     {f'<p class="loc"><b>Location:</b> <code>{e(f["location"])}</code></p>' if f['location'] else ''}
     {f'<p>{e(f["description"])}</p>' if f['description'] else ''}
@@ -235,6 +314,7 @@ def render_html(result: ScanResult, history: Optional[Dict[str, Any]] = None) ->
         f'<div class="tile"><div class="n" style="color:{_SEV_COLORS[k]}">{v}</div><div class="l">{k}</div></div>'
         for k, v in sorted(counts.items(), key=lambda kv: -Severity[kv[0].upper()]))
     host = d["host"]
+    plan = _render_plan(action_plan(result), len({f.rule_id for f in result.findings if f.severity >= Severity.LOW}))
     return f"""<!doctype html>
 <html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <meta name="generator" content="Aegis Security Suite">
@@ -262,7 +342,12 @@ details.finding{{border:1px solid var(--line);border-radius:8px;margin:8px 0;ove
 details.finding summary{{cursor:pointer;padding:10px 12px;display:flex;gap:10px;align-items:center;flex-wrap:wrap}}
 .badge{{color:#fff;font-size:11px;font-weight:700;padding:2px 8px;border-radius:4px;min-width:70px;text-align:center}}
 .sev-medium .badge{{color:#222}}
-.title{{font-weight:600;flex:1}}.cat{{color:var(--muted);font-size:13px}}
+.title{{font-weight:600;flex:1;min-width:0}}.cat{{color:var(--muted);font-size:13px}}
+.where{{display:block;font-weight:400;color:var(--muted);font-size:12px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}}
+.plan ol{{list-style:none;padding:0;margin:0}}.plan li{{display:flex;gap:12px;align-items:flex-start;padding:10px 0;border-bottom:1px solid var(--line)}}
+.plan li:last-child{{border-bottom:0}}.plan li>div{{min-width:0;flex:1}}.plan p{{margin:6px 0 0}}.plan .where code{{display:block;margin-top:2px}}
+.cnt{{color:var(--muted);font-weight:600}}.fix code{{word-break:break-all}}
+#q{{flex:1;min-width:180px;border:1px solid var(--line);background:var(--bg);color:var(--fg);border-radius:20px;padding:4px 12px}}
 .body{{padding:0 14px 12px;border-top:1px solid var(--line)}}
 code,pre{{background:var(--code);border-radius:4px;font-size:13px}}code{{padding:1px 4px;word-break:break-all}}
 pre{{padding:10px;overflow:auto;max-height:300px}}.meta{{color:var(--muted);font-size:12px}}
@@ -281,10 +366,12 @@ footer{{color:var(--muted);font-size:12px;text-align:center;margin:24px 0}}
 </header>
 <div class="tiles">{tiles}</div>
 {changes}
-<section><h2>Findings ({len(d['findings'])})</h2>
+{plan}
+<section><h2>Findings (<span id="shown">{len(d['findings'])}</span> of {len(d['findings'])})</h2>
 <div class="filters" id="filters"><button class="on" data-f="all">All</button>
 <button data-f="critical">Critical</button><button data-f="high">High</button><button data-f="medium">Medium</button>
-<button data-f="low">Low</button><button data-f="info">Info</button></div>
+<button data-f="low">Low</button><button data-f="info">Info</button>
+<input id="q" type="search" placeholder="Search title, path, rule..." aria-label="Search findings"></div>
 {''.join(rows) or '<p>No threats or issues found.</p>'}
 </section>
 {f'<section><h2>Hardening checks</h2><table>{"".join(checks)}</table></section>' if checks else ''}
