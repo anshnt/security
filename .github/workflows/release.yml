@@ -3,6 +3,9 @@ name: Release
 on:
   push:
     tags: ["v*"]
+    # a version bump merged to main releases that version, so nobody has to push a tag by hand
+    branches: [main]
+    paths: ["aegis/__init__.py"]
   workflow_dispatch:
     inputs:
       tag:
@@ -13,15 +16,50 @@ permissions:
   contents: write
 
 jobs:
-  windows:
-    name: Build and publish Windows executables
-    runs-on: windows-latest
-    env:
-      TAG: ${{ github.event.inputs.tag || github.ref_name }}
+  plan:
+    name: Decide the release tag
+    runs-on: ubuntu-latest
+    outputs:
+      tag: ${{ steps.tag.outputs.tag }}
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: ${{ github.event.inputs.tag || github.ref }}
+          ref: ${{ github.event.inputs.tag || github.sha }}
+
+      - id: tag
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          INPUT_TAG: ${{ github.event.inputs.tag }}
+        run: |
+          if [ -n "$INPUT_TAG" ]; then
+            tag="$INPUT_TAG"
+          elif [ "$GITHUB_REF_TYPE" = "tag" ]; then
+            tag="$GITHUB_REF_NAME"
+          else
+            version=$(grep -m1 '^__version__' aegis/__init__.py | cut -d'"' -f2)
+            if [ -z "$version" ]; then echo "::error::no __version__ in aegis/__init__.py"; exit 1; fi
+            tag="v$version"
+            # the file also changes for other reasons; only a version without a tag is released
+            if gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/$tag" >/dev/null 2>&1; then
+              echo "$tag is already tagged, nothing to release"
+              tag=""
+            fi
+          fi
+          echo "release tag: ${tag:-none}"
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+
+  windows:
+    name: Build and publish Windows executables
+    needs: plan
+    if: needs.plan.outputs.tag != ''
+    runs-on: windows-latest
+    env:
+      TAG: ${{ needs.plan.outputs.tag }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.inputs.tag || github.sha }}
 
       - uses: actions/setup-python@v5
         with:
@@ -79,5 +117,6 @@ jobs:
           if gh release view "$TAG" >/dev/null 2>&1; then
             gh release upload "$TAG" $files --clobber
           else
-            gh release create "$TAG" $files --title "Aegis Security Suite $TAG" --notes-file notes.md
+            # --target creates the tag on this commit when the release comes from a version bump on main
+            gh release create "$TAG" $files --target "$GITHUB_SHA" --title "Aegis Security Suite $TAG" --notes-file notes.md
           fi
