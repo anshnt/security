@@ -333,7 +333,9 @@ def test_parse_real_windows_shortcuts(tmp_path):
     script.write_text(
         "$ErrorActionPreference = 'Stop'\n"
         "$ws = New-Object -ComObject WScript.Shell\n"
-        "foreach ($c in ($env:LNK_CASES | ConvertFrom-Json)) {\n"
+        # Windows PowerShell 5.1 emits a JSON array as ONE pipeline object; assigning it unwraps it for foreach
+        "$cases = ConvertFrom-Json -InputObject $env:LNK_CASES\n"
+        "foreach ($c in $cases) {\n"
         "  $s = $ws.CreateShortcut($c.lnk)\n"
         "  $s.TargetPath = $c.target\n"
         "  if ($c.args) { $s.Arguments = $c.args }\n"
