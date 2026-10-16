@@ -1,0 +1,49 @@
+# Aegis Security Suite - bundled Sigma rule
+# MIT License, Copyright (c) 2026 anshnt (see LICENSE). Original Aegis rule, not derived from SigmaHQ content.
+title: Suspicious Command Pasted Into the Windows Run Dialog
+id: 2f64bb4b-d80c-5ba7-9425-5e31800387da
+status: stable
+description: A command that starts a shell or script engine and downloads or hides code was typed or pasted into the Windows Run dialog (it is recorded in the RunMRU history). Fake "verify you are human" pages (ClickFix) make people do this.
+references:
+    - https://attack.mitre.org/techniques/T1204/004/
+author: Aegis Security Suite
+date: 2026-10-16
+license: MIT
+tags:
+    - attack.execution
+    - attack.t1204.004
+logsource:
+    category: registry_set
+    product: windows
+detection:
+    selection_key:
+        TargetObject|contains: '\Software\Microsoft\Windows\CurrentVersion\Explorer\RunMRU\'
+    selection_shell:
+        Details|contains:
+            - 'powershell'
+            - 'pwsh'
+            - 'mshta'
+            - 'cmd /c'
+            - 'cmd.exe /c'
+            - 'wscript'
+            - 'cscript'
+            - 'msiexec'
+            - 'curl '
+    selection_suspicious:
+        Details|contains:
+            - 'http://'
+            - 'https://'
+            - '-w hidden'
+            - '-windowstyle hidden'
+            - '-enc '
+            - 'iex'
+            - 'Invoke-Expression'
+            - 'DownloadString'
+            - 'irm '
+            - 'iwr '
+            - 'not a robot'
+            - 'verification id'
+    condition: selection_key and selection_shell and selection_suspicious
+falsepositives:
+    - Administrators who run download or install commands from the Run dialog
+level: high

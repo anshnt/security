@@ -1,0 +1,40 @@
+# Aegis Security Suite - bundled Sigma rule
+# MIT License, Copyright (c) 2026 anshnt (see LICENSE). Original Aegis rule, not derived from SigmaHQ content.
+title: LSASS Memory Dumped With Comsvcs or ProcDump
+id: aa55fd90-a318-5e50-ac45-2660b42118c7
+status: stable
+description: A process memory dump of lsass.exe was requested through comsvcs.dll MiniDump or ProcDump. Dumping LSASS is how attackers steal Windows passwords and tickets.
+references:
+    - https://attack.mitre.org/techniques/T1003/001/
+    - https://lolbas-project.github.io/lolbas/Libraries/Comsvcs/
+author: Aegis Security Suite
+date: 2026-10-16
+license: MIT
+tags:
+    - attack.credential-access
+    - attack.t1003.001
+logsource:
+    category: process_creation
+    product: windows
+detection:
+    selection_rundll:
+        - Image|endswith: '\rundll32.exe'
+        - OriginalFileName: 'RUNDLL32.EXE'
+    selection_comsvcs:
+        - CommandLine|contains|all:
+              - 'comsvcs'
+              - 'minidump'
+        - CommandLine|contains|all:
+              - 'comsvcs'
+              - '#24'
+    selection_procdump:
+        - Image|endswith:
+              - '\procdump.exe'
+              - '\procdump64.exe'
+        - OriginalFileName: 'procdump'
+    selection_lsass:
+        CommandLine|contains: 'lsass'
+    condition: (selection_rundll and selection_comsvcs) or (selection_procdump and selection_lsass)
+falsepositives:
+    - Administrators capturing LSASS dumps for a support case (rare and usually announced)
+level: high

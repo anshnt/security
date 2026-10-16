@@ -23,7 +23,8 @@ dependencies = ["psutil>=5.9"]
 
 [project.optional-dependencies]
 yara = ["yara-python>=4.3"]
-dev = ["pytest>=7", "pyinstaller>=6"]
+sigma = ["pyyaml>=6"]
+dev = ["pytest>=7", "pyinstaller>=6", "pyyaml>=6"]
 
 [project.scripts]
 aegis = "aegis.cli:main"

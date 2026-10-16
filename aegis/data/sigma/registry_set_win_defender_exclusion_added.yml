@@ -1,0 +1,27 @@
+# Aegis Security Suite - bundled Sigma rule
+# MIT License, Copyright (c) 2026 anshnt (see LICENSE). Original Aegis rule, not derived from SigmaHQ content.
+title: Microsoft Defender Exclusion Added in the Registry
+id: de0a30e6-5105-50db-a82d-72dbb0854eb1
+status: stable
+description: A path, file type or process was added to the Microsoft Defender exclusion list. Excluded items are never scanned, so attackers add their malware's folder to the list.
+references:
+    - https://attack.mitre.org/techniques/T1685/
+author: Aegis Security Suite
+date: 2026-10-16
+license: MIT
+tags:
+    - attack.defense-evasion
+    - attack.t1685
+logsource:
+    category: registry_set
+    product: windows
+detection:
+    selection:
+        TargetObject|contains:
+            - '\Microsoft\Windows Defender\Exclusions\Paths\'
+            - '\Microsoft\Windows Defender\Exclusions\Extensions\'
+            - '\Microsoft\Windows Defender\Exclusions\Processes\'
+    condition: selection
+falsepositives:
+    - Administrators and Group Policy that add exclusions on purpose; software that asks users to exclude its folder
+level: medium

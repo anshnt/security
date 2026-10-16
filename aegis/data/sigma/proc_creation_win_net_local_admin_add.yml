@@ -1,0 +1,41 @@
+# Aegis Security Suite - bundled Sigma rule
+# MIT License, Copyright (c) 2026 anshnt (see LICENSE). Original Aegis rule, not derived from SigmaHQ content.
+title: User Added to the Local Administrators Group With net.exe
+id: d44cc0ce-2b5a-58da-a31a-deca249d0fb3
+status: stable
+description: net.exe was used to add an account to the local Administrators group. Attackers do this to give a new or compromised account full control of the PC.
+references:
+    - https://attack.mitre.org/techniques/T1098/
+    - https://attack.mitre.org/techniques/T1136/001/
+author: Aegis Security Suite
+date: 2026-10-16
+license: MIT
+tags:
+    - attack.persistence
+    - attack.t1098
+    - attack.t1136.001
+    - attack.privilege-escalation
+logsource:
+    category: process_creation
+    product: windows
+detection:
+    selection_img:
+        - Image|endswith:
+              - '\net.exe'
+              - '\net1.exe'
+        - OriginalFileName:
+              - 'net.exe'
+              - 'net1.exe'
+    selection_group:
+        - CommandLine|contains|all:
+              - 'localgroup'
+              - 'administrators'
+              - '/add'
+        - CommandLine|contains|all:
+              - 'localgroup'
+              - 'S-1-5-32-544'
+              - '/add'
+    condition: selection_img and selection_group
+falsepositives:
+    - IT administrators and provisioning scripts that grant local admin rights on purpose
+level: high

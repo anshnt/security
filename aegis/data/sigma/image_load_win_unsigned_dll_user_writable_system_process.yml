@@ -1,0 +1,41 @@
+# Aegis Security Suite - bundled Sigma rule
+# MIT License, Copyright (c) 2026 anshnt (see LICENSE). Original Aegis rule, not derived from SigmaHQ content.
+title: Windows Process Loaded an Unsigned DLL From a User-Writable Folder
+id: 89249310-f9bd-5054-b653-73309647ced4
+status: stable
+description: A core Windows process (svchost, explorer, winlogon, lsass, services, spoolsv, taskhostw, dwm, csrss) loaded an unsigned DLL from Temp, Public or Downloads. Legitimate Windows components do not load code from those folders; DLL hijacking and injection do.
+references:
+    - https://attack.mitre.org/techniques/T1574/001/
+author: Aegis Security Suite
+date: 2026-10-16
+license: MIT
+tags:
+    - attack.persistence
+    - attack.privilege-escalation
+    - attack.defense-evasion
+    - attack.t1574.001
+logsource:
+    category: image_load
+    product: windows
+detection:
+    selection:
+        Image|endswith:
+            - '\svchost.exe'
+            - '\explorer.exe'
+            - '\winlogon.exe'
+            - '\lsass.exe'
+            - '\services.exe'
+            - '\spoolsv.exe'
+            - '\taskhostw.exe'
+            - '\dwm.exe'
+            - '\csrss.exe'
+        ImageLoaded|contains:
+            - '\AppData\Local\Temp\'
+            - '\Windows\Temp\'
+            - '\Users\Public\'
+            - '\Downloads\'
+        Signed: 'false'
+    condition: selection
+falsepositives:
+    - Shell extensions installed by unusual software that unpack to Temp
+level: medium

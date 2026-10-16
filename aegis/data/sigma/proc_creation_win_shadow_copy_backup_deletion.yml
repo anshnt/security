@@ -1,0 +1,63 @@
+# Aegis Security Suite - bundled Sigma rule
+# MIT License, Copyright (c) 2026 anshnt (see LICENSE). Original Aegis rule, not derived from SigmaHQ content.
+title: Shadow Copies or Backups Deleted
+id: ef12a02a-9bcc-5702-af5c-afa3b0939c24
+status: stable
+description: A command that deletes Volume Shadow Copies, shrinks their storage, deletes the backup catalog or turns off Windows recovery was run. Ransomware does this first so the victim cannot restore their files.
+references:
+    - https://attack.mitre.org/techniques/T1490/
+author: Aegis Security Suite
+date: 2026-10-16
+license: MIT
+tags:
+    - attack.impact
+    - attack.t1490
+logsource:
+    category: process_creation
+    product: windows
+detection:
+    selection_vssadmin_delete:
+        - Image|endswith: '\vssadmin.exe'
+        - OriginalFileName: 'VSSADMIN.EXE'
+    selection_vssadmin_args:
+        - CommandLine|contains|all:
+              - 'delete'
+              - 'shadows'
+        - CommandLine|contains|all:
+              - 'resize'
+              - 'shadowstorage'
+    selection_wmic:
+        - Image|endswith: '\wmic.exe'
+        - OriginalFileName: 'wmic.exe'
+    selection_wmic_args:
+        CommandLine|contains|all:
+            - 'shadowcopy'
+            - 'delete'
+    selection_wbadmin:
+        - Image|endswith: '\wbadmin.exe'
+        - OriginalFileName: 'WBADMIN.EXE'
+    selection_wbadmin_args:
+        - CommandLine|contains|all:
+              - 'delete'
+              - 'catalog'
+        - CommandLine|contains|all:
+              - 'delete'
+              - 'systemstatebackup'
+        - CommandLine|contains|all:
+              - 'delete'
+              - 'backup'
+    selection_bcdedit:
+        - Image|endswith: '\bcdedit.exe'
+        - OriginalFileName: 'bcdedit.exe'
+    selection_bcdedit_args:
+        CommandLine|re: '(?i)recoveryenabled\s+(?:no|off)\b'
+    selection_powershell:
+        CommandLine|contains|all:
+            - 'Win32_ShadowCopy'
+            - 'Delete'
+    filter_main_oldest:
+        CommandLine|contains: '/oldest'
+    condition: (selection_vssadmin_delete and selection_vssadmin_args and not filter_main_oldest) or (selection_wmic and selection_wmic_args) or (selection_wbadmin and selection_wbadmin_args) or (selection_bcdedit and selection_bcdedit_args) or selection_powershell
+falsepositives:
+    - Backup and disk-clean-up software that prunes its own shadow copies
+level: high

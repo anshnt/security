@@ -1,0 +1,34 @@
+# Aegis Security Suite - bundled Sigma rule
+# MIT License, Copyright (c) 2026 anshnt (see LICENSE). Original Aegis rule, not derived from SigmaHQ content.
+title: Microsoft Defender Disabled or Broadly Excluded in a PowerShell Script
+id: 6f32a83a-7ce0-578e-8393-4ccbaee4c2f4
+status: stable
+description: A PowerShell script block used Set-MpPreference or Add-MpPreference to switch off a Microsoft Defender protection or to exclude a very broad location, file type or script engine from scanning.
+references:
+    - https://attack.mitre.org/techniques/T1685/
+author: Aegis Security Suite
+date: 2026-10-16
+license: MIT
+tags:
+    - attack.defense-evasion
+    - attack.t1685
+logsource:
+    category: ps_script
+    product: windows
+detection:
+    selection_cmdlet:
+        ScriptBlockText|contains:
+            - 'Set-MpPreference'
+            - 'Add-MpPreference'
+    selection_disable:
+        ScriptBlockText|re: '(?i)-Disable(?:RealtimeMonitoring|BehaviorMonitoring|IOAVProtection|ScriptScanning|IntrusionPreventionSystem|BlockAtFirstSeen|ArchiveScanning)\s+[$]?(?:true|1)\b'
+    selection_excl_path:
+        ScriptBlockText|re: '(?i)-ExclusionPath\s+@?\(?\s*["'']?(?:[a-z]:\\?|[a-z]:\\(?:users|windows|programdata|users\\public)\\?|\*|%(?:temp|tmp|appdata|localappdata|programdata|userprofile|public)%\\?|[$]env:(?:temp|tmp|appdata|localappdata|programdata|userprofile|public)\\?|[^\s"'',;)]*\\(?:temp|downloads)\\?)["'']?(?:[\s,;)"'']|$)'
+    selection_excl_ext:
+        ScriptBlockText|re: '(?i)-ExclusionExtension\s+@?\(?\s*["'']?\.?(?:exe|dll|ps1|bat|cmd|vbs|js|hta|scr|lnk|zip|iso)["'']?(?:[\s,;)"'']|$)'
+    selection_excl_proc:
+        ScriptBlockText|re: '(?i)-ExclusionProcess\s+@?\(?\s*["'']?[^\s"'',;)]*(?:powershell|pwsh|cmd|wscript|cscript|mshta|rundll32|regsvr32)(?:\.exe)?["'']?(?:[\s,;)"'']|$)'
+    condition: selection_cmdlet and (selection_disable or 1 of selection_excl_*)
+falsepositives:
+    - Administration scripts that exclude a large, trusted location from scanning
+level: high

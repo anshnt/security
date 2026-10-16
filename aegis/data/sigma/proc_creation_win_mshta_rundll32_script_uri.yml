@@ -1,0 +1,46 @@
+# Aegis Security Suite - bundled Sigma rule
+# MIT License, Copyright (c) 2026 anshnt (see LICENSE). Original Aegis rule, not derived from SigmaHQ content.
+title: Mshta or Rundll32 Running Script From a Command-Line URI
+id: fc01d148-1f9f-59e8-aa47-c9742cb3a74e
+status: stable
+description: mshta.exe was given a javascript or vbscript URI or a web address, or rundll32.exe was used to run an HTML application or script URI. This runs attacker script straight from the command line with a trusted Windows program.
+references:
+    - https://attack.mitre.org/techniques/T1218/005/
+    - https://attack.mitre.org/techniques/T1218/011/
+    - https://lolbas-project.github.io/lolbas/Binaries/Mshta/
+author: Aegis Security Suite
+date: 2026-10-16
+license: MIT
+tags:
+    - attack.defense-evasion
+    - attack.t1218.005
+    - attack.t1218.011
+    - attack.execution
+    - attack.t1059.007
+logsource:
+    category: process_creation
+    product: windows
+detection:
+    selection_mshta:
+        - Image|endswith: '\mshta.exe'
+        - OriginalFileName: 'MSHTA.EXE'
+    selection_mshta_uri:
+        CommandLine|contains:
+            - 'javascript:'
+            - 'vbscript:'
+            - 'http://'
+            - 'https://'
+            - 'ftp://'
+    selection_rundll:
+        - Image|endswith: '\rundll32.exe'
+        - OriginalFileName: 'RUNDLL32.EXE'
+    selection_rundll_uri:
+        CommandLine|contains:
+            - 'javascript:'
+            - 'vbscript:'
+            - 'mshtml,RunHTMLApplication'
+            - 'mshtml.dll,RunHTMLApplication'
+    condition: (selection_mshta and selection_mshta_uri) or (selection_rundll and selection_rundll_uri)
+falsepositives:
+    - Very rare; some old software launches an HTML application by URL
+level: high

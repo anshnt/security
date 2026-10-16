@@ -1,0 +1,40 @@
+# Aegis Security Suite - bundled Sigma rule
+# MIT License, Copyright (c) 2026 anshnt (see LICENSE). Original Aegis rule, not derived from SigmaHQ content.
+title: BITSAdmin Used to Download or Persist a File
+id: d4c7e91f-8287-5fc2-8d27-fd6b71cf488d
+status: stable
+description: bitsadmin.exe created a background transfer from a web address, or set a command to run when a transfer finishes. Attackers use BITS jobs to download malware and to keep a foothold.
+references:
+    - https://attack.mitre.org/techniques/T1197/
+    - https://lolbas-project.github.io/lolbas/Binaries/Bitsadmin/
+author: Aegis Security Suite
+date: 2026-10-16
+license: MIT
+tags:
+    - attack.defense-evasion
+    - attack.persistence
+    - attack.t1197
+    - attack.command-and-control
+    - attack.t1105
+logsource:
+    category: process_creation
+    product: windows
+detection:
+    selection_img:
+        - Image|endswith: '\bitsadmin.exe'
+        - OriginalFileName: 'bitsadmin.exe'
+    selection_transfer:
+        CommandLine|contains|windash:
+            - '-transfer'
+            - '-addfile'
+    selection_remote:
+        CommandLine|contains:
+            - 'http://'
+            - 'https://'
+            - 'ftp://'
+    selection_notify:
+        CommandLine|contains|windash: '-setnotifycmdline'
+    condition: selection_img and ((selection_transfer and selection_remote) or selection_notify)
+falsepositives:
+    - Installers and update scripts that use bitsadmin to download from a vendor site
+level: medium

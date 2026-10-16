@@ -14,6 +14,8 @@ looks for the behaviour attackers leave behind:
 * PowerShell 4104                   - script blocks that contain malicious content
 * WMI-Activity 5861                 - permanent WMI event subscriptions (fileless persistence)
 * Sysmon 3 / 7 / 11                 - outbound LOLBin connections, DLL side-loading, dropped executables
+* Sigma rules                       - every collected event is also checked against the bundled and downloaded
+                                      Sigma rules (``aegis.core.sigma``); needs PyYAML, skipped without it
 
 Everything is locale independent: events are identified by EventID and fields
 are read from the event XML ``<Data Name=...>`` elements (never from the
@@ -87,7 +89,7 @@ LOG_SPECS: Tuple[LogSpec, ...] = (
     LogSpec("powershell", "Microsoft-Windows-PowerShell/Operational", (Group((4104,), 1500, "sbl"),)),
     LogSpec("wmi", "Microsoft-Windows-WMI-Activity/Operational", (Group((5861,), 300),)),
     LogSpec("sysmon", "Microsoft-Windows-Sysmon/Operational", (
-        Group((1,), 3000), Group((3,), 2500), Group((7,), 1500), Group((11,), 2500),
+        Group((1,), 3000), Group((3,), 2500), Group((7,), 1500), Group((11,), 2500), Group((13,), 2500),
     ), optional=True),
 )
 
@@ -1494,6 +1496,87 @@ def _read_check(ld: LogData, n_events: int) -> CheckResult:
                        f"Reviewed {n_events} relevant event(s) from the last {LOOKBACK_DAYS} days.", Category.SUSPICIOUS)
 
 
+# --------------------------------------------------------------------------- Sigma rules
+
+def _event_key(f: Finding) -> Optional[Tuple[Any, Any, Any]]:
+    """(log, event id, time) of the event record a finding describes (None if it does not name one)."""
+    e = f.evidence or {}
+    if not e.get("log") or e.get("event_id") is None:
+        return None
+    return (e.get("log"), e.get("event_id"), e.get("time"))
+
+
+def merge_sigma_findings(native: Sequence[Finding], sigma_found: Sequence[Finding]) -> List[Finding]:
+    """Combine this scanner's own detections with the Sigma findings. When both describe the same event record and
+    the same ATT&CK technique the native finding is kept (it is the richer one: plain-language explanation,
+    remediation, structured evidence) and the Sigma rule is folded into it as corroboration (``evidence['sigma_rules']``,
+    higher severity wins); every other Sigma finding is added as is."""
+    if not sigma_found:
+        return list(native)
+    from aegis.core import sigma  # imported lazily: the scanner works without the Sigma module
+
+    by_event: Dict[Tuple[Any, Any, Any], List[Finding]] = defaultdict(list)
+    for f in native:
+        key = _event_key(f)
+        if key:
+            by_event[key].append(f)
+    out = list(native)
+    for sf in sigma_found:
+        key = _event_key(sf)
+        base = next((n for n in by_event.get(key, []) if sigma.same_technique(n.mitre, sf.mitre)), None) if key else None
+        if base is None:
+            out.append(sf)
+        else:
+            sigma.fold_finding(base, sf)
+    return out
+
+
+def sigma_hunt(logs: Dict[str, Sequence[Dict[str, Any]]], config: Any = None, deadline: Optional[float] = None,
+               ruleset: Any = None) -> Tuple[List[Finding], Dict[str, Any]]:
+    """Evaluate every collected event against the Sigma rules. Returns ``(findings, info)`` where ``info`` has
+    ``status`` (ok | truncated | unavailable | no_rules | no_events | error), ``detail`` and counters. Never raises."""
+    info: Dict[str, Any] = {"status": "ok", "detail": "", "rules": 0, "events": 0, "evaluated": 0, "matches": 0}
+    try:
+        from aegis.core import sigma
+
+        events = [e for evs in logs.values() for e in evs]
+        if not events:
+            info.update(status="no_events", detail="No events were collected, so there was nothing to check.")
+            return [], info
+        rs = ruleset if ruleset is not None else sigma.load_rules(config)
+        if not rs.available:
+            info.update(status="unavailable", detail=f"Sigma rules were not used: {rs.reason or 'engine unavailable'}.")
+            return [], info
+        if not rs:
+            info.update(status="no_rules", detail="No Sigma rules are installed.")
+            return [], info
+        summary = rs.summary()
+        info["rules"] = summary["rules"]
+        info["unsupported"] = summary["unsupported"]
+        run = sigma.evaluate(sigma.events_from_eventlog(events), rs, deadline)
+        info.update(events=run.events, evaluated=run.evaluated, matches=len(run.matches))
+        found = sigma.findings_from_matches(run.matches)
+        if run.truncated:
+            info.update(status="truncated", detail=f"The time budget ran out after {run.events} events; the Sigma "
+                                                   "check is incomplete.")
+        else:
+            info["detail"] = (f"Checked {run.evaluated} event(s) against {summary['rules']} Sigma rule(s)"
+                              + (f" ({summary['unsupported']} unsupported rules skipped)" if summary["unsupported"] else "")
+                              + f"; {len(run.matches)} match(es).")
+        return found, info
+    except ImportError as exc:  # the Sigma module itself is missing from this installation
+        info.update(status="unavailable", detail=f"Sigma rules were not used: {exc}.")
+        return [], info
+    except Exception as exc:  # defensive: Sigma must never break the hunt
+        log.warning("sigma hunt failed: %s", exc, exc_info=True)
+        info.update(status="error", detail=f"{type(exc).__name__}: {exc}")
+        return [], info
+
+
+_SIGMA_STATUS = {"ok": CheckStatus.PASS, "no_events": CheckStatus.PASS, "truncated": CheckStatus.WARN,
+                 "unavailable": CheckStatus.SKIP, "no_rules": CheckStatus.SKIP, "error": CheckStatus.ERROR}
+
+
 @register
 class EventLogScanner(Scanner):
     name = "eventlog"
@@ -1539,10 +1622,19 @@ class EventLogScanner(Scanner):
             yield CheckResult("AEG-EVT-ANALYSE", "Event log analysis", CheckStatus.ERROR,
                               f"{type(exc).__name__}: {exc}", Category.SUSPICIOUS)
             findings = []
+        sigma_info: Optional[Dict[str, Any]] = None
+        if ctx.options.get("sigma") is not False and not ctx.cancelled:
+            ctx.report(self.name, "checking events against Sigma rules")
+            sigma_found, sigma_info = sigma_hunt(logs, ctx.config, started + budget)
+            ctx.bump("sigma_matches", int(sigma_info.get("matches", 0)))
+            findings = merge_sigma_findings(findings, sigma_found)
         for f in findings:
             if ctx.cancelled:
                 return
             yield f
+        if sigma_info is not None:
+            yield CheckResult("AEG-EVT-SIGMA", "Sigma rule hunt", _SIGMA_STATUS.get(sigma_info["status"], CheckStatus.ERROR),
+                              sigma_info["detail"], Category.SUSPICIOUS)
         sec = datas["security"]
         proc_seen: Optional[bool] = None
         if sec.ok and not sec.problem:

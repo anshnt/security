@@ -1,0 +1,49 @@
+# Aegis Security Suite - bundled Sigma rule
+# MIT License, Copyright (c) 2026 anshnt (see LICENSE). Original Aegis rule, not derived from SigmaHQ content.
+title: ClickFix-Style Hidden PowerShell Started From Explorer
+id: 8909cc65-5d36-5bdd-be26-7bc9a4d1e1f4
+status: stable
+description: PowerShell was started by Explorer (the Run dialog, a shortcut or a pasted command) with a hidden window and an in-memory download or Invoke-Expression. Fake "verify you are human" and "fix this error" web pages trick people into pasting exactly this command.
+references:
+    - https://attack.mitre.org/techniques/T1204/004/
+    - https://attack.mitre.org/techniques/T1059/001/
+author: Aegis Security Suite
+date: 2026-10-16
+license: MIT
+tags:
+    - attack.execution
+    - attack.t1204.004
+    - attack.t1059.001
+    - attack.defense-evasion
+    - attack.t1564.003
+logsource:
+    category: process_creation
+    product: windows
+detection:
+    selection_parent:
+        ParentImage|endswith: '\explorer.exe'
+    selection_img:
+        - Image|endswith:
+              - '\powershell.exe'
+              - '\pwsh.exe'
+              - '\powershell_ise.exe'
+        - OriginalFileName:
+              - 'PowerShell.EXE'
+              - 'pwsh.dll'
+              - 'PowerShell_ISE.EXE'
+    selection_hidden:
+        CommandLine|re: '(?i)\s[-/]w(?:i(?:n(?:d(?:o(?:w(?:s(?:t(?:y(?:l(?:e)?)?)?)?)?)?)?)?)?)?\s+["'']?(?:h\w*|1)\b'
+    selection_exec_words:
+        CommandLine|contains:
+            - 'Invoke-Expression'
+            - 'Invoke-RestMethod'
+            - 'Invoke-WebRequest'
+            - 'DownloadString'
+            - 'DownloadFile'
+            - 'Net.WebClient'
+    selection_exec_alias:
+        CommandLine|re: '(?i)(?:^|[\s|;(&"''])(?:iex|iwr|irm)(?:[\s("''$]|$)'
+    condition: selection_parent and selection_img and selection_hidden and 1 of selection_exec_*
+falsepositives:
+    - Shortcuts that deliberately start a hidden PowerShell downloader (uncommon)
+level: high

@@ -1,0 +1,37 @@
+# Aegis Security Suite - bundled Sigma rule
+# MIT License, Copyright (c) 2026 anshnt (see LICENSE). Original Aegis rule, not derived from SigmaHQ content.
+title: Certutil Used to Download a File
+id: 7b12872f-47ac-5ba1-a099-a8fb52a2674b
+status: stable
+description: certutil.exe was used to fetch a file from a remote address (-urlcache or -verifyctl). It is a certificate tool that attackers abuse to download malware because it is signed by Microsoft.
+references:
+    - https://attack.mitre.org/techniques/T1105/
+    - https://lolbas-project.github.io/lolbas/Binaries/Certutil/
+author: Aegis Security Suite
+date: 2026-10-16
+license: MIT
+tags:
+    - attack.command-and-control
+    - attack.t1105
+    - attack.defense-evasion
+    - attack.t1218
+logsource:
+    category: process_creation
+    product: windows
+detection:
+    selection_img:
+        - Image|endswith: '\certutil.exe'
+        - OriginalFileName: 'CertUtil.exe'
+    selection_flags:
+        CommandLine|contains|windash:
+            - '-urlcache'
+            - '-verifyctl'
+    selection_remote:
+        CommandLine|contains:
+            - 'http://'
+            - 'https://'
+            - 'ftp://'
+    condition: selection_img and selection_flags and selection_remote
+falsepositives:
+    - Rare administrative scripts that refresh certificate revocation lists from a web server
+level: high

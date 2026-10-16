@@ -1,0 +1,52 @@
+# Aegis Security Suite - bundled Sigma rule
+# MIT License, Copyright (c) 2026 anshnt (see LICENSE). Original Aegis rule, not derived from SigmaHQ content.
+title: Script Host or LOLBin Connected to a Public Address
+id: dafa3be1-5ae0-526e-b5f7-e5a9500b1958
+status: stable
+description: A Windows tool that attackers use to download and run code (mshta, regsvr32, certutil, msbuild, installutil, regasm, regsvcs, odbcconf, cmstp, wscript, cscript) opened a connection to a public Internet address. These programs rarely talk to the Internet in normal use.
+references:
+    - https://attack.mitre.org/techniques/T1218/
+    - https://attack.mitre.org/techniques/T1105/
+author: Aegis Security Suite
+date: 2026-10-16
+license: MIT
+tags:
+    - attack.command-and-control
+    - attack.t1105
+    - attack.defense-evasion
+    - attack.t1218
+logsource:
+    category: network_connection
+    product: windows
+detection:
+    selection:
+        Initiated: 'true'
+        DestinationIp|exists: true
+        Image|endswith:
+            - '\mshta.exe'
+            - '\regsvr32.exe'
+            - '\certutil.exe'
+            - '\msbuild.exe'
+            - '\installutil.exe'
+            - '\regasm.exe'
+            - '\regsvcs.exe'
+            - '\odbcconf.exe'
+            - '\cmstp.exe'
+            - '\wscript.exe'
+            - '\cscript.exe'
+    filter_internal:
+        DestinationIp|cidr:
+            - '10.0.0.0/8'
+            - '172.16.0.0/12'
+            - '192.168.0.0/16'
+            - '127.0.0.0/8'
+            - '169.254.0.0/16'
+            - '100.64.0.0/10'
+            - '::1/128'
+            - 'fc00::/7'
+            - 'fe80::/10'
+    condition: selection and not filter_internal
+falsepositives:
+    - Legacy VBScript or JScript tools that call a public web service
+    - certutil retrieving certificate revocation lists
+level: medium

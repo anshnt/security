@@ -1,0 +1,24 @@
+# Aegis Security Suite - bundled Sigma rule
+# MIT License, Copyright (c) 2026 anshnt (see LICENSE). Original Aegis rule, not derived from SigmaHQ content.
+title: Windows Security Event Log Cleared
+id: 11f5e4b3-58cc-5071-98b4-dd4a9b1f1fd4
+status: stable
+description: The Windows Security event log was erased (event 1102). Clearing the log is a standard way for an intruder to cover their tracks; ordinary users and programs almost never do it.
+references:
+    - https://attack.mitre.org/techniques/T1070/
+author: Aegis Security Suite
+date: 2026-10-16
+license: MIT
+tags:
+    - attack.defense-evasion
+    - attack.t1685.005
+logsource:
+    product: windows
+    service: security
+detection:
+    selection:
+        EventID: 1102
+    condition: selection
+falsepositives:
+    - Administrators clearing the log deliberately (lab machines, log rotation scripts)
+level: high

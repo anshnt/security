@@ -1,0 +1,11 @@
+# ATT&CK ids retired in v20 -> replacement (tab separated). Community Sigma rules still tag the old ids;
+# the engine rewrites them so findings carry current technique ids.
+T1562	T1685
+T1562.001	T1685
+T1562.002	T1685.001
+T1562.004	T1686
+T1562.006	T1685
+T1562.009	T1688
+T1070.001	T1685.005
+T1574.002	T1574.001
+T1656	T1684.001

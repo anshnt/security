@@ -1,0 +1,38 @@
+# Aegis Security Suite - bundled Sigma rule
+# MIT License, Copyright (c) 2026 anshnt (see LICENSE). Original Aegis rule, not derived from SigmaHQ content.
+title: Executable or Script Dropped in a Startup Folder
+id: 645a0290-95d9-564a-a4f6-e78bf30eb74d
+status: stable
+description: A program or script file (not a normal shortcut) was created in a Windows Startup folder, so it runs every time someone signs in. This is a classic persistence trick.
+references:
+    - https://attack.mitre.org/techniques/T1547/001/
+author: Aegis Security Suite
+date: 2026-10-16
+license: MIT
+tags:
+    - attack.persistence
+    - attack.t1547.001
+logsource:
+    category: file_event
+    product: windows
+detection:
+    selection:
+        TargetFilename|contains: '\Start Menu\Programs\Startup\'
+        TargetFilename|endswith:
+            - '.exe'
+            - '.dll'
+            - '.bat'
+            - '.cmd'
+            - '.vbs'
+            - '.vbe'
+            - '.js'
+            - '.jse'
+            - '.wsf'
+            - '.hta'
+            - '.ps1'
+            - '.scr'
+            - '.jar'
+    condition: selection
+falsepositives:
+    - Older installers that place a launcher script in the Startup folder
+level: medium

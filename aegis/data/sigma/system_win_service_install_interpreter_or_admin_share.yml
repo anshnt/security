@@ -1,0 +1,50 @@
+# Aegis Security Suite - bundled Sigma rule
+# MIT License, Copyright (c) 2026 anshnt (see LICENSE). Original Aegis rule, not derived from SigmaHQ content.
+title: New Service Runs a Command Shell or Executes From an Admin Share
+id: dd65d370-de8e-5aac-825e-216a150b9774
+status: stable
+description: A new Windows service was installed whose command is a shell or script interpreter, or that runs from an administrative share. This is how PsExec-style remote-execution tools, and malware that wants to run as SYSTEM, install themselves.
+references:
+    - https://attack.mitre.org/techniques/T1543/003/
+    - https://attack.mitre.org/techniques/T1569/002/
+author: Aegis Security Suite
+date: 2026-10-16
+license: MIT
+tags:
+    - attack.persistence
+    - attack.privilege-escalation
+    - attack.t1543.003
+    - attack.execution
+    - attack.t1569.002
+    - attack.lateral-movement
+    - attack.t1021.002
+logsource:
+    product: windows
+    service: system
+detection:
+    selection:
+        Provider_Name: 'Service Control Manager'
+        EventID: 7045
+    selection_command:
+        ImagePath|contains:
+            - '%COMSPEC%'
+            - 'cmd /c'
+            - 'cmd.exe /c'
+            - 'cmd /k'
+            - 'powershell'
+            - 'pwsh'
+            - 'mshta'
+            - '\\\\127.0.0.1\\'
+            - '\\\\localhost\\'
+            - '\ADMIN$\'
+            - '\C$\'
+    selection_name:
+        ServiceName:
+            - 'PSEXESVC'
+            - 'PAExec'
+            - 'RemCom_svc'
+            - 'csexecsvc'
+    condition: selection and 1 of selection_*
+falsepositives:
+    - Management and deployment tools that install helper services through a command shell
+level: high

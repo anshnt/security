@@ -1,0 +1,34 @@
+# Aegis Security Suite - bundled Sigma rule
+# MIT License, Copyright (c) 2026 anshnt (see LICENSE). Original Aegis rule, not derived from SigmaHQ content.
+title: Regsvr32 Loads Remote Script via Scrobj (Squiblydoo)
+id: 60469a9d-da63-55cb-a6d1-6c852ee8720c
+status: stable
+description: regsvr32.exe was told to run a script from a web address or network path through scrobj.dll. This lets an attacker run code without writing a file, using a trusted Windows program.
+references:
+    - https://attack.mitre.org/techniques/T1218/010/
+    - https://lolbas-project.github.io/lolbas/Binaries/Regsvr32/
+author: Aegis Security Suite
+date: 2026-10-16
+license: MIT
+tags:
+    - attack.defense-evasion
+    - attack.t1218.010
+logsource:
+    category: process_creation
+    product: windows
+detection:
+    selection_img:
+        - Image|endswith: '\regsvr32.exe'
+        - OriginalFileName: 'REGSVR32.EXE'
+    selection_scrobj:
+        CommandLine|contains: 'scrobj'
+    selection_remote:
+        CommandLine|contains|windash:
+            - '-i:http'
+            - '-i:ftp'
+            - '-i:"http'
+            - '-i:\\\\'
+    condition: selection_img and selection_scrobj and selection_remote
+falsepositives:
+    - None known; legitimate software does not register scriptlets from remote locations
+level: high

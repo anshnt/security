@@ -1,0 +1,35 @@
+# Aegis Security Suite - bundled Sigma rule
+# MIT License, Copyright (c) 2026 anshnt (see LICENSE). Original Aegis rule, not derived from SigmaHQ content.
+title: Scheduled Task Created to Run From a User-Writable Folder
+id: c3616050-a4b1-5bd3-bc5b-1e43755d01bd
+status: stable
+description: schtasks.exe created a scheduled task that runs a program from Temp, Downloads, Public or AppData\Roaming. Malware uses scheduled tasks to survive reboots and to run from places a normal user can write to.
+references:
+    - https://attack.mitre.org/techniques/T1053/005/
+author: Aegis Security Suite
+date: 2026-10-16
+license: MIT
+tags:
+    - attack.persistence
+    - attack.execution
+    - attack.t1053.005
+logsource:
+    category: process_creation
+    product: windows
+detection:
+    selection_img:
+        - Image|endswith: '\schtasks.exe'
+        - OriginalFileName: 'schtasks.exe'
+    selection_create:
+        CommandLine|contains|windash: ' -create '
+    selection_path:
+        CommandLine|contains:
+            - '\AppData\Local\Temp\'
+            - '\Windows\Temp\'
+            - '\Users\Public\'
+            - '\Downloads\'
+            - '\AppData\Roaming\'
+    condition: selection_img and selection_create and selection_path
+falsepositives:
+    - Per-user installers and updaters that register a task from AppData\Roaming
+level: medium
