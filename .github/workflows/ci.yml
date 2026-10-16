@@ -110,6 +110,19 @@ jobs:
             --scanners system_audit,persistence,privacy,processes,network --json > mac-root.json || rc=$?
           echo "root exit code: $rc"
           if [ "$rc" -ne 0 ] && [ "$rc" -ne 1 ]; then exit "$rc"; fi
+          # login items as root: what the real sfltool dumpbtm output parses into (the parser is tested on samples)
+          sudo env "PATH=$PATH" python - <<'PY' || echo ">> BTM parse FAILED"
+          from collections import Counter
+          from aegis.scanners import persistence as ps
+          notes = []
+          entries = ps.collect_btm(ps.LinuxPaths(), notes)
+          print("BTM:", len(entries), "entries", dict(Counter(e["meta"]["item_type"] for e in entries)), notes)
+          for e in entries[:15]:
+              m = e["meta"]
+              print("  ", m["item_type"], "|", e["name"], "|", m.get("team_id"), "|", m.get("disposition"), "|",
+                    m.get("visible"), "|", e["path"][:90])
+          PY
+          sudo sfltool dumpbtm 2>&1 | head -70
           python - <<'PY'
           import json, sys
           bad = False

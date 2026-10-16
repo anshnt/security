@@ -25,6 +25,28 @@
     copied. Logs in UTF-8 (with or without a byte order mark) and UTF-16 are read; large traces from their last 4 MB.
   - The check `AEG-RA-CHK` ("Remote access tools reviewed") passes, fails with a summary per tool, or skips and names where
     it looked; profiles the scan may not read are named. ATT&CK ids are T1219.002 (Remote Desktop Software), T1133 and T1078.
+- **macOS login items and background tasks (`AEG-PERS-BTM`, part of the persistence scan).** Reads the Background Task
+  Management database with `sfltool dumpbtm` (macOS 13 and later) and lists every record as an autostart entry, so
+  `aegis autoruns` shows login items, app-registered agents and daemons and the legacy launchd items next to the plists.
+  `sfltool` needs root: as a normal user the step is skipped and the note is part of the persistence check's detail; as root
+  a failure or output Aegis cannot read is an error check, not a gap.
+  - **LOW:** an item that is not signed by an identified developer (no Team Identifier), and an item that is enabled and
+    allowed but hidden from System Settings > Login Items. Apple's own items (a `com.apple.` identifier, Apple as the
+    developer, a file in `/System`) are never judged this way; the usual location checks still apply to every record.
+  - **ATT&CK:** T1547.015 (Login Items) for login items, T1543.001 for agents and T1543.004 for daemons.
+- **Code signatures of macOS launch agents, daemons and login items.** Runs `codesign --verify --strict` and
+  `codesign -dv --verbose=2` on the program of every launchd job and Background Task Management item that is not in
+  `/System`, `/usr/bin`, `/usr/sbin`, `/bin`, `/sbin` or `/usr/libexec`: at most 60 programs per scan (user-writable places
+  first), 10 seconds each. An unsigned or ad-hoc signed program is MEDIUM in a user-writable place (`~/Library`,
+  `/Users/Shared`, `/tmp`, `/private/var/folders`) and LOW elsewhere; an invalid signature is MEDIUM. Developer ID and Apple
+  signatures are not reported. For a script run by an interpreter (`bash`, `python`, `osascript`, `node`) the script is what
+  is judged, and a script in a user-writable place is MEDIUM. The signer and Team ID are part of the finding's evidence and
+  programs that were not checked are named in the persistence check's detail.
+- **XProtect freshness in the macOS audit (`AEG-AUDIT-MAC-XPROTECT`, `AEG-AUDIT-MAC-SECURITY-RESPONSES`).** Reads the version
+  and the age of XProtect's definitions (`XProtect.bundle` under `/Library/Apple`, or `/System` on older macOS) and the
+  version of XProtect Remediator. Definitions older than 60 days are LOW; `ConfigDataInstall` or `CriticalUpdateInstall`
+  set to 0 in the Software Update preferences ("Install Security Responses and system files" off) is MEDIUM (T1685). A Mac
+  without XProtect is skipped, naming the paths looked at.
 
 ### App
 - **Fleet overview in the GUI** (Tools > Fleet overview): pick the folder with your PCs' scan results, build the overview

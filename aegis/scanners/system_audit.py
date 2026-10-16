@@ -30,6 +30,7 @@ import fnmatch
 import glob
 import logging
 import os
+import plistlib
 import re
 import shutil
 import stat as statmod
@@ -2406,6 +2407,127 @@ def check_macos(env: AuditEnv) -> List[Check]:
     return out
 
 
+# =========================================================================== macOS: XProtect updates
+XPROTECT_MAX_AGE_DAYS = 60
+_XPROTECT_TITLE = "XProtect malware definitions are current"
+_SECRESP_TITLE = "Security responses and system files install automatically"
+# macOS 13 and later keep the updated copy under /Library/Apple; older releases (and the sealed fallback) use /System
+_XPROTECT_BUNDLES = ("/Library/Apple/System/Library/CoreServices/XProtect.bundle", "/System/Library/CoreServices/XProtect.bundle")
+_XPROTECT_DATA = ("Contents/Resources/XProtect.yara", "Contents/Resources/XProtect.meta.plist",
+                  "Contents/Resources/XProtect.plist")
+_XPROTECT_REMEDIATOR = "/Library/Apple/System/Library/CoreServices/XProtect.app"
+_SOFTWARE_UPDATE = "/Library/Preferences/com.apple.SoftwareUpdate"
+# the two switches behind System Settings > Software Update > Automatic Updates > Install Security Responses and system files
+_SECURITY_RESPONSE_KEYS = ("ConfigDataInstall", "CriticalUpdateInstall")
+_SECRESP_FIX = ("System Settings > General > Software Update > Automatic Updates (the i button) > turn on 'Install Security "
+                "Responses and system files'. In Terminal: "
+                + " && ".join(f"sudo defaults write {_SOFTWARE_UPDATE} {k} -bool true" for k in _SECURITY_RESPONSE_KEYS))
+
+
+def _read_plist(path: str) -> Optional[Dict[str, Any]]:
+    """The plist at *path*; None when there is no such file. A file that exists but cannot be read or parsed raises."""
+    try:
+        with open(path, "rb") as fh:
+            data = plistlib.load(fh)
+    except (FileNotFoundError, NotADirectoryError):
+        return None
+    return data if isinstance(data, dict) else {}
+
+
+def _file_date(path: str) -> Optional[dt.date]:
+    """The local date a file was last modified; None when there is no such file."""
+    try:
+        return dt.datetime.fromtimestamp(os.stat(path).st_mtime).date()
+    except (FileNotFoundError, NotADirectoryError):
+        return None
+
+
+def _bundle_version(info: Dict[str, Any]) -> str:
+    return str(info.get("CFBundleShortVersionString") or info.get("CFBundleVersion") or "unknown")
+
+
+def _xprotect_freshness(env: AuditEnv, read_plist: Callable[[str], Optional[Dict[str, Any]]],
+                        file_date: Callable[[str], Optional[dt.date]]) -> Check:
+    """Version and age of XProtect's malware definitions: the newest of the definition files (XProtect.yara,
+    XProtect.meta.plist, XProtect.plist) of the first XProtect.bundle that exists. XProtect Remediator, Apple's removal engine,
+    is reported alongside."""
+    looked: List[str] = []
+    for bundle in _XPROTECT_BUNDLES:
+        looked.append(bundle)
+        info = read_plist(f"{bundle}/Contents/Info.plist")
+        if info is not None:
+            break
+    else:
+        return skipped("MAC-XPROTECT", _XPROTECT_TITLE, "XProtect.bundle was not found; looked in " + ", ".join(looked) + ".")
+    version = _bundle_version(info)
+    dates = [d for d in (file_date(f"{bundle}/{rel}") for rel in _XPROTECT_DATA) if d is not None]
+    updated = max(dates) if dates else file_date(f"{bundle}/Contents/Info.plist")
+    if updated is None:
+        return skipped("MAC-XPROTECT", _XPROTECT_TITLE,
+                       f"XProtect {version} is installed but its files carry no modification time.")
+    remediator = read_plist(f"{_XPROTECT_REMEDIATOR}/Contents/Info.plist")
+    xpr = _bundle_version(remediator) if remediator is not None else None
+    age = max(0, (env.today - updated).days)
+    evidence = {"bundle": bundle, "version": version, "updated": updated.isoformat(), "age_days": age,
+                "remediator_version": xpr}
+    if age <= XPROTECT_MAX_AGE_DAYS:
+        remediator_note = f"XProtect Remediator {xpr}." if xpr else "XProtect Remediator is not installed."
+        return passed("MAC-XPROTECT", _XPROTECT_TITLE,
+                      f"XProtect {version} was updated {age} day(s) ago ({updated.isoformat()}); {remediator_note}",
+                      evidence=evidence)
+    return failed(
+        "MAC-XPROTECT", f"XProtect definitions have not been updated for {age} days", Severity.LOW,
+        f"XProtect is the malware scanner built into macOS. Its definitions (version {version}) last changed on "
+        f"{updated.isoformat()}, {age} days ago; Apple normally ships new ones every few weeks, and new malware families "
+        "are not recognised until they arrive.",
+        "Open System Settings > General > Software Update and check for updates, then turn on 'Install Security Responses and "
+        "system files' under Automatic Updates (the i button) so XProtect keeps itself current. On a managed Mac, ask the "
+        "administrator whether updates are deferred.", bundle, evidence, None, ["T1685"])
+
+
+def _security_responses(read_defaults: Callable[[Sequence[str]], Optional[str]]) -> Check:
+    """Are Apple's security responses and system data files (XProtect, Gatekeeper and XProtect Remediator updates) installed
+    automatically? Both switches are on unless the preference is set to 0, so an unset key passes."""
+    txt = read_defaults(["defaults", "read", _SOFTWARE_UPDATE])
+    if txt is None:
+        return skipped("MAC-SECURITY-RESPONSES", _SECRESP_TITLE, "defaults is unavailable, so the Software Update preferences "
+                       "cannot be read.")
+    values: Dict[str, str] = {}
+    for key in _SECURITY_RESPONSE_KEYS:
+        m = re.search(rf"^\s*{key}\s*=\s*(\S+?)\s*;", txt, re.M)
+        if m:
+            values[key] = m.group(1).strip('"').lower()
+    if not values and "does not exist" not in txt.lower() and "{" not in txt:
+        return skipped("MAC-SECURITY-RESPONSES", _SECRESP_TITLE, f"Unexpected output from defaults: {txt.strip()[:100]!r}")
+    off = [k for k, v in values.items() if v in ("0", "false", "no")]
+    if not off:
+        return passed("MAC-SECURITY-RESPONSES", _SECRESP_TITLE, ", ".join(f"{k} = {v}" for k, v in values.items())
+                      or "Not set, which means on (the default).", evidence=dict(values))
+    return failed(
+        "MAC-SECURITY-RESPONSES", "Automatic security responses are turned off", Severity.MEDIUM,
+        f"{' and '.join(off)} {'is' if len(off) == 1 else 'are'} set to 0, so this Mac does not install Apple's security "
+        "responses and system data files by itself. They carry the XProtect malware definitions, the Gatekeeper and XProtect "
+        "Remediator updates and fixes for actively exploited flaws; with them off the Mac only learns about new malware when "
+        "someone updates it by hand.", _SECRESP_FIX, _SOFTWARE_UPDATE, dict(values), None, ["T1685"])
+
+
+def check_xprotect(env: AuditEnv, read_plist: Callable[[str], Optional[Dict[str, Any]]] = _read_plist,
+                   file_date: Callable[[str], Optional[dt.date]] = _file_date,
+                   read_defaults: Callable[[Sequence[str]], Optional[str]] = _mac_cmd) -> List[Check]:
+    """XProtect's definitions are recent (LOW after 60 days) and the macOS switches that keep them current are not turned off
+    (MEDIUM). The readers are parameters so the tests can run it on any OS; *env.today* is the clock. A reader that fails is
+    an ERROR check with the exception text, and does not hide the other check."""
+    out: List[Check] = []
+    for key, title, check in (("MAC-XPROTECT", _XPROTECT_TITLE, lambda: _xprotect_freshness(env, read_plist, file_date)),
+                              ("MAC-SECURITY-RESPONSES", _SECRESP_TITLE, lambda: _security_responses(read_defaults))):
+        try:
+            out.append(check())
+        except Exception as exc:
+            log.warning("macOS check %s failed: %s", key, exc, exc_info=True)
+            out.append(Check(key=key, title=title, ok=None, detail=f"{type(exc).__name__}: {exc}", error=True))
+    return out
+
+
 # =========================================================================== automatic screen lock
 SCREEN_LOCK_MAX_S = 900  # the CIS and Microsoft security baselines allow at most 15 minutes before the screen locks
 _SL_TITLE = "Screen locks automatically when idle"
@@ -2649,7 +2771,7 @@ LINUX_CHECKS: List[Callable[[AuditEnv], List[Check]]] = [
     check_linux_firewall, check_linux_ssh, check_linux_updates, check_linux_files, check_linux_suid, check_linux_kernel,
     check_screen_lock,
 ]
-MAC_CHECKS: List[Callable[[AuditEnv], List[Check]]] = [check_macos, check_screen_lock]
+MAC_CHECKS: List[Callable[[AuditEnv], List[Check]]] = [check_macos, check_xprotect, check_screen_lock]
 
 
 def run_checks(env: AuditEnv, checks: Sequence[Callable[[AuditEnv], List[Check]]],
@@ -2678,8 +2800,8 @@ class SystemAuditScanner(Scanner):
     name = "system_audit"
     title = "System hardening audit"
     description = ("Checks antivirus, firewall, updates, UAC, encryption, RDP/SMB exposure, credential hygiene, "
-                   "Office macros, OS end-of-support, Linux kernel hardening and the automatic screen lock "
-                   "(CIS / Secure Score style).")
+                   "Office macros, OS end-of-support, Linux kernel hardening, macOS XProtect updates and the automatic "
+                   "screen lock (CIS / Secure Score style).")
     platforms = ("windows", "linux", "darwin")
     needs_admin_for_full_results = True
 

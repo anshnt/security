@@ -755,6 +755,7 @@ def test_collect_all_includes_the_new_collectors(unix_tree, monkeypatch):
     assert not {"periodic", "emond", "auth_plugin", "login_hook"} & {e["type"] for e in linux}
     monkeypatch.setattr(ps, "IS_MAC", True)
     monkeypatch.setattr(ps, "collect_launchd", lambda dirs=None: [])
+    monkeypatch.setattr(ps, "collect_btm", lambda paths, notes=None, dump=None: [])
     mac = ps.collect_all(errors, linux_paths=unix_tree)
     assert errors == [] and {"periodic", "emond", "auth_plugin", "login_hook"} <= {e["type"] for e in mac}
     assert {e["type"] for e in mac} <= set(ps.TYPE_INFO)
@@ -766,6 +767,7 @@ def test_scanner_reports_the_new_entry_types(monkeypatch, unix_tree, ctx):
     populate_everything(unix_tree)
     monkeypatch.setattr(ps, "IS_MAC", True)
     monkeypatch.setattr(ps, "collect_launchd", lambda dirs=None: [])
+    monkeypatch.setattr(ps, "collect_btm", lambda paths, notes=None, dump=None: [])
     monkeypatch.setattr(ps, "LinuxPaths", lambda: unix_tree)
     out = list(ps.PersistenceScanner().run(ctx))
     findings = [o for o in out if isinstance(o, Finding)]

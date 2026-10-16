@@ -1065,7 +1065,7 @@ def test_hidden_tasks_check_statuses():
 
 def _isolate_windows_run(monkeypatch):
     monkeypatch.setattr(ps, "IS_WINDOWS", True)
-    monkeypatch.setattr(ps, "collect_all", lambda errors=None, linux_paths=None: [])
+    monkeypatch.setattr(ps, "collect_all", lambda errors=None, linux_paths=None, notes=None: [])
 
 
 def test_scanner_reports_hidden_tasks_on_windows(monkeypatch, ctx):

@@ -3,6 +3,7 @@
 import datetime as dt
 import os
 import stat
+import sys
 
 import pytest
 
@@ -589,6 +590,231 @@ def test_macos_checks(monkeypatch):
     assert all(x.ok for x in sa.check_macos(env()))
     monkeypatch.setattr(sa, "run", lambda cmd, timeout=60, input_text=None: (-1, "", "nf"))
     assert all(x.ok is None for x in sa.check_macos(env()))
+
+
+# ---------------------------------------------------------------- macOS: XProtect definitions and security responses
+XP_NEW = "/Library/Apple/System/Library/CoreServices/XProtect.bundle"
+XP_OLD = "/System/Library/CoreServices/XProtect.bundle"
+XP_REMEDIATOR = "/Library/Apple/System/Library/CoreServices/XProtect.app"
+SOFTWARE_UPDATE = "/Library/Preferences/com.apple.SoftwareUpdate"
+DAY = dt.timedelta(days=1)
+
+DEFAULTS_ON = """{
+    AutomaticCheckEnabled = 1;
+    AutomaticDownload = 1;
+    ConfigDataInstall = 1;
+    CriticalUpdateInstall = 1;
+    LastFullSuccessfulDate = "2026-10-10 09:12:44 +0000";
+}
+"""
+NOT_SET = "The domain/default pair of (/Library/Preferences/com.apple.SoftwareUpdate, ConfigDataInstall) does not exist\n"
+NO_DOMAIN = "The domain /Library/Preferences/com.apple.SoftwareUpdate does not exist\n"
+
+
+class FakeMac:
+    """Plists and modification dates by path, and the output of ``defaults read``; records what was asked for."""
+
+    def __init__(self, plists=None, dates=None, defaults=DEFAULTS_ON):
+        self.plists, self.dates, self.defaults, self.asked = plists or {}, dates or {}, defaults, []
+
+    def read_plist(self, path):
+        self.asked.append(path)
+        value = self.plists.get(path)
+        if isinstance(value, Exception):
+            raise value
+        return value
+
+    def file_date(self, path):
+        return self.dates.get(path)
+
+    def read_defaults(self, cmd):
+        self.asked.append(list(cmd))
+        return self.defaults
+
+    def check(self, today=TODAY):
+        env_ = sa.AuditEnv(today=today)
+        return {c.key: c for c in sa.check_xprotect(env_, self.read_plist, self.file_date, self.read_defaults)}
+
+
+def xprotect_mac(age_days=10, version="5300", bundle=XP_NEW, data=("XProtect.yara", "XProtect.meta.plist"), remediator="145",
+                 **kw):
+    info = {"CFBundleShortVersionString": version, "CFBundleIdentifier": "com.apple.XProtect"}
+    plists = {f"{bundle}/Contents/Info.plist": info}
+    if remediator:
+        plists[f"{XP_REMEDIATOR}/Contents/Info.plist"] = {"CFBundleShortVersionString": remediator}
+    dates = {f"{bundle}/Contents/Resources/{name}": TODAY - age_days * DAY for name in data}
+    return FakeMac(plists, dates, **kw)
+
+
+def test_xprotect_checks_are_in_the_macos_audit():
+    assert sa.check_xprotect in sa.MAC_CHECKS and sa.MAC_CHECKS.index(sa.check_macos) < sa.MAC_CHECKS.index(sa.check_xprotect)
+    assert sa.XPROTECT_MAX_AGE_DAYS == 60
+    c = xprotect_mac().check()
+    assert list(c) == ["MAC-XPROTECT", "MAC-SECURITY-RESPONSES"]
+    assert [x.check_id for x in c.values()] == ["AEG-AUDIT-MAC-XPROTECT", "AEG-AUDIT-MAC-SECURITY-RESPONSES"]
+
+
+def test_current_xprotect_definitions_pass():
+    mac = xprotect_mac(age_days=10)
+    c = mac.check()["MAC-XPROTECT"]
+    assert c.ok is True and c.status == CheckStatus.PASS and c.title == "XProtect malware definitions are current"
+    assert c.detail == "XProtect 5300 was updated 10 day(s) ago (2026-10-05); XProtect Remediator 145."
+    assert c.evidence == {"bundle": XP_NEW, "version": "5300", "updated": "2026-10-05", "age_days": 10,
+                          "remediator_version": "145"}
+    assert c.to_finding() is None
+    assert f"{XP_NEW}/Contents/Info.plist" in mac.asked and f"{XP_REMEDIATOR}/Contents/Info.plist" in mac.asked
+    assert not [a for a in mac.asked if str(a).startswith(XP_OLD)]  # the updated copy exists, the sealed one is not consulted
+    assert "XProtect Remediator is not installed" in xprotect_mac(remediator=None).check()["MAC-XPROTECT"].detail
+
+
+@pytest.mark.parametrize("age,ok", [(0, True), (59, True), (60, True), (61, False), (400, False)])
+def test_xprotect_definitions_older_than_60_days_are_a_low_finding(age, ok):
+    c = xprotect_mac(age_days=age).check()["MAC-XPROTECT"]
+    assert c.ok is ok
+    if ok:
+        return
+    f = c.to_finding()
+    assert c.status == CheckStatus.WARN and f.severity == Severity.LOW and f.rule_id == "AEG-AUDIT-MAC-XPROTECT"
+    assert f.title == f"XProtect definitions have not been updated for {age} days"
+    assert "Install Security Responses and system files" in f.recommendation and "Software Update" in f.recommendation
+    assert f.mitre == ["T1685"] and f.remediation is None and f.location == XP_NEW
+    assert f.evidence["age_days"] == age and f.evidence["version"] == "5300" and f.evidence["remediator_version"] == "145"
+    assert "5300" in f.description and (TODAY - age * DAY).isoformat() in f.description
+
+
+def test_the_newest_definition_file_counts():
+    mac = xprotect_mac(age_days=200)
+    mac.dates[f"{XP_NEW}/Contents/Resources/XProtect.meta.plist"] = TODAY - 3 * DAY
+    c = mac.check()["MAC-XPROTECT"]
+    assert c.ok is True and c.evidence["age_days"] == 3
+    only_yara = xprotect_mac(age_days=7, data=("XProtect.yara",)).check()["MAC-XPROTECT"]
+    assert only_yara.ok is True and only_yara.evidence["age_days"] == 7
+    plist_only = xprotect_mac(age_days=90, data=("XProtect.plist",)).check()["MAC-XPROTECT"]
+    assert plist_only.ok is False and plist_only.evidence["age_days"] == 90
+
+
+def test_without_definition_files_the_info_plist_date_is_used():
+    mac = xprotect_mac(age_days=5, data=())
+    assert mac.check()["MAC-XPROTECT"].status == CheckStatus.SKIP  # nothing carries a date
+    mac.dates[f"{XP_NEW}/Contents/Info.plist"] = TODAY - 80 * DAY
+    c = mac.check()["MAC-XPROTECT"]
+    assert c.ok is False and c.evidence["age_days"] == 80
+
+
+def test_older_macos_keeps_xprotect_under_system():
+    c = xprotect_mac(bundle=XP_OLD, version="2169", age_days=20, remediator=None).check()["MAC-XPROTECT"]
+    assert c.ok is True and c.evidence["bundle"] == XP_OLD and c.evidence["version"] == "2169"
+    both = xprotect_mac(bundle=XP_NEW, age_days=4)
+    both.plists[f"{XP_OLD}/Contents/Info.plist"] = {"CFBundleShortVersionString": "2100"}
+    both.dates[f"{XP_OLD}/Contents/Resources/XProtect.meta.plist"] = dt.date(2020, 1, 1)
+    assert both.check()["MAC-XPROTECT"].evidence["bundle"] == XP_NEW  # macOS 13+ keeps a stale copy in the sealed system volume
+
+
+def test_version_falls_back_to_the_bundle_version():
+    mac = xprotect_mac()
+    mac.plists[f"{XP_NEW}/Contents/Info.plist"] = {"CFBundleVersion": "5301"}
+    assert mac.check()["MAC-XPROTECT"].evidence["version"] == "5301"
+    mac.plists[f"{XP_NEW}/Contents/Info.plist"] = {}
+    assert mac.check()["MAC-XPROTECT"].evidence["version"] == "unknown"
+
+
+def test_missing_xprotect_is_a_skip_naming_the_paths():
+    c = FakeMac().check()["MAC-XPROTECT"]
+    assert c.ok is None and c.status == CheckStatus.SKIP and c.to_finding() is None
+    assert XP_NEW in c.detail and XP_OLD in c.detail and "not found" in c.detail
+
+
+def test_a_clock_in_the_past_is_not_a_negative_age():
+    c = xprotect_mac(age_days=-3).check()["MAC-XPROTECT"]
+    assert c.ok is True and c.evidence["age_days"] == 0
+
+
+def test_an_unreadable_xprotect_plist_is_an_error_and_does_not_hide_the_other_check():
+    mac = xprotect_mac()
+    mac.plists[f"{XP_NEW}/Contents/Info.plist"] = PermissionError(13, "Operation not permitted")
+    c = mac.check()
+    assert c["MAC-XPROTECT"].status == CheckStatus.ERROR and c["MAC-XPROTECT"].ok is None
+    assert "PermissionError" in c["MAC-XPROTECT"].detail and "Operation not permitted" in c["MAC-XPROTECT"].detail
+    assert c["MAC-SECURITY-RESPONSES"].ok is True
+    mac = xprotect_mac()
+    mac.read_defaults = lambda cmd: (_ for _ in ()).throw(RuntimeError("boom"))
+    c = mac.check()
+    assert c["MAC-XPROTECT"].ok is True and c["MAC-SECURITY-RESPONSES"].status == CheckStatus.ERROR
+    assert c["MAC-SECURITY-RESPONSES"].detail == "RuntimeError: boom"
+
+
+@pytest.mark.parametrize("defaults", [DEFAULTS_ON, NOT_SET, NO_DOMAIN, "{\n    AutomaticCheckEnabled = 1;\n}\n",
+                                      DEFAULTS_ON.replace("ConfigDataInstall = 1", "ConfigDataInstall = true")])
+def test_security_responses_on_or_unset_pass(defaults):
+    mac = xprotect_mac(defaults=defaults)
+    c = mac.check()["MAC-SECURITY-RESPONSES"]
+    assert c.ok is True and c.status == CheckStatus.PASS
+    assert c.title == "Security responses and system files install automatically"
+    assert c.to_finding() is None
+    assert ["defaults", "read", SOFTWARE_UPDATE] in mac.asked and mac.asked.count(["defaults", "read", SOFTWARE_UPDATE]) == 1
+
+
+@pytest.mark.parametrize("key", ["ConfigDataInstall", "CriticalUpdateInstall"])
+def test_security_responses_turned_off_is_medium(key):
+    c = xprotect_mac(defaults=DEFAULTS_ON.replace(f"{key} = 1", f"{key} = 0")).check()["MAC-SECURITY-RESPONSES"]
+    f = c.to_finding()
+    assert c.ok is False and c.status == CheckStatus.FAIL and f.severity == Severity.MEDIUM
+    assert f.rule_id == "AEG-AUDIT-MAC-SECURITY-RESPONSES" and f.title == "Automatic security responses are turned off"
+    assert f.mitre == ["T1685"] and f.location == SOFTWARE_UPDATE and f.remediation is None
+    assert f.evidence == {"ConfigDataInstall": "1" if key != "ConfigDataInstall" else "0",
+                          "CriticalUpdateInstall": "1" if key != "CriticalUpdateInstall" else "0"}
+    assert f"{key} is set to 0" in f.description and "XProtect" in f.description
+    assert "Install Security Responses and system files" in f.recommendation
+    for k in ("ConfigDataInstall", "CriticalUpdateInstall"):
+        assert f"sudo defaults write {SOFTWARE_UPDATE} {k} -bool true" in f.recommendation
+
+
+def test_both_security_response_switches_off():
+    text = DEFAULTS_ON.replace("ConfigDataInstall = 1", "ConfigDataInstall = 0")
+    text = text.replace("CriticalUpdateInstall = 1", "CriticalUpdateInstall = 0")
+    f = xprotect_mac(defaults=text).check()["MAC-SECURITY-RESPONSES"].to_finding()
+    assert "ConfigDataInstall and CriticalUpdateInstall are set to 0" in f.description
+    assert xprotect_mac(defaults=DEFAULTS_ON.replace("ConfigDataInstall = 1", "ConfigDataInstall = false")).check()[
+        "MAC-SECURITY-RESPONSES"].ok is False
+    assert xprotect_mac(defaults=DEFAULTS_ON.replace("ConfigDataInstall = 1", 'ConfigDataInstall = "0"')).check()[
+        "MAC-SECURITY-RESPONSES"].ok is False
+
+
+def test_security_responses_unreadable_is_a_skip():
+    for defaults, why in ((None, "defaults is unavailable"), ("something new from a future macOS", "Unexpected output")):
+        c = xprotect_mac(defaults=defaults).check()["MAC-SECURITY-RESPONSES"]
+        assert c.ok is None and c.status == CheckStatus.SKIP and why in c.detail and c.to_finding() is None
+
+
+def test_xprotect_check_on_this_machine_never_errors():
+    """Real readers: on Linux and Windows there is no XProtect (SKIP); on a Mac the answer is PASS, WARN or FAIL."""
+    items = list(sa.run_checks(sa.AuditEnv(today=dt.date.today()), [sa.check_xprotect]))
+    results = [i for i in items if isinstance(i, CheckResult)]
+    assert [r.check_id for r in results] == ["AEG-AUDIT-MAC-XPROTECT", "AEG-AUDIT-MAC-SECURITY-RESPONSES"]
+    assert not [r for r in results if r.status == CheckStatus.ERROR], [(r.check_id, r.detail) for r in results]
+    if sys.platform != "darwin":
+        assert [r.status for r in results] == [CheckStatus.SKIP, CheckStatus.SKIP]
+
+
+@pytest.mark.skipif(sys.platform != "darwin", reason="reads XProtect and the Software Update preferences of a real Mac")
+def test_xprotect_on_a_real_mac():
+    checks = sa.check_xprotect(sa.AuditEnv(today=dt.date.today()))
+    assert [c.key for c in checks] == ["MAC-XPROTECT", "MAC-SECURITY-RESPONSES"]
+    for c in checks:
+        assert c.status in (CheckStatus.PASS, CheckStatus.WARN, CheckStatus.FAIL, CheckStatus.SKIP), (c.key, c.status, c.detail)
+        assert c.detail
+    xprotect = checks[0]
+    if xprotect.ok is not None:  # found: a version, a date and a plausible age
+        assert xprotect.evidence["version"] and 0 <= xprotect.evidence["age_days"] < 3650
+        assert xprotect.evidence["bundle"] in (XP_NEW, XP_OLD)
+    else:
+        assert XP_NEW in xprotect.detail or "modification time" in xprotect.detail
+    # the plists the check reads really parse
+    for path in (f"{XP_NEW}/Contents/Info.plist", f"{XP_OLD}/Contents/Info.plist", f"{XP_REMEDIATOR}/Contents/Info.plist"):
+        info = sa._read_plist(path)
+        assert info is None or isinstance(info, dict), path
+    assert sa._read_plist("/nonexistent/Info.plist") is None and sa._file_date("/nonexistent/x") is None
+    assert sa._file_date("/etc/hosts") <= dt.date.today()
 
 
 # ---------------------------------------------------------------- real scanner run (Linux CI)

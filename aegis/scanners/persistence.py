@@ -15,7 +15,9 @@ COM hijacks, Office add-ins, Active Setup, logon scripts, screensavers.
 Linux/macOS: cron, systemd, rc.local, shell rc files, ld.so.preload, ssh keys,
 udev, XDG autostart, launchd, PAM rules and modules, update-motd scripts, systemd
 generators and at jobs; macOS also periodic scripts, emond rules, authorization
-plugins and login/logout hooks.
+plugins, login/logout hooks and the login items of Background Task Management
+(``sfltool dumpbtm``, root only). On macOS the code signature of every launch agent,
+daemon and login item program outside the system folders is checked with ``codesign``.
 """
 
 from __future__ import annotations
@@ -25,18 +27,21 @@ import hashlib
 import itertools
 import logging
 import os
+import platform
 import plistlib
 import posixpath
 import re
 import shutil
+import time
 import xml.etree.ElementTree as ET
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable, Dict, Iterable, List, Optional, Sequence, Set, Tuple
+from urllib.parse import unquote
 
 from aegis.core import cmdline as cl
 from aegis.core.models import Category, CheckResult, CheckStatus, Finding, Remediation, Severity
-from aegis.core.platform import (IS_MAC, IS_WINDOWS, as_list, powershell_json, reg_read, reg_subkeys,
+from aegis.core.platform import (IS_MAC, IS_WINDOWS, as_list, is_admin, powershell_json, reg_read, reg_subkeys,
                                  reg_values, run, user_home, windows_dir)
 from aegis.scanners.base import ScanContext, Scanner, register
 
@@ -122,7 +127,7 @@ def startup_approved_enabled(data: Any) -> bool:
 class Reason:
     severity: Severity
     text: str
-    kind: str = "meta"  # cmd | location | missing | random | script | scan | meta | modifier
+    kind: str = "meta"  # cmd | location | missing | random | script | scan | signature | meta | modifier
     mitre: List[str] = field(default_factory=list)
 
     def to_dict(self) -> Dict[str, Any]:
@@ -184,6 +189,17 @@ def is_os_path(path: str) -> bool:
     return path.startswith(("/usr/", "/bin/", "/sbin/", "/lib", "/System/", "/snap/", "/opt/microsoft/"))
 
 
+# macOS folders only Apple writes to (sealed system volume, SIP): programs there are not code-signature checked or judged by name
+MAC_SYSTEM_DIRS = ("/System/", "/usr/bin/", "/usr/sbin/", "/bin/", "/sbin/", "/usr/libexec/")
+# where a normal user (or a process running as one) can drop a program
+_MAC_USER_WRITABLE = re.compile(r"^(?:~/Library/|/Users/[^/]+/Library/|/Users/Shared/|/tmp/|/private/tmp/|/var/tmp/|"
+                                r"/private/var/tmp/|/var/folders/|/private/var/folders/)")
+
+
+def mac_user_writable(path: str) -> bool:
+    return bool(_MAC_USER_WRITABLE.match(path.strip().strip('"')))
+
+
 # --------------------------------------------------------------------------- assessment
 
 TYPE_INFO: Dict[str, Tuple[str, str, List[str]]] = {
@@ -226,10 +242,12 @@ TYPE_INFO: Dict[str, Tuple[str, str, List[str]]] = {
     "emond": ("AEG-PERS-EMOND", "emond rule", ["T1546.014"]),
     "auth_plugin": ("AEG-PERS-AUTHPLUGIN", "macOS authorization plugin", ["T1556"]),
     "login_hook": ("AEG-PERS-LOGINHOOK", "macOS login/logout hook", ["T1037.002"]),
+    "btm": ("AEG-PERS-BTM", "Login item / background task", ["T1547.015"]),
 }
 TEXT_TYPES = {"cron_script", "rc_local", "shell_rc", "motd", "at_job", "periodic"}
+# btm: the Background Task Management database keeps the records of apps that were uninstalled long ago
 NO_MISSING_CHECK = TEXT_TYPES | {"ifeo", "silentprocessexit", "wmi_subscription", "ssh_key", "ld_preload", "winlogon",
-                                 "lsa", "bootexecute", "dll_hook", "com_hijack"}
+                                 "lsa", "bootexecute", "dll_hook", "com_hijack", "btm"}
 NO_RANDOM_CHECK = TEXT_TYPES | {"ssh_key", "ld_preload", "lsa", "winlogon", "bootexecute", "ifeo", "silentprocessexit",
                                 "accessibility", "appinit", "appcert", "cron", "udev"}
 
@@ -320,7 +338,8 @@ def assess_entry(e: Entry, sig_status: Optional[str] = None, scan_findings: Sequ
         reasons.append(Reason(Severity.LOW, f"autostart launches a script host ({host})", "script", ["T1059.005"]))
 
     # 4. random-looking names
-    trusted_dir = bool(path) and (cl.is_in_windir(path) or cl.is_in_program_files(path))
+    trusted_dir = bool(path) and (cl.is_in_windir(path) or cl.is_in_program_files(path)
+                                  or (bool(meta.get("mac")) and path.startswith(MAC_SYSTEM_DIRS)))
     if typ not in NO_RANDOM_CHECK and not microsoft and not trusted_dir:
         leaf = name.rsplit("\\", 1)[-1] if typ == "scheduled_task" else name
         cands = [cl.basename(path)] if path else []
@@ -389,6 +408,7 @@ def finding_for_entry(e: Entry, reasons: Sequence[Reason]) -> Optional[Finding]:
     if sev <= Severity.INFO:
         return None
     rule, label, mitre = TYPE_INFO.get(e["type"], ("AEG-PERS-GENERIC", "Autostart entry", []))
+    mitre = list(e.get("meta", {}).get("mitre") or mitre)  # an entry knows better than its type (a btm agent is not a login item)
     real = sorted((r for r in reasons if r.severity > Severity.INFO), key=lambda r: -int(r.severity))
     mods = [r.text for r in reasons if r.kind == "modifier"]
     all_mitre = list(dict.fromkeys(mitre + [m for r in real for m in r.mitre]))
@@ -409,7 +429,9 @@ def finding_for_entry(e: Entry, reasons: Sequence[Reason]) -> Optional[Finding]:
         sev, cat, desc, display_location(e),
         {"type": e["type"], "name": e["name"], "command": (e.get("command") or "")[:1000], "path": e.get("path", ""),
          "location": e["location"], "reasons": [r.to_dict() for r in real], "enabled": e.get("enabled", True),
-         **{k: v for k, v in e.get("meta", {}).items() if k in ("author", "hidden", "run_level", "user", "triggers", "start", "svc_type", "filter_query")}},
+         **{k: v for k, v in e.get("meta", {}).items()
+            if k in ("author", "hidden", "run_level", "user", "triggers", "start", "svc_type", "filter_query", "item_type",
+                     "developer", "team_id", "identifier", "disposition", "signer", "signature")}},
         rec, rem, scanner="persistence", mitre=all_mitre)
 
 
@@ -2161,6 +2183,14 @@ def launchd_dirs() -> List[Path]:
     return dirs
 
 
+def launchd_program(args: Sequence[str]) -> Tuple[str, str]:
+    """(command line, target) of a launchd job's program arguments; the target is the script when an interpreter runs one."""
+    path = args[0]
+    if _stem(path) in _INTERPRETERS and len(args) > 1 and not args[1].startswith("-"):
+        path = args[1]
+    return _join_args(args), path
+
+
 def collect_launchd(dirs: Optional[Sequence[Path]] = None) -> List[Entry]:
     out = []
     for d in (dirs if dirs is not None else launchd_dirs()):
@@ -2177,10 +2207,7 @@ def collect_launchd(dirs: Optional[Sequence[Path]] = None) -> List[Entry]:
             args = info["args"]
             if not args:
                 continue
-            command = " ".join(f'"{a}"' if " " in a else a for a in args)
-            path = args[0]
-            if _stem(path) in _INTERPRETERS and len(args) > 1 and not args[1].startswith("-"):
-                path = args[1]
+            command, path = launchd_program(args)
             out.append(make_entry("launchd", str(d), f.name, command, path=path, enabled=not info["disabled"], mac=True,
                                   label=info["label"]))
     return out
@@ -2301,6 +2328,440 @@ def collect_login_hooks(paths: LinuxPaths) -> List[Entry]:
     return out
 
 
+# --------------------------------------------------------------------------- macOS: login items (Background Task Management)
+
+BTM_TIMEOUT = 30
+MAX_BTM_BYTES = 8 * 1024 * 1024
+MAX_BTM_RECORDS = 3000
+BTM_JUDGED = ("login item", "agent", "daemon")  # app and developer records only group the items an app registers
+BTM_MITRE = {"login item": ["T1547.015"], "agent": ["T1543.001"], "daemon": ["T1543.004"], "app": ["T1547.015"],
+             "developer": ["T1547.015"], "unknown": ["T1547.015"]}
+
+_BTM_UID = re.compile(r"^\s*Records\s+for\s+UID\s+(-?\d+)", re.I)
+_BTM_ITEM = re.compile(r"^\s*#\d+:\s*$")
+_BTM_EMBEDDED = re.compile(r"^\s*#\d+:\s*(\S.*)$")
+_BTM_FIELD = re.compile(r"^\s*([A-Za-z][A-Za-z0-9 ./()-]{0,40}?):(?:\s+(\S.*?))?\s*$")
+_BTM_KEYS = {"uuid": "uuid", "name": "name", "developer name": "developer", "team identifier": "team_id", "type": "type",
+             "disposition": "disposition", "identifier": "identifier", "url": "url", "executable path": "executable",
+             "parent identifier": "parent"}
+_BTM_NONE = {"", "(null)", "null", "none", "unknown", "unknown developer", "n/a", "-"}
+_BTM_ID_PREFIX = re.compile(r"^\d+\.")  # legacy items are identified as "<type code>.<launchd label>", e.g. 16.com.vendor.daemon
+
+
+@dataclass
+class BtmRecord:
+    """One item of ``sfltool dumpbtm``. A value the dump does not have (or prints as '(null)') is ''."""
+
+    uid: str = ""
+    uuid: str = ""
+    name: str = ""
+    developer: str = ""
+    team_id: str = ""
+    type_text: str = ""
+    kind: str = "unknown"  # login item | agent | daemon | app | developer | unknown
+    disposition: str = ""
+    enabled: Optional[bool] = None  # None: the dump does not say
+    allowed: Optional[bool] = None
+    visible: Optional[bool] = None
+    identifier: str = ""
+    url: str = ""
+    executable: str = ""
+    parent: str = ""
+    embedded: List[str] = field(default_factory=list)
+
+
+def parse_btm_disposition(text: str) -> Tuple[Optional[bool], Optional[bool], Optional[bool]]:
+    """(enabled, allowed, visible) of ``[enabled, allowed, visible, notified] (0xf)``. The words win; without them the bits
+    (enabled 0x1, allowed 0x2, visible 0x4, notified 0x8) do; None when the text says neither."""
+    m = re.search(r"\[([^\]]*)\]", text)
+    words = {w.strip().lower() for w in m.group(1).split(",")} if m else set()
+    h = re.search(r"\(0x([0-9a-fA-F]+)\)", text)
+    bits = int(h.group(1), 16) if h else None
+
+    def flag(on: str, off: str, bit: int) -> Optional[bool]:
+        if on in words:
+            return True
+        if off in words:
+            return False
+        return None if bits is None else bool(bits & bit)
+
+    return flag("enabled", "disabled", 0x1), flag("allowed", "disallowed", 0x2), flag("visible", "hidden", 0x4)
+
+
+def btm_kind(type_text: str, url: str = "") -> str:
+    """"login item", "agent", "daemon", "app", "developer" or "unknown" from ``login item (0x4)``, ``legacy daemon (0x10010)``,
+    ``legacy agent/daemon`` (the folder of the plist decides) ... Falls back to the type bits when the words are new."""
+    t = type_text.lower()
+    if "developer" in t:
+        return "developer"
+    if "login item" in t:
+        return "login item"
+    if "daemon" in t and "agent" in t:
+        return "daemon" if "/launchdaemons/" in url.lower() else "agent"
+    if "daemon" in t:
+        return "daemon"
+    if "agent" in t:
+        return "agent"
+    if re.search(r"\bapp\b", t):
+        return "app"
+    m = re.search(r"\(0x([0-9a-f]+)\)", t)
+    bits = int(m.group(1), 16) if m else 0
+    return next((kind for bit, kind in ((0x20, "developer"), (0x10, "daemon"), (0x8, "agent"), (0x4, "login item"), (0x2, "app"))
+                 if bits & bit), "unknown")
+
+
+def parse_btm_dump(text: str) -> List[BtmRecord]:
+    """The items of ``sfltool dumpbtm``: ``Records for UID <n> : <uuid>`` headers, each followed by ``#<n>:`` items made of
+    ``Key: value`` lines. Unknown keys and lines are ignored; ``#<n>: <identifier>`` lines inside an item are embedded items."""
+    raw: List[Tuple[str, Dict[str, str], List[str]]] = []
+    uid = ""
+    cur: Optional[Tuple[str, Dict[str, str], List[str]]] = None
+    for line in text.splitlines():
+        m = _BTM_UID.match(line)
+        if m:
+            uid, cur = m.group(1), None
+        elif _BTM_ITEM.match(line):
+            cur = (uid, {}, [])
+            raw.append(cur)
+            if len(raw) >= MAX_BTM_RECORDS:
+                break
+        elif cur is not None:
+            m = _BTM_EMBEDDED.match(line)
+            if m:
+                cur[2].append(m.group(1).strip())
+                continue
+            m = _BTM_FIELD.match(line)
+            key = _BTM_KEYS.get(m.group(1).strip().lower()) if m else None
+            if m and key and key not in cur[1]:
+                cur[1][key] = (m.group(2) or "").strip()
+    out: List[BtmRecord] = []
+    for uid, fields, embedded in raw:
+        f = {k: ("" if v.lower() in _BTM_NONE else v) for k, v in fields.items()}
+        rec = BtmRecord(uid=uid, uuid=f.get("uuid", ""), name=f.get("name", ""), developer=f.get("developer", ""),
+                        team_id=f.get("team_id", ""), type_text=f.get("type", ""), disposition=f.get("disposition", ""),
+                        identifier=f.get("identifier", ""), url=f.get("url", ""), executable=f.get("executable", ""),
+                        parent=f.get("parent", ""), embedded=embedded)
+        rec.kind = btm_kind(rec.type_text, rec.url)
+        rec.enabled, rec.allowed, rec.visible = parse_btm_disposition(rec.disposition)
+        out.append(rec)
+    return out
+
+
+def btm_is_apple(rec: BtmRecord, *paths: str) -> bool:
+    """Apple's own item: a com.apple. identifier (or parent app), Apple as the developer or Apple's own signing identity, or
+    a file in /System (only Apple can write there). Spoofing the label alone does not hide a program from the path checks."""
+    return (_BTM_ID_PREFIX.sub("", rec.identifier).startswith("com.apple.")
+            or _BTM_ID_PREFIX.sub("", rec.parent).startswith("com.apple.")
+            or rec.team_id.lower() in ("apple", "software signing")
+            or rec.developer.lower() in ("apple", "apple inc.", "apple inc")
+            or any(p.startswith("/System/") for p in paths))
+
+
+def _btm_path(text: str) -> str:
+    """The local path of a ``file://`` URL (percent-decoded, no trailing slash) or of an absolute path; '' for anything else."""
+    t = text.strip()
+    if t.lower().startswith("file://"):
+        t = unquote(t[7:])
+        if t.lower().startswith("localhost/"):
+            t = t[9:]
+    return (t.rstrip("/") or "/") if t.startswith("/") else ""
+
+
+def btm_item_path(rec: BtmRecord, by_ident: Dict[str, BtmRecord], depth: int = 0) -> str:
+    """Where the item lives: its URL, or a URL relative to the app that holds it (the record named as its parent)."""
+    if rec.url.lower().startswith("file://") or rec.url.startswith("/"):
+        return _btm_path(rec.url)
+    parent = (by_ident.get(rec.parent) or by_ident.get(_BTM_ID_PREFIX.sub("", rec.parent))) if rec.parent else None
+    if rec.url and parent is not None and parent is not rec and depth < 4:
+        base = btm_item_path(parent, by_ident, depth + 1)
+        return f"{base}/{unquote(rec.url).strip('/')}" if base else ""
+    return ""
+
+
+def btm_program(rec: BtmRecord, by_ident: Dict[str, BtmRecord], paths: LinuxPaths) -> Tuple[str, str]:
+    """(command, target) of a record: its Executable Path, else the program its launchd plist starts, else the item itself
+    (an app or helper bundle). A plist that cannot be read has no target: the plist is not the program."""
+    exe = _btm_path(rec.executable)
+    if exe:
+        return _join_args([exe]), exe
+    item = btm_item_path(rec, by_ident)
+    if item.endswith(".plist"):
+        try:
+            args = parse_launchd_plist(paths.at(item).read_bytes())["args"]
+        except Exception as exc:
+            log.debug("bad plist %s: %s", item, exc)
+            args = []
+        return launchd_program(args) if args else (_join_args([item]), "")
+    return (_join_args([item]) if item else ""), item
+
+
+def btm_reasons(rec: BtmRecord, apple: bool) -> List[Dict[str, Any]]:
+    """What the record itself gives away about an autostart item: no developer the system can identify, or a program that is
+    allowed to run in the background but hidden from the user's list. Apple's own items are never judged this way."""
+    if apple or rec.kind not in BTM_JUDGED:
+        return []
+    mitre = BTM_MITRE[rec.kind]
+    out = []
+    if not rec.team_id:
+        out.append(meta_reason(Severity.LOW, "not signed by an identified developer: the item has no Team Identifier", mitre,
+                               "signature"))
+    if rec.enabled and rec.allowed and rec.visible is False:
+        out.append(meta_reason(Severity.LOW, "hidden from System Settings > Login Items: it is allowed to run in the background "
+                                             "without being listed there", mitre))
+    return out
+
+
+BTM_DB_DIR = Path("/private/var/db/com.apple.backgroundtaskmanagement")
+_BTM_CACHE: Dict[str, Any] = {}
+
+
+def _btm_db_stamp() -> Optional[Tuple[Tuple[str, int, int], ...]]:
+    try:
+        return tuple(sorted((p.name, p.stat().st_size, p.stat().st_mtime_ns) for p in BTM_DB_DIR.iterdir()))
+    except OSError:
+        return None
+
+
+def cached_btm_dump() -> Tuple[Optional[str], str]:
+    """read_btm_dump, run again only when the Background Task Management database changed: the real-time persistence guard
+    collects every 30 seconds and the dump takes a second or more."""
+    stamp = _btm_db_stamp()
+    if stamp is not None and _BTM_CACHE.get("stamp") == stamp:
+        return _BTM_CACHE["result"]
+    result = read_btm_dump()
+    if stamp is not None and result[0] is not None:
+        _BTM_CACHE.update(stamp=stamp, result=result)
+    return result
+
+
+def read_btm_dump(admin: Optional[bool] = None, runner: Optional[Callable[..., Tuple[int, str, str]]] = None,
+                  version: Optional[str] = None) -> Tuple[Optional[str], str]:
+    """(dump, "") from ``sfltool dumpbtm``, or (None, why it was skipped): the command needs root and macOS 13 or newer.
+    Any other failure as root raises, so it is reported as an error and not as a quiet gap."""
+    if not (is_admin() if admin is None else admin):
+        return None, "login items (Background Task Management) were not read: sfltool dumpbtm needs root, run Aegis with sudo"
+    ver = platform.mac_ver()[0] if version is None else version
+    m = re.match(r"(\d+)", ver)
+    if m and int(m.group(1)) < 13:
+        return None, f"login items (Background Task Management) were not read: macOS {ver} has no sfltool dumpbtm (needs 13)"
+    rc, out, err = (runner or run)(["sfltool", "dumpbtm"], timeout=BTM_TIMEOUT)
+    if rc != 0:
+        if err.startswith("not found"):
+            return None, "login items (Background Task Management) were not read: sfltool is not installed"
+        raise RuntimeError(f"sfltool dumpbtm failed (exit {rc}): {(err or out).strip()[:300]}")
+    return out[:MAX_BTM_BYTES], ""
+
+
+def collect_btm(paths: LinuxPaths, notes: Optional[List[str]] = None,
+                dump: Optional[Callable[[], Tuple[Optional[str], str]]] = None) -> List[Entry]:
+    """Login items and background tasks (macOS 13+, ``sfltool dumpbtm``, root only): every record of the dump is an entry.
+    When the dump cannot be read the reason goes to *notes* and nothing is returned; a dump that is read but not
+    understood raises. Records of an identified developer or of Apple pass; see btm_reasons for what is judged."""
+    text, why = (dump or cached_btm_dump)()
+    if text is None:
+        if notes is not None:
+            notes.append(why)
+        return []
+    records = parse_btm_dump(text)
+    if not records and not any(_BTM_UID.match(line) for line in text.splitlines()):
+        raise ValueError(f"sfltool dumpbtm printed {len(text)} bytes without a 'Records for UID' section: output not recognised")
+    if not records and re.search(r"^\s*UUID:", text, re.M):
+        raise ValueError(f"sfltool dumpbtm printed {len(text)} bytes with items but no '#<n>:' record could be read: "
+                         "output not recognised")
+    by_ident = {r.identifier: r for r in records if r.identifier}
+    for r in records:
+        if r.identifier:
+            by_ident.setdefault(_BTM_ID_PREFIX.sub("", r.identifier), r)
+    out: List[Entry] = []
+    seen: Dict[Tuple[str, str], int] = {}
+    for rec in records:
+        command, path = btm_program(rec, by_ident, paths)
+        apple = btm_is_apple(rec, path, btm_item_path(rec, by_ident))
+        location = f"Background Task Management (UID {rec.uid}, {rec.kind})"
+        name = rec.name or _BTM_ID_PREFIX.sub("", rec.identifier) or rec.uuid
+        key = (location, name)
+        seen[key] = seen.get(key, 0) + 1
+        plist = btm_item_path(rec, by_ident) if "legacy" in rec.type_text.lower() else ""
+        out.append(make_entry("btm", location, name if seen[key] == 1 else f"{name} #{seen[key]}", command, path=path,
+                              plist=plist if plist.endswith(".plist") else "",
+                              enabled=rec.enabled is not False and rec.allowed is not False, mac=True, apple=apple, uid=rec.uid,
+                              uuid=rec.uuid, identifier=rec.identifier, item_type=rec.kind, developer=rec.developer,
+                              team_id=rec.team_id, disposition=rec.disposition, visible=rec.visible, url=rec.url,
+                              parent=rec.parent, mitre=BTM_MITRE[rec.kind], reasons=btm_reasons(rec, apple)))
+    return out
+
+
+# --------------------------------------------------------------------------- macOS: code signatures of autostart programs
+
+MAX_CODESIGN_BINARIES = 60
+CODESIGN_TIMEOUT = 10
+CODESIGN_BUDGET_S = 120.0  # wall clock for all the codesign runs of one scan
+_MACHO_MAGIC = {b"\xfe\xed\xfa\xce", b"\xfe\xed\xfa\xcf", b"\xce\xfa\xed\xfe", b"\xcf\xfa\xed\xfe",
+                b"\xca\xfe\xba\xbe", b"\xbe\xba\xfe\xca", b"\xca\xfe\xba\xbf", b"\xbf\xba\xfe\xca"}  # thin, fat and fat64
+_CODESIGN_INVALID = ("sealed resource", "invalid signature", "have been modified", "failed strict validation",
+                     "invalid or unsupported format", "file modified")
+_APPLE_SIGNERS = ("Software Signing", "Apple Mac OS Application Signing")  # Apple's own identities, only Apple holds them
+
+
+@dataclass
+class CodeSignature:
+    """What ``codesign`` says about one program. status: signed | adhoc | unsigned | invalid | unknown | script (a script
+    cannot carry a signature, so codesign is not run on it)."""
+
+    status: str
+    signer: str = ""  # first Authority, "ad-hoc" or "unsigned"
+    team_id: str = ""
+    identifier: str = ""
+    hardened: bool = False  # hardened runtime
+    detail: str = ""
+
+    @property
+    def apple(self) -> bool:
+        return self.signer in _APPLE_SIGNERS
+
+
+def parse_codesign_display(text: str) -> Dict[str, Any]:
+    """The facts in the stderr of ``codesign -dv --verbose=2``: Authority lines, TeamIdentifier, Identifier, ad-hoc and the
+    hardened runtime flag (``CodeDirectory v=20500 size=... flags=0x10000(runtime) ...``)."""
+    flags: List[str] = []
+    for m in re.finditer(r"^CodeDirectory\b.*?\bflags=0x[0-9a-fA-F]+\(([^)]*)\)", text, re.M):
+        flags += [f.strip() for f in m.group(1).split(",")]
+    team = re.search(r"^TeamIdentifier=(.*)$", text, re.M)
+    ident = re.search(r"^Identifier=(.*)$", text, re.M)
+    team_id = team.group(1).strip() if team else ""
+    return {"authorities": [a.strip() for a in re.findall(r"^Authority=(.*)$", text, re.M)],
+            "team_id": "" if team_id.lower() == "not set" else team_id, "identifier": ident.group(1).strip() if ident else "",
+            "adhoc": "adhoc" in flags or bool(re.search(r"^Signature=adhoc\b", text, re.M)), "runtime": "runtime" in flags}
+
+
+def parse_codesign_verify(rc: int, text: str) -> Tuple[str, str]:
+    """(valid | unsigned | invalid | unknown, detail) from the exit code and output of ``codesign --verify --strict``."""
+    first = next((ln.strip() for ln in text.splitlines() if ln.strip()), "")
+    detail = first.split(": ", 1)[1] if first.startswith("/") and ": " in first else first  # codesign leads with the path
+    low = text.lower()
+    if rc == 0:
+        return "valid", ""
+    if "not signed at all" in low:
+        return "unsigned", detail
+    if rc > 0 and any(p in low for p in _CODESIGN_INVALID):
+        return "invalid", detail
+    return "unknown", detail or f"codesign exited with {rc}"
+
+
+def inspect_signature(path: str, runner: Optional[Callable[..., Tuple[int, str, str]]] = None) -> CodeSignature:
+    """Verify (``codesign --verify --strict``) and describe (``codesign -dv --verbose=2``) one program or bundle: two runs,
+    one when the verification already says it is not signed."""
+    runner = runner or run
+    rc, out, err = runner(["codesign", "--verify", "--strict", path], timeout=CODESIGN_TIMEOUT)
+    status, detail = parse_codesign_verify(rc, out + err)
+    if status == "unsigned":
+        return CodeSignature("unsigned", "unsigned", detail=detail)
+    if status == "unknown" and rc < 0:
+        return CodeSignature("unknown", detail=detail)
+    rc, out, err = runner(["codesign", "-dv", "--verbose=2", path], timeout=CODESIGN_TIMEOUT)
+    text = out + err  # codesign describes on stderr
+    if rc != 0:
+        shown, why = parse_codesign_verify(rc, text)
+        return CodeSignature("unsigned", "unsigned", detail=why) if shown == "unsigned" else CodeSignature("unknown", detail=why)
+    d = parse_codesign_display(text)
+    signer = "ad-hoc" if d["adhoc"] else (d["authorities"][0] if d["authorities"] else "")
+    if status in ("invalid", "unknown"):
+        return CodeSignature(status, signer, d["team_id"], d["identifier"], d["runtime"], detail)
+    return CodeSignature("adhoc" if d["adhoc"] else "signed", signer, d["team_id"], d["identifier"], d["runtime"])
+
+
+def codesign_target_kind(path: str) -> str:
+    """"missing", "code" (a bundle, or a file with a Mach-O header) or "script" (any other file: scripts cannot be signed)."""
+    try:
+        if os.path.isdir(path):
+            return "code"
+        with open(path, "rb") as fh:
+            return "code" if fh.read(4) in _MACHO_MAGIC else "script"
+    except PermissionError:
+        return "code"  # codesign may still be allowed to read it
+    except OSError:
+        return "missing"
+
+
+def review_signatures(entries: Sequence[Entry], runner: Optional[Callable[..., Tuple[int, str, str]]] = None,
+                      kind: Optional[Callable[[str], str]] = None, limit: int = MAX_CODESIGN_BINARIES,
+                      clock: Callable[[], float] = time.monotonic) -> Tuple[Dict[str, CodeSignature], List[str]]:
+    """Code signature of the program of every active launchd and btm entry outside the system folders. codesign runs for at
+    most *limit* programs (user-writable places first) and for CODESIGN_BUDGET_S seconds; a script (the target of an
+    interpreter) is only told apart. Returns ({program: signature}, notes on what could not be checked)."""
+    kind = kind or codesign_target_kind
+    candidates = dict.fromkeys(
+        e["path"] for e in entries if e["type"] in ("launchd", "btm") and e.get("enabled", True)
+        and (e.get("path") or "").startswith("/") and not e["path"].startswith(MAC_SYSTEM_DIRS))
+    sigs: Dict[str, CodeSignature] = {}
+    unknown: List[str] = []
+    checked = left = 0
+    started = clock()
+    out_of_time = False
+    for path in sorted(candidates, key=lambda p: (not mac_user_writable(p), p)):
+        what = kind(path)
+        if what == "script":
+            sigs[path] = CodeSignature("script", detail="a script has no code signature")
+        elif what == "code":
+            out_of_time = out_of_time or clock() - started > CODESIGN_BUDGET_S
+            if checked >= limit or out_of_time:
+                left += 1
+                continue
+            sigs[path] = inspect_signature(path, runner)
+            checked += 1
+            if sigs[path].status == "unknown":
+                unknown.append(f"{cl.basename(path)}: {sigs[path].detail}")
+    notes = []
+    if left:
+        notes.append(f"code signatures: {checked} of {checked + left} programs checked, {left} not checked "
+                     f"({'time budget' if out_of_time else f'limit of {limit}'} reached)")
+    if unknown:
+        notes.append(f"code signatures: {len(unknown)} program(s) could not be verified, e.g. {unknown[0][:120]}")
+    return sigs, notes
+
+
+_HOMEBREW = re.compile(r"^(?:/opt/homebrew|/usr/local)/(?:Cellar|opt|Caskroom)/")
+
+
+def signature_reasons(sig: CodeSignature, path: str) -> List[Dict[str, Any]]:
+    """What a program's code signature says against its autostart entry: an invalid signature is MEDIUM, an unsigned or ad-hoc
+    signed program MEDIUM in a user-writable place and LOW elsewhere. Apple and identified developers pass. A script cannot be
+    signed, so it only counts in a user-writable place (and not when the path heuristics already say so)."""
+    writable = mac_user_writable(path)
+    if sig.status == "invalid":
+        return [meta_reason(Severity.MEDIUM, f"invalid code signature: {sig.detail or 'verification failed'}", ["T1553.002"],
+                            "signature")]
+    if sig.status == "adhoc" and _HOMEBREW.match(path):
+        return []  # Homebrew ad-hoc signs every bottle it installs on Apple silicon; that is how it ships
+    if sig.status in ("unsigned", "adhoc"):
+        what = "not code-signed" if sig.status == "unsigned" else "only ad-hoc signed"
+        where = " in a user-writable location" if writable else ""
+        return [meta_reason(Severity.MEDIUM if writable else Severity.LOW, f"autostart program is {what}{where}: {path}",
+                            ["T1553.002"], "signature")]
+    if sig.status == "script" and writable and cl.path_risk(path) <= 0:
+        return [meta_reason(Severity.MEDIUM, f"autostart runs an unsigned script from a user-writable location: {path}",
+                            ["T1059"], "script")]
+    return []
+
+
+def apply_signatures(entries: Sequence[Entry], sigs: Dict[str, CodeSignature]) -> None:
+    """Record each program's signature in its entries (evidence: signature, signer, team_id) and add the reasons it gives."""
+    for e in entries:
+        sig = sigs.get(e.get("path") or "") if e["type"] in ("launchd", "btm") else None
+        if sig is None:
+            continue
+        meta = e["meta"]
+        meta["signature"] = sig.status
+        if sig.status not in ("script", "unknown"):
+            meta["signer"] = sig.signer
+            meta["hardened_runtime"] = sig.hardened
+        if sig.team_id and not meta.get("team_id"):
+            meta["team_id"] = sig.team_id  # a btm record already names the team it was registered with
+        reasons = signature_reasons(sig, e["path"])
+        if reasons:
+            meta["reasons"] = list(meta.get("reasons", [])) + reasons
+
+
 # --------------------------------------------------------------------------- collection
 
 def _safe(collector: Callable[[], List[Entry]], name: str, errors: List[str]) -> List[Entry]:
@@ -2312,7 +2773,9 @@ def _safe(collector: Callable[[], List[Entry]], name: str, errors: List[str]) ->
         return []
 
 
-def collect_all(errors: Optional[List[str]] = None, linux_paths: Optional[LinuxPaths] = None) -> List[Entry]:
+def collect_all(errors: Optional[List[str]] = None, linux_paths: Optional[LinuxPaths] = None,
+                notes: Optional[List[str]] = None) -> List[Entry]:
+    """Every entry on this machine. *errors* collects what failed; *notes* what was left out on purpose (e.g. root-only data)."""
     errors = errors if errors is not None else []
     out: List[Entry] = []
     if IS_WINDOWS:
@@ -2331,11 +2794,20 @@ def collect_all(errors: Optional[List[str]] = None, linux_paths: Optional[LinuxP
                          ("generators", collect_generators), ("at_jobs", collect_at_jobs)):
             out += _safe(lambda fn=fn: fn(lp), name, errors)
         if IS_MAC:
-            out += _safe(collect_launchd, "launchd", errors)
+            launchd = _safe(collect_launchd, "launchd", errors)
+            out += launchd
             for name, fn in (("periodic", collect_periodic), ("emond", collect_emond), ("auth_plugins", collect_auth_plugins),
                              ("login_hooks", collect_login_hooks)):
                 out += _safe(lambda fn=fn: fn(lp), name, errors)
+            out += without_listed_plists(_safe(lambda: collect_btm(lp, notes), "btm", errors), launchd)
     return out
+
+
+def without_listed_plists(btm: List[Entry], launchd: Sequence[Entry]) -> List[Entry]:
+    """BTM entries minus the legacy items whose plist the launchd collector already listed: Background Task Management
+    lists every LaunchAgent / LaunchDaemon plist again, and one item should give one finding, not two."""
+    listed = {os.path.normcase(os.path.join(e["location"], e["name"])) for e in launchd}
+    return [e for e in btm if not (e["meta"].get("plist") and os.path.normcase(e["meta"]["plist"]) in listed)]
 
 
 def collect_entries() -> List[Entry]:
@@ -2363,7 +2835,8 @@ class PersistenceScanner(Scanner):
     name = "persistence"
     title = "Autostart / persistence"
     description = ("Autoruns-style analysis: Run keys, tasks (also hidden ones), services, WMI, IFEO, Winlogon, startup folders, "
-                   "cron, systemd, launchd, PAM, update-motd, systemd generators, at jobs, macOS periodic/emond/login hooks")
+                   "cron, systemd, launchd, PAM, update-motd, systemd generators, at jobs, macOS periodic/emond/login hooks "
+                   "and login items, code signatures of macOS launch agents and daemons")
     platforms = ("windows", "linux", "darwin")
 
     @staticmethod
@@ -2395,13 +2868,24 @@ class PersistenceScanner(Scanner):
         from aegis.scanners.processes import authenticode_batch
 
         errors: List[str] = []
+        notes: List[str] = []
         ctx.report(self.name, "collecting autostart entries")
-        entries = collect_all(errors)
+        entries = collect_all(errors, notes=notes)
         ctx.bump("persistence_entries", len(entries))
         for msg in errors:
             yield CheckResult("AEG-PERS-CHK-COLLECT", "Autostart collection", CheckStatus.ERROR, msg, Category.PERSISTENCE, self.name)
 
         active = [e for e in entries if e.get("enabled", True)]
+        if IS_MAC:
+            ctx.report(self.name, "checking the code signatures of launch agents, daemons and login items")
+            try:
+                mac_sigs, sig_notes = review_signatures(active)
+                apply_signatures(active, mac_sigs)
+                notes += sig_notes
+            except Exception as exc:
+                log.debug("code signature review failed", exc_info=True)
+                yield CheckResult("AEG-PERS-CHK-CODESIGN", "Code signatures of autostart programs", CheckStatus.ERROR,
+                                  f"{type(exc).__name__}: {exc}", Category.PERSISTENCE, self.name)
         # signatures for user-writable targets (one batch)
         sigs: Dict[str, Tuple[str, str]] = {}
         if IS_WINDOWS:
@@ -2465,10 +2949,10 @@ class PersistenceScanner(Scanner):
                 flagged += 1
                 yield f
         yield from file_findings
+        detail = f"{flagged} suspicious of {len(entries)} entries" if flagged else f"{len(entries)} entries reviewed"
         yield CheckResult("AEG-PERS-CHK-AUTOSTART", "No suspicious autostart entries",
                           CheckStatus.FAIL if flagged else CheckStatus.PASS,
-                          f"{flagged} suspicious of {len(entries)} entries" if flagged else f"{len(entries)} entries reviewed",
-                          Category.PERSISTENCE, self.name)
+                          detail + (f" ({'; '.join(notes)})" if notes else ""), Category.PERSISTENCE, self.name)
         if IS_WINDOWS and not ctx.cancelled:
             ctx.report(self.name, "checking the Task Scheduler registry cache")
             yield from self._hidden_tasks(ctx.is_admin, collect_task_cache, hidden_task_findings)

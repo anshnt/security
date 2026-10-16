@@ -22,6 +22,7 @@ be honest, because a security tool that overstates what it does is a risk in its
 | Hidden scheduled tasks (Tarrask: security descriptor removed, `Index` 0), with the command they run | ✅ | 🟡 (Defender for Endpoint 💲) | ❌ | 🟡 EDR 💲 | ❌ (lists only what Task Scheduler shows) | ❌ | ❌ |
 | Linux PAM backdoor / motd / generator persistence (`pam_exec`, `pam_permit`, unpackaged PAM modules, `update-motd.d`, systemd generators, at jobs) | ✅ | 🟡 (Defender for Endpoint 💲) | ❌ | 🟡 EDR 💲 | ❌ | ❌ | ❌ |
 | macOS login hooks, emond rules, periodic scripts, authorization plugins | ✅ | 🟡 (Defender for Endpoint 💲) | 🟡 | 🟡 EDR 💲 | ❌ | ❌ | ❌ |
+| macOS login items (Background Task Management), code-signature check of launch agents/daemons, XProtect freshness | ✅ | 🟡 (Defender for Endpoint 💲) | 🟡 | 🟡 EDR 💲 | ❌ | ❌ | ❌ |
 | Browser extension risk scoring + known-malicious extension IDs | ✅ | ❌ | 🟡 Browser Guard | 🟡 | ❌ | 🟡 | ❌ |
 | Browser hijack detection (search/homepage/policy/proxy/notification spam) | ✅ | ❌ | ✅ | 🟡 | ❌ | ✅ | ❌ |
 | PUP / adware / scareware detection | ✅ | 🟡 (PUA opt-in) | ✅ | ✅ | ❌ | ✅ | ❌ |
