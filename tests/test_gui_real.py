@@ -235,3 +235,40 @@ def test_settings_alert_fields_are_masked_validated_and_testable(gui, monkeypatc
     st.send_test()
     assert "at least one" in st.test_out.cget("text")
     assert not errors, errors
+
+
+def test_tools_app_updates_check_and_upgrade(gui, monkeypatch):
+    from aegis.core import platform
+    from aegis.tools import appupdates
+    from aegis.tools.appupdates import Update
+
+    app, errors = gui
+    tools = app.pages["tools"]
+    app.show("tools")
+    pump(app, 0.2)
+    ups = [Update("Google Chrome", "Google.Chrome", "129.0", "130.0", "winget"),
+           Update("Contoso Widget", "Contoso.Widget", "1.0", "1.1", "winget"),
+           Update("Some Long Na…", "Vendor.Firefox…", "1", "2", "winget")]  # truncated: never targeted
+    monkeypatch.setattr(appupdates, "collect_updates", lambda: ("winget", ups, ""))
+    tools.check_apps()
+    assert pump(app, 15, until=lambda: "update(s) available" in tools.apps_out.get("1.0", "end")), "no result shown"
+    text = tools.apps_out.get("1.0", "end")
+    assert text.index("Google Chrome") < text.index("Contoso Widget") and "(web browser)" in text
+    assert not tools.apps_up_btn.instate(["disabled"])
+
+    calls = []
+    monkeypatch.setattr(platform, "run", lambda cmd, timeout=60, input_text=None: (calls.append(cmd) or (0, "", "")))
+    monkeypatch.setattr(app.messagebox, "askyesno", lambda title, msg: False)
+    tools.upgrade_apps()
+    assert calls == []  # declined
+    monkeypatch.setattr(app.messagebox, "askyesno", lambda title, msg: True)
+    tools.upgrade_apps()
+    assert pump(app, 15, until=lambda: "app(s) updated" in tools.apps_out.get("1.0", "end")), tools.apps_out.get("1.0", "end")
+    assert [c[3] for c in calls] == ["Google.Chrome"]
+    assert "1 of 1 app(s) updated" in tools.apps_out.get("1.0", "end")
+
+    monkeypatch.setattr(appupdates, "collect_updates", lambda: ("", [], "winget (App Installer) is not available"))
+    tools.check_apps()
+    assert pump(app, 15, until=lambda: "not available" in tools.apps_out.get("1.0", "end"))
+    assert tools.apps_up_btn.instate(["disabled"]) and not tools.apps_btn.instate(["disabled"])
+    assert not errors, errors

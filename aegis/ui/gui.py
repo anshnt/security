@@ -1439,6 +1439,24 @@ class ToolsPage(Page):
         self.file_out = app.text_box(t3, height=10)
         self.file_out.pack(fill="both", expand=True)
 
+        # App updates
+        t6 = ttk.Frame(nb, style="Panel.TFrame", padding=18)
+        nb.add(t6, text="App updates")
+        ttk.Label(t6, text="Out-of-date browsers, archivers, PDF readers and runtimes are a common way in for exploits. "
+                           "Lists pending updates from winget, apt, dnf or Homebrew.",
+                  style="Muted.TLabel", wraplength=800, justify="left").pack(anchor="w")
+        r = ttk.Frame(t6, style="Panel.TFrame")
+        r.pack(anchor="w", pady=8)
+        self.apps_btn = ttk.Button(r, text="Check for app updates", style="Accent.TButton", command=self.check_apps)
+        self.apps_btn.pack(side="left")
+        self.apps_up_btn = ttk.Button(r, text="Update high-risk apps", command=self.upgrade_apps)
+        self.apps_up_btn.pack(side="left", padx=8)
+        self.apps_up_btn.state(["disabled"])
+        self.apps_out = app.text_box(t6, height=10)
+        self.apps_out.pack(fill="both", expand=True)
+        self.app_updates: List[Any] = []
+        self.app_source = ""
+
         # Updates
         t4 = ttk.Frame(nb, style="Panel.TFrame", padding=18)
         nb.add(t4, text="Signature update")
@@ -1549,6 +1567,87 @@ class ToolsPage(Page):
             self.app.set_text(self.file_out, parts)
 
         self.app.run_bg(work, done, lambda e: self.app.set_text(self.file_out, [(f"Analysis failed: {e}", "critical")]))
+
+    def check_apps(self) -> None:
+        self.apps_btn.state(["disabled"])
+        self.apps_up_btn.state(["disabled"])
+        self._busy(self.apps_out, "Asking the package manager for pending updates (this can take a minute)...")
+
+        def work() -> tuple:
+            from aegis.tools import appupdates
+
+            return appupdates.collect_updates()
+
+        def done(res: tuple) -> None:
+            from aegis.tools import appupdates
+
+            self.apps_btn.state(["!disabled"])
+            source, updates, problem = res
+            self.app_source, self.app_updates = source, list(updates)
+            if problem:
+                self.app.set_text(self.apps_out, [(problem + "\n", "medium")])
+                return
+            if not updates:
+                self.app.set_text(self.apps_out, [(f"Everything is up to date ({source}).\n", "good")])
+                return
+            risky = [u for u in updates if appupdates.risk_label(u)]
+            parts: List[tuple] = [(f"{len(updates)} update(s) available from {source}", "h"),
+                                  (f" - {len(risky)} for high-risk apps\n\n" if risky else "\n\n", "muted")]
+            for u in sorted(updates, key=lambda x: (appupdates.risk_label(x) is None, x.name.lower())):
+                label = appupdates.risk_label(u)
+                parts += [(f"{u.name}", "medium" if label else None),
+                          (f"   {u.installed or '?'} -> {u.available}" + (f"   ({label})" if label else "") + "\n", "muted")]
+            self.app.set_text(self.apps_out, parts)
+            if any(appupdates.upgrade_command(u) for u in risky):
+                self.apps_up_btn.state(["!disabled"])
+
+        def failed(e: BaseException) -> None:
+            self.apps_btn.state(["!disabled"])
+            self.app.set_text(self.apps_out, [(f"Update check failed: {e}", "critical")])
+
+        self.app.run_bg(work, done, failed)
+
+    def upgrade_apps(self) -> None:
+        from aegis.tools import appupdates
+
+        targets = [u for u in self.app_updates if appupdates.risk_label(u) and appupdates.upgrade_command(u)]
+        if not targets:
+            return
+        names = "\n".join(f"- {u.name} -> {u.available}" for u in targets[:20])
+        if not self.app.messagebox.askyesno("Update apps", f"Install these updates with {self.app_source}?\n\n{names}\n\n"
+                                            "Close the apps first; installers may need administrator approval."):
+            return
+        self.apps_btn.state(["disabled"])
+        self.apps_up_btn.state(["disabled"])
+        lines: List[tuple] = [("Updating...\n", "muted")]
+        self.app.set_text(self.apps_out, lines)
+
+        def progress(text: str, tag: Optional[str]) -> None:
+            lines.append((text, tag))
+            snapshot = list(lines)
+            self.app.ui.post(lambda: self.app.set_text(self.apps_out, snapshot))
+
+        def work() -> int:
+            from aegis.core import platform
+
+            ok = 0
+            for u in targets:
+                progress(f"{u.name} -> {u.available} ... ", None)
+                rc, out, err = platform.run(appupdates.upgrade_command(u), timeout=appupdates.UPGRADE_TIMEOUT_S)
+                ok += rc == 0
+                progress("done\n" if rc == 0 else f"failed (exit {rc}) {(err or out).strip()[-160:]}\n",
+                         "good" if rc == 0 else "critical")
+            return ok
+
+        def done(ok: int) -> None:
+            self.apps_btn.state(["!disabled"])
+            progress(f"\n{ok} of {len(targets)} app(s) updated. Check again to refresh the list.\n", "h")
+
+        def failed(e: BaseException) -> None:
+            self.apps_btn.state(["!disabled"])
+            progress(f"Update failed: {e}\n", "critical")
+
+        self.app.run_bg(work, done, failed)
 
     def update(self) -> None:
         self.upd_btn.state(["disabled"])
