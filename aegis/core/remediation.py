@@ -21,10 +21,20 @@ Result = Tuple[bool, str]
 
 
 def _backup(cfg: Config, kind: str, payload: dict) -> Path:
+    """Write a backup that ``aegis undo`` can restore. Names carry a microsecond timestamp, but
+    Windows' clock ticks far more coarsely, so two backups in a row could collide and the second
+    would overwrite the first; files are created exclusively and get a -N suffix on collision."""
+    data = json.dumps(payload, indent=2, default=str)
     stamp = dt.datetime.now().strftime("%Y%m%d-%H%M%S-%f")
-    p = cfg.backups_dir / f"{kind}-{stamp}.json"
-    p.write_text(json.dumps(payload, indent=2, default=str), encoding="utf-8")
-    return p
+    for n in range(1, 10000):
+        p = cfg.backups_dir / (f"{kind}-{stamp}.json" if n == 1 else f"{kind}-{stamp}-{n}.json")
+        try:
+            with open(p, "x", encoding="utf-8") as fh:
+                fh.write(data)
+            return p
+        except FileExistsError:
+            continue
+    raise OSError(f"could not allocate a backup file name for {kind}")
 
 
 def quarantine_file(cfg: Config, params: dict, finding: Finding) -> Result:

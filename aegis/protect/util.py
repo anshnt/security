@@ -63,10 +63,16 @@ def write_json_atomic(path: Path, payload: Any) -> None:
 
 
 def new_backup_path(backups_dir: Path, kind: str, suffix: str = ".json") -> Path:
-    """Unique ``<kind>-<timestamp><suffix>`` path inside the backups directory."""
-    p = backups_dir / f"{kind}-{stamp()}{suffix}"
-    n = 1
-    while p.exists():
-        n += 1
-        p = backups_dir / f"{kind}-{stamp()}-{n}{suffix}"
-    return p
+    """Unique ``<kind>-<timestamp>[-N]<suffix>`` path inside the backups directory. The file is
+    reserved (created empty, exclusively) so two backups in the same clock tick - common on
+    Windows - or in parallel processes can never be handed the same name."""
+    ts = stamp()
+    for n in range(1, 10000):
+        p = backups_dir / (f"{kind}-{ts}{suffix}" if n == 1 else f"{kind}-{ts}-{n}{suffix}")
+        try:
+            with open(p, "x"):
+                pass
+            return p
+        except FileExistsError:
+            continue
+    raise OSError(f"could not allocate a backup file name for {kind}")

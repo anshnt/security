@@ -264,7 +264,9 @@ def _undo_task(doc: Dict[str, Any], dry_run: bool) -> Dict[str, Any]:
         return result(False, False, ADMIN_MSG, kind="task", needs_admin=True)
     with tempfile.TemporaryDirectory(prefix="aegis-task-") as tmp:
         f = Path(tmp) / "task.xml"
-        f.write_text(xml, encoding="utf-16")  # schtasks expects the UTF-16 the export declared
+        # schtasks expects the UTF-16 the export declared; write the saved text byte-exact (no
+        # platform newline translation).
+        f.write_bytes(xml.encode("utf-16"))
         rc, out, err = run(["schtasks", "/Create", "/TN", name, "/XML", str(f), "/F"], timeout=60)
     msg = (out or err).strip()[:300] or (f"re-created scheduled task {name}" if rc == 0 else "schtasks failed")
     return result(rc == 0, rc == 0, msg, kind="task", results=[{"item": name, "ok": rc == 0, "message": msg}])

@@ -460,3 +460,35 @@ def test_exclusions_respect_path_boundaries(ctx, tmp_path):
     ctx.config.exclusions = [str(home)]
     found = {p.parent.name for p in iter_files([tmp_path], ctx)}
     assert found == {"AegisUpdate"}
+
+
+def test_backups_never_overwrite_each_other_within_one_clock_tick(monkeypatch):
+    """Windows' clock is coarse: two remediation backups in a row used to get the same file name and
+    the second silently replaced the first, losing undo data (found by the Windows CI run)."""
+    import datetime as real_dt
+
+    from aegis.core import remediation
+    from aegis.core.config import Config
+    from aegis.protect.util import new_backup_path
+
+    frozen = real_dt.datetime(2026, 10, 16, 12, 0, 0, 123456)
+
+    class FrozenDT(real_dt.datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return frozen
+
+    monkeypatch.setattr(remediation.dt, "datetime", FrozenDT)
+    cfg = Config.load()
+    a = remediation._backup(cfg, "registry", {"value": "first"})
+    b = remediation._backup(cfg, "registry", {"value": "second"})
+    assert a != b and json.loads(a.read_text())["value"] == "first" and json.loads(b.read_text())["value"] == "second"
+
+    import aegis.protect.util as util
+    monkeypatch.setattr(util, "stamp", lambda: "20261016-120000-123456")
+    p1, p2 = new_backup_path(cfg.backups_dir, "harden"), new_backup_path(cfg.backups_dir, "harden")
+    assert p1 != p2 and p1.exists() and p2.exists()
+
+    from aegis.protect import undo
+    ids = {e["id"] for e in undo.list_backups(cfg)}
+    assert {a.stem, b.stem} <= ids
