@@ -38,12 +38,17 @@ def gui(eicar_bytes, tmp_path):
 
 
 def pump(app, seconds, until=None):
+    """Run the Tk event loop for up to ``seconds``, in 50 ms slices, until ``until()`` is true.
+
+    Each slice is a real mainloop() ended by an after() callback, the way the app itself runs. root.update() is not used:
+    it returns only when no event is pending, and on macOS an animating progress bar always has one pending, so a test
+    that pumps during a scan would never get control back."""
     end = time.time() + seconds
     while time.time() < end:
-        app.root.update()
+        app.root.after(50, app.root.quit)
+        app.root.mainloop()
         if until and until():
             return True
-        time.sleep(0.02)
     return bool(until and until())
 
 
