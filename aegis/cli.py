@@ -87,7 +87,7 @@ def cmd_scan(args, cfg: Config) -> int:
 
 
 def _finish(result: ScanResult, args, cfg: Config) -> int:
-    from aegis.core.report import render_text, write_report
+    from aegis.core.report import REPORT_FORMATS, render_text, write_report
 
     min_sev = Severity.parse(args.min_severity)
     if args.json:
@@ -96,11 +96,11 @@ def _finish(result: ScanResult, args, cfg: Config) -> int:
         _print(render_text(result, color=_color(), verbose=args.verbose, min_severity=min_sev))
     if args.report:
         target = Path(args.report)
-        if target.suffix == "" or target.is_dir() or args.report in ("html", "json", "csv", "txt"):
-            fmt = args.report if args.report in ("html", "json", "csv", "txt") else "html"
+        if target.suffix == "" or target.is_dir() or args.report in REPORT_FORMATS:
+            fmt = args.report if args.report in REPORT_FORMATS else "html"
             stamp = result.started.replace(":", "").replace("-", "")
             target = cfg.reports_dir / f"aegis-report-{stamp}.{fmt}"
-        out = write_report(result, target)
+        out = write_report(result, target, base_dir=getattr(args, "source_root", None))
         if not args.json:
             _print(f"\nReport written to {out}")
     if args.fix or args.auto_fix:
@@ -534,6 +534,8 @@ def cmd_check_project(args, cfg: Config) -> int:
 
     t0 = _time.time()
     result = ScanResult(profile="custom", host=host_info(), scanners=["supplychain"])
+    if len(args.path) == 1 and Path(args.path[0]).is_dir():  # SARIF locations relative to the project root
+        args.source_root = str(Path(args.path[0]).resolve())
     for path in args.path:
         findings, checks = scan_project_results(path, ctx)
         for f in findings:
@@ -597,7 +599,7 @@ def cmd_report(args, cfg: Config) -> int:
     if not result:
         _print("No scan results found.")
         return EXIT_ERROR
-    _print(f"Report written to {write_report(result, args.output)}")
+    _print(f"Report written to {write_report(result, args.output, base_dir=args.source_root)}")
     return EXIT_CLEAN
 
 
@@ -702,7 +704,8 @@ def build_parser() -> argparse.ArgumentParser:
     sub = p.add_subparsers(dest="command", metavar="<command>")
 
     def output_opts(sp):
-        sp.add_argument("--report", metavar="PATH|FORMAT", help="write a report (file path ending .html/.json/.csv/.txt, or just a format)")
+        sp.add_argument("--report", metavar="PATH|FORMAT",
+                        help="write a report (file path ending .html/.json/.csv/.txt/.sarif, or just a format)")
         sp.add_argument("--json", action="store_true", help="print JSON instead of text")
         sp.add_argument("--min-severity", default="low", choices=["info", "low", "medium", "high", "critical"],
                         help="hide console findings below this severity (default: low)")
@@ -793,8 +796,9 @@ def build_parser() -> argparse.ArgumentParser:
     it.add_argument("--path", action="append", help="extra paths for the baseline")
     it.set_defaults(func=cmd_integrity)
 
-    r = sub.add_parser("report", help="render the last (or a given) scan as HTML/JSON/CSV/TXT")
-    r.add_argument("output", help="output file (.html, .json, .csv, .txt)")
+    r = sub.add_parser("report", help="render the last (or a given) scan as HTML/JSON/CSV/TXT/SARIF")
+    r.add_argument("output", help="output file (.html, .json, .csv, .txt, .sarif)")
+    r.add_argument("--source-root", help="SARIF: write file locations relative to this folder (e.g. the repository root)")
     r.add_argument("--input", help="scan result JSON (default: last scan)")
     r.set_defaults(func=cmd_report)
 

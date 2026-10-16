@@ -1,12 +1,16 @@
-"""Report rendering: coloured console text, self-contained HTML, JSON and CSV."""
+"""Report rendering: coloured console text, self-contained HTML, JSON, CSV and SARIF."""
 
 from __future__ import annotations
 
 import csv
+import datetime as _dt
 import html
 import io
 import json
-from pathlib import Path
+import os
+import re
+import urllib.parse
+from pathlib import Path, PurePosixPath, PureWindowsPath
 from typing import Any, Dict, List, Optional, Tuple
 
 from aegis import __app_name__, __version__
@@ -300,15 +304,220 @@ def render_csv(result: ScanResult) -> str:
     return buf.getvalue()
 
 
-def write_report(result: ScanResult, path: "str | Path", fmt: str = "") -> Path:
+# --------------------------------------------------------------------------- SARIF 2.1.0
+SARIF_SCHEMA = "https://json.schemastore.org/sarif-2.1.0.json"
+PROJECT_URL = "https://github.com/anshnt/security"
+RULES_DOC_URL = PROJECT_URL + "/blob/main/docs/RULES.md"
+_SARIF_LEVEL = {Severity.CRITICAL: "error", Severity.HIGH: "error", Severity.MEDIUM: "warning",
+                Severity.LOW: "note", Severity.INFO: "note"}
+# GitHub code scanning reads `security-severity` (0.1-10) to label alerts critical / high / medium / low.
+_SECURITY_SEVERITY = {Severity.CRITICAL: "9.5", Severity.HIGH: "8.0", Severity.MEDIUM: "5.5", Severity.LOW: "3.0"}
+_WIN_ABS = re.compile(r"^(?:[A-Za-z]:[\\/]|\\\\[^\\/]+[\\/][^\\/]+)")
+_PATH_SPLIT = re.compile(r"[!#]")
+
+
+def _is_windows_path(p: str) -> bool:
+    return bool(_WIN_ABS.match(p))
+
+
+def _is_file_path(p: str) -> bool:
+    return _is_windows_path(p) or (p.startswith("/") and not p.startswith("//"))
+
+
+def finding_file(f: Finding) -> Optional[str]:
+    """The file a finding points at, or None for registry keys, processes, settings, URLs...
+
+    Locations can carry a suffix: ``archive.zip!member.exe`` (archive member) or ``package.json#scripts.postinstall``
+    (a key inside the file); the file itself is the part before it."""
+    for key in ("file", "path"):
+        v = f.evidence.get(key) if isinstance(f.evidence, dict) else None
+        if isinstance(v, str) and _is_file_path(v):
+            return v
+    loc = (f.location or "").strip()
+    if not _is_file_path(loc):
+        return None
+    if _PATH_SPLIT.search(loc) and not os.path.exists(loc):
+        head = _PATH_SPLIT.split(loc, 1)[0]
+        if head and _is_file_path(head):
+            return head
+    return loc
+
+
+def _finding_line(f: Finding) -> Optional[int]:
+    ev = f.evidence if isinstance(f.evidence, dict) else {}
+    line = ev.get("line")
+    if isinstance(line, int) and not isinstance(line, bool) and line > 0:
+        return line
+    for v in ev.values():  # e.g. secrets: {"keys": [{"kind": ..., "line": 12}]}
+        if isinstance(v, list) and v and isinstance(v[0], dict):
+            ln = v[0].get("line")
+            if isinstance(ln, int) and not isinstance(ln, bool) and ln > 0:
+                return ln
+    return None
+
+
+def _file_uri(path: str) -> str:
+    pure = PureWindowsPath(path) if _is_windows_path(path) else PurePosixPath(path)
+    return pure.as_uri()
+
+
+def _relative_uri(path: str, base: Optional[str]) -> Optional[str]:
+    """`path` relative to `base` as a URI reference ('src/package.json'), or None when it is outside `base`."""
+    if not base:
+        return None
+    win = _is_windows_path(path)
+    if win != _is_windows_path(base):
+        return None
+    pure_cls = PureWindowsPath if win else PurePosixPath
+    try:
+        rel = pure_cls(path).relative_to(pure_cls(base))  # PureWindowsPath compares case-insensitively
+    except ValueError:
+        return None
+    parts = rel.parts
+    return "/".join(urllib.parse.quote(x) for x in parts) if parts else None
+
+
+def _utc(stamp: str) -> Optional[str]:
+    try:
+        t = _dt.datetime.fromisoformat(stamp)
+    except (TypeError, ValueError):
+        return None
+    return t.astimezone(_dt.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def _rule_help(f: Finding) -> Dict[str, str]:
+    text = f.recommendation or f.description or f.title
+    md = [text]
+    if f.mitre:
+        links = ", ".join(f"[{t}](https://attack.mitre.org/techniques/{t.replace('.', '/')}/)" for t in f.mitre)
+        md.append(f"MITRE ATT&CK: {links}")
+    return {"text": text, "markdown": "\n\n".join(md)}
+
+
+def render_sarif(result: ScanResult, base_dir: "str | Path | None" = None) -> str:
+    """SARIF 2.1.0 for code-scanning dashboards (GitHub code scanning, Azure DevOps, VS Code SARIF viewer).
+
+    Findings on files get an artifact location, relative to ``base_dir`` when they are inside it (so a CI upload
+    of `aegis check-project` lines up with the repository), otherwise a ``file://`` URI. Registry keys, processes
+    and settings become logical locations. Rule metadata carries the highest severity seen for the rule, the
+    category and MITRE ATT&CK tags. Checks that errored are reported as tool notifications."""
+    base = str(base_dir) if base_dir else None
+    if base and not _is_file_path(base):
+        base = os.path.abspath(base)
+    findings = result.sorted_findings()
+    rules: List[Dict[str, Any]] = []
+    index: Dict[str, int] = {}
+    worst: Dict[str, Severity] = {}
+    for f in findings:
+        if f.rule_id not in index:
+            index[f.rule_id] = len(rules)
+            worst[f.rule_id] = f.severity
+            rules.append({
+                "id": f.rule_id,
+                "shortDescription": {"text": f.title},
+                "fullDescription": {"text": f.description or f.title},
+                "help": _rule_help(f),
+                "helpUri": RULES_DOC_URL,
+                "properties": {"tags": [], "category": f.category},
+            })
+        rule = rules[index[f.rule_id]]
+        worst[f.rule_id] = max(worst[f.rule_id], f.severity)
+        tags = rule["properties"]["tags"]
+        for t in ["security", f.category] + [f"external/mitre-attack/{m}" for m in f.mitre]:
+            if t and t not in tags:
+                tags.append(t)
+    for rid, i in index.items():
+        sev = worst[rid]
+        rules[i]["defaultConfiguration"] = {"level": _SARIF_LEVEL[sev]}
+        rules[i]["properties"]["severity"] = sev.name.lower()
+        if sev in _SECURITY_SEVERITY:
+            rules[i]["properties"]["security-severity"] = _SECURITY_SEVERITY[sev]
+
+    used_base = False
+    results: List[Dict[str, Any]] = []
+    for f in findings:
+        message = f.title if not f.description else f"{f.title}. {f.description}"
+        res: Dict[str, Any] = {
+            "ruleId": f.rule_id,
+            "ruleIndex": index[f.rule_id],
+            "level": _SARIF_LEVEL[f.severity],
+            "message": {"text": message},
+            "partialFingerprints": {"aegisFingerprint/v1": f.fingerprint},
+            "properties": {"severity": f.severity.name.lower(), "category": f.category, "scanner": f.scanner,
+                           "mitre": list(f.mitre), "location": f.location, "recommendation": f.recommendation,
+                           "evidence": f.evidence},
+        }
+        path = finding_file(f)
+        if path:
+            rel = _relative_uri(path, base)
+            art: Dict[str, Any] = {"uri": rel, "uriBaseId": "SRCROOT"} if rel else {"uri": _file_uri(path)}
+            used_base = used_base or bool(rel)
+            phys: Dict[str, Any] = {"artifactLocation": art}
+            line = _finding_line(f)
+            if line:
+                phys["region"] = {"startLine": line}
+            loc: Dict[str, Any] = {"physicalLocation": phys}
+            if f.location and f.location != path:
+                loc["logicalLocations"] = [{"fullyQualifiedName": f.location, "kind": "member"}]
+            res["locations"] = [loc]
+        elif f.location:
+            res["locations"] = [{"logicalLocations": [{"fullyQualifiedName": f.location, "kind": "resource"}]}]
+        results.append(res)
+
+    score, grade = security_score(result)
+    invocation: Dict[str, Any] = {"executionSuccessful": True}
+    start, end = _utc(result.started), _utc(result.finished)
+    if start:
+        invocation["startTimeUtc"] = start
+    if end:
+        invocation["endTimeUtc"] = end
+    notes = [{"level": "error", "message": {"text": f"{c.title}: {c.detail}" if c.detail else c.title},
+              "descriptor": {"id": c.check_id}} for c in result.checks if c.status == CheckStatus.ERROR]
+    if notes:
+        invocation["toolExecutionNotifications"] = notes
+    run: Dict[str, Any] = {
+        "tool": {"driver": {"name": __app_name__, "version": __version__, "semanticVersion": __version__,
+                            "informationUri": PROJECT_URL, "rules": rules}},
+        "automationDetails": {"id": f"aegis/{result.profile}/"},
+        "invocations": [invocation],
+        "results": results,
+        "properties": {"profile": result.profile, "scanners": list(result.scanners), "score": score, "grade": grade,
+                       "counts": result.counts()},
+    }
+    if used_base and base:
+        root = _file_uri(base)
+        run["originalUriBaseIds"] = {"SRCROOT": {"uri": root if root.endswith("/") else root + "/"}}
+    doc = {"$schema": SARIF_SCHEMA, "version": "2.1.0", "runs": [run]}
+    return json.dumps(doc, indent=2, default=str, ensure_ascii=False)
+
+
+def _is_aegis_sarif(data: bytes) -> bool:
+    if b'"version": "2.1.0"' not in data[:400] or SARIF_SCHEMA.encode() not in data[:400]:
+        return False
+    try:
+        d = json.loads(data.decode("utf-8"))
+    except ValueError:
+        return False
+    if not isinstance(d, dict) or d.get("version") != "2.1.0" or not isinstance(d.get("runs"), list) or len(d["runs"]) != 1:
+        return False
+    run = d["runs"][0]
+    driver = run.get("tool", {}).get("driver", {}) if isinstance(run, dict) else {}
+    return isinstance(driver, dict) and driver.get("name") == __app_name__ and isinstance(run.get("results"), list)
+
+
+REPORT_FORMATS = ("html", "json", "csv", "txt", "sarif")
+
+
+def write_report(result: ScanResult, path: "str | Path", fmt: str = "", base_dir: "str | Path | None" = None) -> Path:
     p = Path(path)
     fmt = (fmt or p.suffix.lstrip(".") or "html").lower()
     renderers: Dict[str, object] = {
         "html": render_html, "htm": render_html, "json": lambda r: r.to_json(), "csv": render_csv,
         "txt": lambda r: render_text(r, color=False, verbose=True, min_severity=Severity.INFO),
+        "sarif": lambda r: render_sarif(r, base_dir),
     }
     if fmt not in renderers:
-        raise ValueError(f"unsupported report format {fmt!r} (html, json, csv, txt)")
+        raise ValueError(f"unsupported report format {fmt!r} ({', '.join(REPORT_FORMATS)})")
     p.parent.mkdir(parents=True, exist_ok=True)
     with open(p, "w", encoding="utf-8", newline="\n") as fh:  # identical bytes on every OS
         fh.write(renderers[fmt](result))  # type: ignore[operator]
@@ -330,9 +539,11 @@ def is_aegis_report(data: bytes, ext: str) -> bool:
     if len(data) > 64 * 1024 * 1024:
         return False
     data = data.replace(b"\r\n", b"\n")  # tolerate reports re-saved with Windows line endings
+    if ext == "sarif":
+        return _is_aegis_sarif(data)
     if ext == "json":
         if b'"generator": "Aegis Security Suite"' not in data[:200]:
-            return False
+            return _is_aegis_sarif(data)  # results.sarif.json
         try:
             d = json.loads(data.decode("utf-8"))
         except ValueError:

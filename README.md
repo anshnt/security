@@ -33,7 +33,7 @@ score. Use it from the command line or the desktop GUI.
 | **History & alerts** | Every scan is recorded: "new since last scan", resolved items and score trend in reports and the dashboard. Optional alerts to Slack, Microsoft Teams, Discord, any webhook or email (new findings only, rate-limited, secrets masked). `aegis doctor` self-checks privileges, signature freshness, data-folder permissions and services |
 | **Tools** | Phishing/URL checker (lookalike domains, homoglyphs, brand impersonation, URLhaus, optional Google Safe Browsing), password strength and breach check (HIBP k-anonymity), deep file analysis, file integrity monitoring, threat-intel updater |
 | **Remediation** | Quarantine/restore, kill process, remove registry autoruns, disable tasks/services, remove WMI persistence, clean hosts file, apply hardening fixes. Every change is backed up |
-| **Reporting** | Security score and grade, HTML/JSON/CSV/TXT reports, MITRE ATT&CK mapping, scripting exit codes |
+| **Reporting** | Security score and grade, HTML/JSON/CSV/TXT reports, **SARIF 2.1.0** for GitHub code scanning and other SARIF viewers, MITRE ATT&CK mapping, scripting exit codes |
 
 ## Quick start (Windows)
 
@@ -73,7 +73,7 @@ On Linux/macOS, use the same commands (`sudo` for full coverage), or run `script
 
 ```
 aegis scan [quick|full|audit|custom] [--path P] [--scanners a,b] [--deep] [--cloud]
-           [--report out.html|html|json|csv] [--fix | --auto-fix high] [--json] [-v]
+           [--report out.html|html|json|csv|sarif] [--fix | --auto-fix high] [--json] [-v]
 aegis audit                          hardening + software + network + browser review
 aegis fix [--id ID] [-y --min-severity high]   apply fixes from the last scan
 aegis allow --id ID | --hash SHA256 | --path P suppress false positives
@@ -94,12 +94,28 @@ aegis check-url URL                  phishing / malicious URL verdict
 aegis check-password                 strength + breach check (k-anonymity)
 aegis autoruns [--json]              list every autostart entry
 aegis integrity baseline|check       file integrity monitoring
-aegis report out.html                render the last scan
+aegis report out.html|out.sarif [--source-root DIR]   render the last scan
 aegis info | config show | config set KEY VALUE
 aegis gui | install-service | uninstall-service
 ```
 
 Exit codes: `0` means clean, `1` means findings at or above `--fail-on` (default `high`), `2` means an error.
+
+### Supply-chain checks in CI (GitHub code scanning)
+
+`aegis check-project` writes SARIF with file locations relative to the project, so its findings show up as
+code-scanning alerts on the right files:
+
+```yaml
+# job needs: permissions: { contents: read, security-events: write }
+- run: pip install git+https://github.com/anshnt/security
+- run: aegis check-project . --report aegis.sarif --fail-on critical
+- uses: github/codeql-action/upload-sarif@v3
+  if: always()
+  with:
+    sarif_file: aegis.sarif
+    category: aegis-supply-chain
+```
 
 ### Configuration
 

@@ -330,7 +330,7 @@ def scan_file(ctx: ScanContext, path: Path, cache: Optional[ScanCache] = None) -
         return []
     ctx.bump("files_scanned")
     ctx.bump("bytes_scanned", len(data))
-    if kind == "text" and ext in ("json", "html", "htm", "csv", "yar", "yara", "yml", "yaml"):
+    if kind == "text" and ext in ("json", "sarif", "html", "htm", "csv", "yar", "yara", "yml", "yaml"):
         from aegis.core.report import is_aegis_report
 
         if is_aegis_report(data, ext) or is_detection_content(data, ext):
