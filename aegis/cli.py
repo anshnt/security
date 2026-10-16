@@ -854,7 +854,7 @@ def build_parser() -> argparse.ArgumentParser:
     u.add_argument("-q", "--quiet", action="store_true")
     u.set_defaults(func=cmd_update)
 
-    m = sub.add_parser("monitor", help="real-time protection: file, process, ransomware, persistence and clipboard guards")
+    m = sub.add_parser("monitor", help="real-time protection: file, process, ransomware, persistence, clipboard and extension guards")
     m.add_argument("--auto-quarantine", action="store_true", help="quarantine detected files automatically")
     m.add_argument("--kill", action="store_true", help="terminate confirmed-malicious processes automatically")
     m.set_defaults(func=cmd_monitor)

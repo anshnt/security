@@ -30,6 +30,13 @@
 - **Fleet overview in the GUI** (Tools > Fleet overview): pick the folder with your PCs' scan results, build the overview
   and open the HTML report, without the command line.
 
+### Real-time protection
+- **Extension guard.** Records the extensions of every Chrome, Edge, Brave, Vivaldi, Opera and Firefox profile when
+  protection starts, then reports each one added later. A new extension is rated with the browser scanner's rules: a
+  sideloaded, malicious or adware one raises its usual MEDIUM to CRITICAL finding (with a desktop notification) at once,
+  an ordinary store extension is a LOW event. A profile is re-read only when its files change. With administrator rights
+  it watches every user's profiles. Setting: `realtime_extension_guard`, also on the GUI Protection page.
+
 ### Fixes
 - **Network connections on macOS as a normal user:** the per-process fallback (used when the system-wide list is refused)
   failed with "unexpected field names: ['pid']", so the connection check always ended in an error. Found by the new

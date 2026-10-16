@@ -1728,7 +1728,7 @@ class PersistenceGuard:
 
 # =========================================================================== the monitor
 
-ALL_COMPONENTS = ("files", "processes", "ransomware", "persistence", "clipboard")
+ALL_COMPONENTS = ("files", "processes", "ransomware", "persistence", "clipboard", "extensions")
 
 
 class RealtimeMonitor:
@@ -1758,8 +1758,10 @@ class RealtimeMonitor:
         self.ransomware = RansomwareGuard(self, canary_dirs)
         self.persistence = PersistenceGuard(self)
         from aegis.realtime.clipboard import ClipboardGuard
+        from aegis.realtime.extensions import ExtensionGuard
 
         self.clipboard = ClipboardGuard(self)
+        self.extensions = ExtensionGuard(self)
 
     # ---- plumbing used by the guards
     @property
@@ -1866,7 +1868,7 @@ class RealtimeMonitor:
             self._running = True
             self.started_at = time.time()
             guards = {"files": self.files, "processes": self.processes, "ransomware": self.ransomware,
-                      "persistence": self.persistence, "clipboard": self.clipboard}
+                      "persistence": self.persistence, "clipboard": self.clipboard, "extensions": self.extensions}
             for name in self.components:
                 guard = guards.get(name)
                 if guard is None:

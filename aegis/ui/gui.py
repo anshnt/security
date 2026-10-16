@@ -756,7 +756,7 @@ class DashboardPage(Page):
                                 style="TButton" if on else "Accent.TButton")
         if on:
             st = app.monitor.status()
-            self.prot_detail.configure(text=f"File, process, ransomware, persistence and clipboard guards active. Watching "
+            self.prot_detail.configure(text=f"File, process, ransomware, persistence, clipboard and extension guards active. Watching "
                                             f"{len(st['watched'])} folders, {st['canaries']} ransomware canaries, "
                                             f"{st['stats'].get('files_scanned', 0)} files scanned this session.")
         else:
@@ -1223,7 +1223,7 @@ class ProtectionPage(Page):
         f = self.frame
         f.columnconfigure(0, weight=1)
         f.rowconfigure(3, weight=1)
-        app.heading(f, "Protection", "Real-time file, process, ransomware, persistence and clipboard guards").grid(row=0, column=0, sticky="w")
+        app.heading(f, "Protection", "Real-time file, process, ransomware, persistence, clipboard and extension guards").grid(row=0, column=0, sticky="w")
         top = app.card(f)
         top.grid(row=1, column=0, sticky="ew", pady=(12, 0))
         top.columnconfigure(0, weight=1)
@@ -1242,6 +1242,7 @@ class ProtectionPage(Page):
             "ransomware_canaries": tk.BooleanVar(value=cfg.ransomware_canaries),
             "notifications": tk.BooleanVar(value=cfg.notifications),
             "realtime_clipboard_guard": tk.BooleanVar(value=cfg.realtime_clipboard_guard),
+            "realtime_extension_guard": tk.BooleanVar(value=cfg.realtime_extension_guard),
         }
         opts = ttk.Frame(top, style="Panel.TFrame")
         opts.grid(row=2, column=0, columnspan=2, sticky="w")
@@ -1251,6 +1252,7 @@ class ProtectionPage(Page):
             "ransomware_canaries": "Ransomware canary files",
             "notifications": "Desktop notifications",
             "realtime_clipboard_guard": "Clipboard guard (fake CAPTCHA commands)",
+            "realtime_extension_guard": "Extension guard (new browser extensions)",
         }
         for i, (key, var) in enumerate(self.vars.items()):
             ttk.Checkbutton(opts, text=labels[key], variable=var, command=self.apply_options).grid(
