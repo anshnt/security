@@ -504,7 +504,7 @@ def remote_access_findings(procs: Sequence[ProcInfo], skip: Optional[Set[int]] =
             "installed it, but is the most common tool used in tech-support scams and by intruders.",
             "If you did not install or start it yourself, or someone phoned you and asked you to install it, "
             "close it, uninstall it and change your passwords. Never give remote access to unsolicited callers.",
-            {"tool": display}, ["T1219"], Category.SUSPICIOUS))
+            {"tool": display}, ["T1219.002"], Category.SUSPICIOUS))
     return out
 
 

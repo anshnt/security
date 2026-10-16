@@ -316,7 +316,7 @@ def remote_access_finding(entry: Dict[str, str], sig: str) -> Finding:
         recommendation=("If you do not recognise this program or did not install it yourself, uninstall it now and "
                         "change your passwords. If you use it, keep it updated, protect it with a strong unique password "
                         "and 2FA, and close it when not needed. (The processes scanner reports it if it is running.)"),
-        mitre=["T1219"],
+        mitre=["T1219.002"],
     )
 
 
