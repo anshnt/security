@@ -381,8 +381,12 @@ def _excluded(path: str, patterns: List[str]) -> bool:
         if any(ch in p for ch in "*?["):
             if fnmatch.fnmatch(low, p):
                 return True
-        elif low.startswith(p.rstrip("\\/")):
-            return True
+        else:
+            # Path-prefix exclusions must end at a separator: excluding "...\\Aegis" (our own data
+            # folder) must not also hide a sibling "...\\AegisUpdate" where malware could live.
+            base = p.rstrip("\\/")
+            if base and (low == base or low.startswith(base + "\\") or low.startswith(base + "/")):
+                return True
     return False
 
 

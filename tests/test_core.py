@@ -440,3 +440,23 @@ def test_linux_rootkit_rule_ignores_generic_hide_helpers(ctx):
 def test_cradle_requires_an_actual_fetch(text, cradle):
     ids = {i.rule_id for i in fa.content_indicators(text, "script")}
     assert bool(ids & {"AEG-H-SCR-CRADLE", "AEG-H-SCR-CRADLE2"}) is cradle
+
+
+def test_exclusions_respect_path_boundaries(ctx, tmp_path):
+    """Excluding a folder (incl. Aegis's own data folder) must not hide siblings that merely
+    share its name as a prefix - malware could otherwise evade scans by naming its folder so."""
+    from aegis.scanners.files import _excluded, iter_files
+
+    home = tmp_path / "Aegis"
+    sibling = tmp_path / "AegisUpdate"
+    for d in (home, sibling):
+        d.mkdir()
+        (d / "x.exe").write_bytes(b"MZ")
+    ctx.config.exclusions = [str(tmp_path / "Games")]
+    assert _excluded(str(tmp_path / "Games" / "a.exe"), ctx.config.exclusions)
+    assert _excluded(str(tmp_path / "Games"), ctx.config.exclusions)
+    assert not _excluded(str(tmp_path / "GamesDownloads" / "a.exe"), ctx.config.exclusions)
+    assert _excluded("C:\\Games\\a.exe", ["c:\\games"]) and not _excluded("C:\\GamesX\\a.exe", ["c:\\games\\"])
+    ctx.config.exclusions = [str(home)]
+    found = {p.parent.name for p in iter_files([tmp_path], ctx)}
+    assert found == {"AegisUpdate"}
