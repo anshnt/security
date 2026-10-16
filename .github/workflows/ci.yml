@@ -130,8 +130,8 @@ jobs:
           }
           run_scan audit audit
           run_scan quick quick
-          # threat-hunting scanners: event logs, drivers, sideloading, USB, email, process memory, privacy
-          run_scan hunt custom --scanners eventlog,drivers,sideload,usb,email,memory,supplychain,ide,privacy
+          # threat-hunting scanners: event logs, drivers, sideloading, USB, email, process memory, privacy, app tampering
+          run_scan hunt custom --scanners eventlog,drivers,sideload,usb,email,memory,supplychain,ide,privacy,apptamper
           # deep scan of a large tree: exercises the multi-process file scanner inside the frozen exe
           run_scan deepfiles custom --scanners files --deep --path "$pythonLocation/Lib"
           python - <<'PY'

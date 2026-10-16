@@ -6,7 +6,10 @@ from __future__ import annotations
 import datetime as dt
 import json
 import logging
+import os
+import re
 import shutil
+import stat
 from pathlib import Path
 from typing import Callable, Dict, Tuple
 
@@ -14,10 +17,16 @@ from aegis.core.config import Config
 from aegis.core.models import Finding
 from aegis.core.platform import IS_WINDOWS, powershell, reg_delete_value, reg_read, reg_set_value, run
 from aegis.core.quarantine import Quarantine
+from aegis.protect.util import atomic_write_bytes
 
 log = logging.getLogger("aegis.remediation")
 
 Result = Tuple[bool, str]
+
+# restore_file_content only ever rewrites a Discord client's one-line entry point, and only with its genuine content
+RESTORABLE_FILE_SUFFIX = "/discord_desktop_core/index.js"
+GENUINE_FILE_CONTENT = re.compile(r"""^\s*module\.exports\s*=\s*require\(\s*(['"])\./core\.asar\1\s*\)\s*;?\s*$""")
+MAX_RESTORE_BACKUP_BYTES = 32 * 1024 * 1024
 
 
 def _backup(cfg: Config, kind: str, payload: dict) -> Path:
@@ -123,6 +132,37 @@ def restore_hosts(cfg: Config, params: dict, finding: Finding) -> Result:
     return True, f"neutralised {len(bad)} hosts entries (backup: {b.name})"
 
 
+def is_restorable_file(path: str) -> bool:
+    """True for a path ending in ``discord_desktop_core/index.js`` (either slash style, any case)."""
+    return str(path).replace("\\", "/").lower().endswith(RESTORABLE_FILE_SUFFIX)
+
+
+def restore_file_content(cfg: Config, params: dict, finding: Finding) -> Result:
+    """Overwrite a tampered ``discord_desktop_core/index.js`` with its genuine content (current content backed up).
+
+    params: ``path`` (must end with ``discord_desktop_core/index.js``) and ``content`` (must be the genuine
+    ``module.exports = require('./core.asar');`` line). Anything else is refused, so a crafted finding cannot use this
+    action to write code into a file."""
+    path = Path(str(params.get("path") or ""))
+    content = params.get("content")
+    if not is_restorable_file(str(path)):
+        return False, "refused: only discord_desktop_core/index.js can be restored with this action"
+    if not isinstance(content, str) or not GENUINE_FILE_CONTENT.match(content):
+        return False, "refused: the replacement is not the genuine Discord index.js content"
+    if path.is_symlink() or not is_restorable_file(os.path.realpath(path)):
+        return False, f"refused: {path} is a link to another location"
+    if not path.is_file():
+        return False, f"{path} no longer exists"
+    if path.stat().st_size > MAX_RESTORE_BACKUP_BYTES:
+        return False, f"refused: {path} is too large to back up ({path.stat().st_size} bytes)"
+    original = path.read_bytes().decode("utf-8", "surrogateescape")
+    b = _backup(cfg, "file", {"path": str(path), "content": original})
+    if not os.access(path, os.W_OK):
+        os.chmod(path, path.stat().st_mode | stat.S_IWRITE)
+    atomic_write_bytes(path, content.encode("utf-8"), mode_from=path)
+    return True, f"restored {path} (backup: {b.name})"
+
+
 def remove_path(cfg: Config, params: dict, finding: Finding) -> Result:
     """Move a directory (e.g. a malicious browser extension) into backups as a zip."""
     p = Path(params["path"])
@@ -169,6 +209,7 @@ ACTIONS: Dict[str, Callable[[Config, dict, Finding], Result]] = {
     "disable_service": disable_service,
     "remove_wmi_subscription": remove_wmi_subscription,
     "restore_hosts": restore_hosts,
+    "restore_file_content": restore_file_content,
     "remove_path": remove_path,
     "run_command": run_fix_command,
     "harden": run_harden,

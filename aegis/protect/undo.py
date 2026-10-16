@@ -10,6 +10,8 @@ task        ``{name,xml}`` from ``disable_task``                   ``schtasks /C
 service     ``{name,query}`` from ``disable_service``              start type parsed from ``sc qc`` and
                                                                    restored with ``sc config``
 hosts       ``{path,content}`` from ``restore_hosts``              hosts file content restored
+file        ``{path,content}`` from ``restore_file_content``       file content restored (only a Discord
+                                                                   client's ``discord_desktop_core/index.js``)
 webhosts    raw hosts file before a web-protection change          hosts file restored byte for byte
 harden      one journal per ``aegis.protect.harden.apply`` run     every change reverted, newest first
 removed     ``removed-<name>-<stamp>.zip`` from ``remove_path``    extracted to ``restore_to`` (the original
@@ -19,7 +21,8 @@ removed     ``removed-<name>-<stamp>.zip`` from ``remove_path``    extracted to 
 Limits worth knowing: registry values are stored through JSON, so REG_BINARY data and the exact REG_EXPAND_SZ type
 cannot be restored faithfully; ``kill_process``, ``quarantine_file`` (use the quarantine vault's restore) and
 ``remove_wmi_subscription`` write no backup. Restoring a hosts/webhosts backup refuses any file other than this
-system's hosts file. ``undo`` never raises: it returns ``{"ok","changed","message","details","results"}``.
+system's hosts file, and a file backup refuses any path other than ``discord_desktop_core/index.js``.
+``undo`` never raises: it returns ``{"ok","changed","message","details","results"}``.
 """
 
 from __future__ import annotations
@@ -30,6 +33,7 @@ import json
 import logging
 import os
 import re
+import stat
 import tempfile
 import zipfile
 from pathlib import Path
@@ -37,8 +41,9 @@ from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 from aegis.core.config import Config
 from aegis.core.platform import IS_WINDOWS, is_admin, run
+from aegis.core.remediation import is_restorable_file
 from aegis.protect import harden, webguard
-from aegis.protect.util import result, write_json_atomic
+from aegis.protect.util import atomic_write_bytes, result, write_json_atomic
 
 log = logging.getLogger("aegis.undo")
 
@@ -46,7 +51,7 @@ _JSON_RE = re.compile(r"^(?P<kind>[a-z][a-z0-9_]*)-(?P<stamp>\d{8}-\d{6}(?:-\d{6
 _ZIP_RE = re.compile(r"^removed-(?P<name>.+)-(?P<stamp>\d{8}-\d{6})\.zip$")
 UNDO_LOG = "undo-log.json"  # not matched by the patterns above, so it never shows up as a backup
 
-KINDS = ("registry", "task", "service", "hosts", "webhosts", "harden", "removed")
+KINDS = ("registry", "task", "service", "hosts", "file", "webhosts", "harden", "removed")
 WINDOWS_ONLY_KINDS = ("registry", "task", "service")
 
 ADMIN_MSG = ("Administrator rights are required to undo this change because it restores system settings. "
@@ -120,6 +125,8 @@ def _summarise(kind: str, doc: Optional[Dict[str, Any]], path: Path) -> str:
         return f"disabled service {doc.get('name')} (start type was {st[0] if st else 'unknown'})"
     if kind == "hosts":
         return f"hosts entries neutralised in {doc.get('path')}"
+    if kind == "file":
+        return f"tampered file rewritten with its genuine content: {doc.get('path')}"
     if kind == "webhosts":
         return (f"hosts file before web protection '{doc.get('reason', 'change')}' ({doc.get('size', '?')} bytes, "
                 f"{'with' if doc.get('had_aegis_block') else 'without'} Aegis block)")
@@ -138,6 +145,8 @@ def _undoable(kind: str, doc: Optional[Dict[str, Any]]) -> bool:
         return False
     if kind == "harden":
         return bool(doc) and doc.get("platform") == harden.current_platform()
+    if kind == "file":
+        return bool(doc) and isinstance(doc.get("content"), str) and bool(doc.get("path"))
     return kind == "removed" or bool(doc)
 
 
@@ -334,6 +343,32 @@ def _undo_hosts(config: Config, doc: Dict[str, Any], dry_run: bool) -> Dict[str,
     return _restore_hosts_bytes(config, str(doc["path"]), text.encode("utf-8", "surrogateescape"), dry_run, "hosts")
 
 
+def _undo_file(doc: Dict[str, Any], dry_run: bool) -> Dict[str, Any]:
+    content, raw_path = doc.get("content"), str(doc.get("path") or "")
+    if not isinstance(content, str) or not raw_path:
+        return result(False, False, "the file backup is incomplete", kind="file")
+    path = Path(raw_path)
+    if not is_restorable_file(raw_path) or path.is_symlink() or not is_restorable_file(os.path.realpath(path)):
+        return result(False, False, f"the backup was taken for {raw_path}, which is not a discord_desktop_core/index.js "
+                      "file; refusing to overwrite it.", kind="file")
+    if not path.parent.is_dir():
+        return result(False, False, f"{path.parent} no longer exists (the application was probably updated or removed).",
+                      kind="file")
+    data = content.encode("utf-8", "surrogateescape")
+    if dry_run:
+        return result(True, False, f"[dry run] would restore {path} ({len(data)} bytes).", kind="file", dry_run=True)
+    try:
+        if path.is_file() and path.read_bytes() == data:
+            return result(True, False, f"{path} already matches the backup.", kind="file")
+        if path.exists() and not os.access(path, os.W_OK):
+            os.chmod(path, path.stat().st_mode | stat.S_IWRITE)
+        atomic_write_bytes(path, data, mode_from=path)
+    except OSError as exc:
+        return result(False, False, f"could not restore {path}: {exc}", kind="file")
+    return result(True, True, f"restored {path} from the backup.", kind="file",
+                  results=[{"item": str(path), "ok": True, "message": "restored"}])
+
+
 def _undo_webhosts(config: Config, doc: Dict[str, Any], dry_run: bool) -> Dict[str, Any]:
     try:
         data = base64.b64decode(str(doc.get("content_b64", "")), validate=True)
@@ -426,6 +461,8 @@ def undo(config: Config, backup_id: str, dry_run: bool = False, force: bool = Fa
             res = _undo_service(doc or {}, dry_run)
         elif kind == "hosts":
             res = _undo_hosts(config, doc or {}, dry_run)
+        elif kind == "file":
+            res = _undo_file(doc or {}, dry_run)
         elif kind == "webhosts":
             res = _undo_webhosts(config, doc or {}, dry_run)
         elif kind == "harden":

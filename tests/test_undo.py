@@ -80,6 +80,10 @@ def test_list_backups_covers_every_kind_and_ignores_noise(win, cfg, tmp_path, mo
     folder.mkdir()
     (folder / "a.js").write_text("x")
     rem.remove_path(cfg, {"path": str(folder)}, FINDING)
+    index_js = tmp_path / "modules" / "discord_desktop_core" / "index.js"
+    index_js.parent.mkdir(parents=True)
+    index_js.write_text("module.exports = require('./core.asar');\nrequire('./x.js');\n", encoding="utf-8")
+    rem.restore_file_content(cfg, {"path": str(index_js), "content": "module.exports = require('./core.asar');"}, FINDING)
     monkeypatch.setattr(wg, "hosts_path", lambda: p)
     wg.enable_web_protection(cfg, type("S", (), {"bad_domains": {"bad.example"}})(), hosts_file=p)
     harden.apply(["windows.llmnr"], cfg, env=win.env())
@@ -91,7 +95,7 @@ def test_list_backups_covers_every_kind_and_ignores_noise(win, cfg, tmp_path, mo
 
     entries = undo.list_backups(cfg)
     kinds = {e["kind"] for e in entries}
-    assert kinds == {"registry", "task", "service", "hosts", "removed", "webhosts", "harden"}
+    assert kinds == {"registry", "task", "service", "hosts", "file", "removed", "webhosts", "harden"}
     assert not [e for e in entries if e["id"].startswith(("notes", "undo-log", "registry-notastamp"))]
     broken = next(e for e in entries if e["id"] == "registry-20250101-000000-000001")
     assert broken["undoable"] is False and "unreadable" in broken["summary"]
@@ -107,6 +111,7 @@ def test_list_backups_covers_every_kind_and_ignores_noise(win, cfg, tmp_path, mo
     assert any("deleted" in e["summary"] for e in regs) and any("changed" in e["summary"] for e in regs)
     assert "Spooler" in only(cfg, "service")["summary"] and "auto" in only(cfg, "service")["summary"]
     assert r"\Aegis\Test" in only(cfg, "task")["summary"]
+    assert "genuine content" in only(cfg, "file")["summary"] and str(index_js) in only(cfg, "file")["summary"]
     assert "ext" in only(cfg, "removed")["summary"] and "1 file" in only(cfg, "removed")["summary"]
     assert "web protection" in only(cfg, "webhosts")["summary"] and "applied" in only(cfg, "harden")["summary"]
     assert [e["kind"] for e in undo.list_backups(cfg, kinds=["harden"])] == ["harden"]
@@ -350,6 +355,29 @@ def test_undo_webhosts_damaged_or_foreign_backup(win, cfg, tmp_path, monkeypatch
     (cfg.backups_dir / f"{name}.json").write_text(json.dumps({"path": str(tmp_path / "other"), "content_b64": base64.b64encode(b"y").decode()}))
     r = undo.undo(cfg, name)
     assert r["ok"] is False and "not this system's hosts file" in r["message"] and p.read_bytes() == b"x\n"
+
+
+# =========================================================================== file (restore_file_content)
+def test_undo_file_restores_the_tampered_content_and_refuses_other_paths(cfg, tmp_path):
+    index_js = tmp_path / "modules" / "discord_desktop_core" / "index.js"
+    index_js.parent.mkdir(parents=True)
+    tampered = b"module.exports = require('./core.asar');\r\nrequire('./x.js');\r\n"
+    index_js.write_bytes(tampered)
+    ok, msg = rem.restore_file_content(cfg, {"path": str(index_js), "content": "module.exports = require('./core.asar');"}, FINDING)
+    assert ok and index_js.read_text() == "module.exports = require('./core.asar');"
+    e = only(cfg, "file")
+    assert e["undoable"] and json.loads(Path(e["path"]).read_text(encoding="utf-8")).keys() == {"path", "content"}
+    dry = undo.undo(cfg, e["id"], dry_run=True)
+    assert dry["ok"] and not dry["changed"] and index_js.read_text() == "module.exports = require('./core.asar');"
+    r = undo.undo(cfg, e["id"])
+    assert r["ok"] and r["changed"] and index_js.read_bytes() == tampered  # byte for byte, CRLF included
+    assert undo.undo(cfg, e["id"])["ok"] is False  # already undone
+    other = tmp_path / "other.txt"
+    other.write_text("keep me")
+    name = "file-20260101-000000-000001"
+    (cfg.backups_dir / f"{name}.json").write_text(json.dumps({"path": str(other), "content": "pwned"}))
+    refused = undo.undo(cfg, name)
+    assert refused["ok"] is False and "refusing to overwrite" in refused["message"] and other.read_text() == "keep me"
 
 
 # =========================================================================== removed (zip)

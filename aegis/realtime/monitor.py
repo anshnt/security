@@ -1450,6 +1450,25 @@ class ProcessGuard:
             log.debug("sigma evaluation failed for pid %s", info.get("pid"), exc_info=True)
         return findings
 
+    def _with_browser_risk(self, info: Dict[str, Any], findings: List[Finding]) -> List[Finding]:
+        """Add a finding when a browser starts with cookie-theft switches (hidden remote debugging, an extension loaded
+        from a drop folder): the same classifier the apptamper scanner uses. It alerts only; the rule is not one the
+        guard auto-terminates for."""
+        if self.analyse_fn is not None or self.scan_fn is not None:
+            return findings
+        try:
+            from aegis.scanners import apptamper
+
+            argv = [str(a) for a in (info.get("cmdline") or [])]
+            risk = apptamper.browser_cmdline_risk(info.get("name") or "", argv, info.get("exe") or "")
+            if risk:
+                proc = apptamper.BrowserProc(info["pid"], info.get("name") or "", info.get("exe") or "", argv,
+                                             str(info.get("username") or ""), float(info.get("create_time") or 0.0))
+                findings.append(apptamper.browser_process_finding(proc, risk))
+        except Exception:
+            log.debug("browser launch check failed for pid %s", info.get("pid"), exc_info=True)
+        return findings
+
     def evaluate(self, info: Dict[str, Any]) -> List[Finding]:
         exe = info.get("exe") or ""
         cmd = " ".join(info.get("cmdline") or [])
@@ -1469,7 +1488,7 @@ class ProcessGuard:
                     Remediation("kill_process", {"pid": info["pid"], "path": exe, "quarantine": False},
                                 f"Terminate {info.get('name')} (pid {info['pid']})"),
                     "realtime", list(mitre or [])))
-        findings = self._with_sigma(info, list(findings)) + self._scan_exe(exe)  # + hash / rules / heuristics on the image
+        findings = self._with_sigma(info, self._with_browser_risk(info, list(findings))) + self._scan_exe(exe)
         for f in findings:
             f.scanner = f.scanner or "realtime"
             f.evidence.setdefault("pid", info["pid"])

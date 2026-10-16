@@ -1177,5 +1177,5 @@ def test_scanner_registered_and_in_the_full_profile():
     cls = REGISTRY["privacy"]
     assert cls.name == "privacy" and cls.title == "Camera, microphone & screen access review" and cls.description
     assert set(cls.platforms) == {"windows", "linux", "darwin"} and cls().supported()
-    assert PROFILES["full"][-1] == "privacy" and PROFILES["full"].count("privacy") == 1
+    assert PROFILES["full"].count("privacy") == 1
     assert "privacy" not in PROFILES["quick"] and "privacy" not in PROFILES["audit"]

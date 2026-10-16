@@ -26,6 +26,7 @@ score. Use it from the command line or the desktop GUI.
 | **Software** | PUP/adware/scareware detection (AdwCleaner-style) and vulnerable/EOL software (WinRAR CVE-2025-8088, 7-Zip CVE-2025-0411, PuTTY CVE-2024-31497, Flash, old browsers, Office EOL, and more). A **software updater** lists pending app updates from winget, apt, dnf or Homebrew, flags outdated browsers, archivers, PDF readers, runtimes and remote-access tools, and upgrades them with `aegis apps upgrade` |
 | **Secrets** | Plaintext passwords files, crypto seed phrases, wallet files, cloud/API tokens, unencrypted SSH keys, saved RDP/FileZilla credentials, unattend.xml passwords. All values are masked in reports |
 | **Real-time protection** | A file guard (scan on write, auto-quarantine), a process guard (new-process analysis, optional kill), a ransomware guard (hidden canary files plus mass-modification detection that suspends the culprit), a persistence guard (alerts on new autoruns and hosts changes) and desktop notifications |
+| **App tampering & session theft** | Detects Discord client injection by token stealers (with a one-click restore of the genuine file), `ELECTRON_RUN_AS_NODE` / `NODE_OPTIONS` code injection, hijacked browser shortcuts (forced extensions, remote-debugging ports, proxies, forced start pages, shortcuts disguised as a browser), browsers started hidden with remote debugging to steal cookies (also caught in real time), and Exodus / Atomic / Ledger Live wallet apps whose code was swapped |
 | **Privacy / spyware** | Reviews the operating system's own record of which programs used the camera, microphone, location and screen capture (Windows ConsentStore) or hold camera, microphone, screen-recording, Accessibility and Input Monitoring permissions (macOS TCC). Flags script hosts, programs in Temp/Downloads/hidden folders, programs that deleted themselves afterwards, and anything recording right now, plus an inventory of every app that used each device |
 | **Threat hunting** | Windows event-log hunting (log clearing, new admins, RDP password-guessing success, suspicious service/task installs, Defender tampering, malicious PowerShell script blocks), vulnerable/abused kernel drivers (BYOVD) + Microsoft driver blocklist & memory-integrity checks, DLL side-loading, risky USB drives, malicious email attachments & spoofed senders, YARA memory scanning |
 | **Sigma detection** | The community detection-rule standard: 20 bundled rules plus 1,100+ SigmaHQ Windows rules via `aegis update`. Rules are evaluated against Windows event logs and, in real time, against every new process. The engine was cross-checked against the reference pySigma implementation |
@@ -153,6 +154,7 @@ code-scanning alerts on the right files:
 | supplychain | ✅ | ✅ | ✅ | – |
 | ide | ✅ | ✅ | ✅ | – |
 | privacy | ✅ | – | ✅ (needs Full Disk Access) | – |
+| apptamper | ✅ | ✅ | ✅ | other users' processes |
 
 The `full` profile runs every scanner. A threat-hunting pass on its own:
 `aegis scan custom --scanners eventlog,drivers,sideload,usb,email,memory`.
