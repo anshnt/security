@@ -17,6 +17,7 @@ jobs:
   test:
     name: test (${{ matrix.os }}, py${{ matrix.python }})
     runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
     strategy:
       fail-fast: false
       matrix:
@@ -52,7 +53,9 @@ jobs:
           AEGIS_HOME: ${{ runner.temp }}/aegis-home
         run: |
           # On Linux run under a virtual display so tests/test_gui_real.py drives the real Tk app.
-          if [ "$RUNNER_OS" = "Linux" ]; then xvfb-run -a pytest -q -rs; else pytest -q -rs; fi
+          # A test stuck for 2 minutes dumps the traceback of every thread (faulthandler), so a hang is never silent.
+          if [ "$RUNNER_OS" = "Linux" ]; then xvfb-run -a pytest -q -rs -o faulthandler_timeout=120
+          else pytest -q -rs -o faulthandler_timeout=120; fi
 
       - name: Smoke - aegis info
         shell: bash
