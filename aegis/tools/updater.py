@@ -28,9 +28,11 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional
 
+from aegis import __version__
+
 log = logging.getLogger("aegis.updater")
 
-USER_AGENT = "Aegis-Security-Suite/1.0"
+USER_AGENT = "Aegis-Security-Suite/" + __version__
 TIMEOUT = 60
 MAX_BYTES = 64 * 1024 * 1024  # refuse absurdly large downloads
 STATE_FILE = "update_state.json"
@@ -356,6 +358,28 @@ def update_signatures(config: Any, progress: Optional[Callable[..., None]] = Non
             _say(progress, "yara_forge", f"failed: {exc}; previous copy kept")
     else:
         record("yara_forge", False, error="yara-python not installed; skipped (pip install yara-python)", skipped=True)
+
+    # Malicious VS Code-family extensions (Microsoft Marketplace removed-packages list).
+    try:
+        from aegis.tools.ide_blocklist import update_ide_blocklist
+
+        r = update_ide_blocklist(config, progress)
+        record("ide_blocklist", bool(r.get("ok")), int(r.get("count") or 0), str(r.get("error") or ""))
+    except Exception as exc:
+        record("ide_blocklist", False, error=f"{type(exc).__name__}: {exc}")
+
+    # SigmaHQ community detection rules (needs PyYAML; DRL 1.1 licence, see aegis/tools/sigma_update.py).
+    try:
+        from aegis.core import sigma as _sigma
+        from aegis.tools.sigma_update import update_sigma_rules
+
+        if _sigma.available():
+            for name, r in update_sigma_rules(config, progress).items():
+                record(name, bool(r.get("ok")), int(r.get("count") or 0), str(r.get("error") or ""))
+        else:
+            record("sigma", False, error="PyYAML not installed; skipped (pip install pyyaml)", skipped=True)
+    except Exception as exc:
+        record("sigma", False, error=f"{type(exc).__name__}: {exc}")
 
     state["last_run"] = _now()
     state["any_updated"] = any(r["ok"] for r in results.values())

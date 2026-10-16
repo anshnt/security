@@ -14,9 +14,11 @@ import urllib.parse
 import urllib.request
 from typing import Any, Dict, Mapping, Optional, Tuple
 
+from aegis import __version__
+
 log = logging.getLogger("aegis.reputation")
 
-USER_AGENT = "Aegis-Security-Suite/1.0"
+USER_AGENT = "Aegis-Security-Suite/" + __version__
 TIMEOUT = 15
 _SHA256_RE = re.compile(r"^[0-9a-fA-F]{64}$")
 _HASH_RE = re.compile(r"^(?:[0-9a-fA-F]{32}|[0-9a-fA-F]{40}|[0-9a-fA-F]{64})$")

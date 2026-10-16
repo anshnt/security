@@ -6,5 +6,5 @@ hardening audit, real-time protection and remediation - primarily for Windows,
 with best-effort support for Linux and macOS.
 """
 
-__version__ = "1.0.0"
+__version__ = "1.1.0"
 __app_name__ = "Aegis Security Suite"

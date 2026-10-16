@@ -70,7 +70,7 @@ def test_all_feeds_update_and_state_written(tmp_path, monkeypatch):
     seen = []
     route(monkeypatch, GOOD, seen)
     res = updater.update_signatures(cfg)
-    assert {k: v["ok"] for k, v in res.items() if k != "yara_forge"} == {
+    assert {k: v["ok"] for k, v in res.items() if k not in ("yara_forge", "ide_blocklist", "sigma")} == {
         "malwarebazaar": True, "feodo": True, "urlhaus": True, "malicious_extensions": True, "loldrivers": True}
     assert res["loldrivers"]["count"] == 600
     assert res["malwarebazaar"]["count"] == 150 and res["feodo"]["count"] == 2 and res["urlhaus"]["count"] == 30
@@ -81,7 +81,7 @@ def test_all_feeds_update_and_state_written(tmp_path, monkeypatch):
     state = json.loads((cfg.signatures_dir / "update_state.json").read_text())
     assert state["feeds"]["malwarebazaar"]["count"] == 150 and state["feeds"]["malwarebazaar"]["updated"]
     assert "last_run" in state
-    assert all(h["user-agent"] == "Aegis-Security-Suite/1.0" for _u, h in seen)
+    assert all(h["user-agent"].startswith("Aegis-Security-Suite/") for _u, h in seen)
     assert not any(k == "auth-key" for _u, h in seen for k in h)
     assert not list(cfg.signatures_dir.glob("*.tmp"))
 
@@ -267,3 +267,13 @@ def test_empty_upstream_feed_keeps_previous_copy(tmp_path, monkeypatch):
     res = updater.update_signatures(cfg)
     assert res["feodo"]["ok"] and res["feodo"]["count"] == 0
     assert (cfg.signatures_dir / "feodo_ipblocklist.txt").read_text() == IPS
+
+
+def test_ide_blocklist_and_sigma_feeds_are_attempted_and_isolated(tmp_path, monkeypatch):
+    """The extra feeds run on every update; when they fail (here: no route) the classic feeds
+    still update and the failure is reported, not raised."""
+    cfg = make_config(tmp_path)
+    route(monkeypatch, GOOD)
+    res = updater.update_signatures(cfg)
+    assert "ide_blocklist" in res and "sigma" in res
+    assert res["ide_blocklist"]["ok"] is False and res["malwarebazaar"]["ok"] is True

@@ -226,6 +226,115 @@ def _print_result(r: dict) -> int:
     return EXIT_CLEAN if r.get("ok") else EXIT_ERROR
 
 
+def cmd_history(args, cfg: Config) -> int:
+    from aegis.core import history
+
+    if args.action == "show":
+        if not args.ids:
+            _print("usage: aegis history show ID")
+            return EXIT_ERROR
+        res = history.get_scan(cfg, int(args.ids[0]))
+        if not res:
+            _print(f"no scan {args.ids[0]}")
+            return EXIT_ERROR
+        from aegis.core.report import render_text
+
+        _print(render_text(res, color=_color(), verbose=args.verbose))
+        return EXIT_CLEAN
+    if args.action == "diff":
+        if len(args.ids) >= 2:
+            old, new = history.get_scan(cfg, int(args.ids[0])), history.get_scan(cfg, int(args.ids[1]))
+            if not old or not new:
+                _print("scan not found")
+                return EXIT_ERROR
+            d = history.diff(old, new)
+        else:
+            cmp = history.compare_latest(cfg, profile=args.profile)
+            if not cmp:
+                _print("Need at least two scans of the same kind to compare.")
+                return EXIT_CLEAN
+            d = cmp["diff"]
+        _print(history.render_diff_text(d))
+        return EXIT_FINDINGS if d.get("new") else EXIT_CLEAN
+    if args.action == "trend":
+        rows = history.trend(cfg, profile=args.profile, days=args.days)
+        if args.json:
+            _print(json.dumps(rows))
+            return EXIT_CLEAN
+        for day, score in rows:
+            _print(f"{day}  {score:>3}  " + "#" * (score // 4))
+        if not rows:
+            _print("No scans recorded yet.")
+        return EXIT_CLEAN
+    scans = history.list_scans(cfg, limit=args.limit, profile=args.profile)
+    if args.json:
+        _print(json.dumps([s.to_dict() for s in scans], indent=2, default=str))
+        return EXIT_CLEAN
+    if not scans:
+        _print("No scans recorded yet.")
+    def num(v) -> str:  # first scan of a profile has no baseline -> no new/resolved counts
+        return "-" if v is None else str(v)
+
+    for sc in scans:
+        d = sc.to_dict()
+        _print(f"#{num(d.get('id')):<5} {d.get('started', '')}  {d.get('profile', ''):<7} score {num(d.get('score')):>3} "
+               f"({d.get('grade') or '?'})  findings {num(d.get('finding_count')):>3}  new {num(d.get('new_findings')):>3}  "
+               f"resolved {num(d.get('resolved_findings')):>3}")
+    return EXIT_CLEAN
+
+
+def cmd_doctor(args, cfg: Config) -> int:
+    from aegis.core import doctor
+
+    results = doctor.doctor(cfg)
+    if args.json:
+        _print(json.dumps([r.to_dict() for r in results], indent=2, default=str))
+    else:
+        _print(doctor.render_doctor(results, color=_color()))
+    if args.fix:
+        for fix_id, ok, msg in doctor.apply_fixes(cfg, results):
+            _print(f"{'OK ' if ok else 'ERR'} fix {fix_id}: {msg}")
+    return EXIT_FINDINGS if doctor.has_failures(results) else EXIT_CLEAN
+
+
+def cmd_alert(args, cfg: Config) -> int:
+    from aegis.core import alerts
+
+    channels = alerts.configured_channels(cfg)
+    problems = alerts.validate_config(cfg)
+    if args.action == "status":
+        _print("Configured channels: " + (", ".join(channels) if channels else "none"))
+        _print(f"Alert on: {cfg.alert_on} findings at/above {cfg.alert_min_severity}")
+        for p in problems:
+            _print(f"  problem: {p}")
+        return EXIT_ERROR if problems else EXIT_CLEAN
+    if not channels:
+        _print("No alert channel configured. Set one, e.g.: aegis config set alert_slack_webhook https://hooks.slack.com/...")
+        return EXIT_ERROR
+    res = alerts.test_alert(cfg)
+    for ch, r in res.items():
+        _print(f"{'OK ' if r.get('ok') else 'ERR'} {ch:<10} {r.get('error') or 'sent'}")
+    return EXIT_CLEAN if all(r.get("ok") for r in res.values()) else EXIT_ERROR
+
+
+def cmd_sigma(args, cfg: Config) -> int:
+    from aegis.core import sigma
+
+    if args.action == "test":
+        if len(args.paths) != 2:
+            _print("usage: aegis sigma test RULE_OR_DIR EVENTS.json")
+            return EXIT_ERROR
+        r = sigma.test_rule_on_events(args.paths[0], args.paths[1])
+        _print(json.dumps(r, indent=2, default=str))
+        return EXIT_FINDINGS if r.get("matches") else (EXIT_CLEAN if r.get("ok") else EXIT_ERROR)
+    rules = sigma.load_rules(cfg)
+    if not rules.available:
+        _print("Sigma support needs PyYAML: pip install pyyaml (included in the packaged exe).")
+        return EXIT_ERROR
+    _print(json.dumps(rules.summary(), indent=2, default=str))
+    return EXIT_CLEAN
+
+
 def cmd_protect(args, cfg: Config) -> int:
     from aegis.protect import webguard as wg
 
@@ -411,6 +520,30 @@ def cmd_check_file(args, cfg: Config) -> int:
     return worst
 
 
+def cmd_check_project(args, cfg: Config) -> int:
+    from aegis.core.models import ScanResult
+    from aegis.core.platform import host_info
+    from aegis.core.signatures import SignatureDB
+    from aegis.scanners.base import ScanContext
+    from aegis.scanners.supplychain import scan_project_results
+
+    ctx = ScanContext(config=cfg, signatures=SignatureDB(cfg))
+    if args.offline:
+        ctx.options["supplychain_online"] = False
+    import time as _time
+
+    t0 = _time.time()
+    result = ScanResult(profile="custom", host=host_info(), scanners=["supplychain"])
+    for path in args.path:
+        findings, checks = scan_project_results(path, ctx)
+        for f in findings:
+            result.add(f)
+        result.checks.extend(checks)
+    result.stats = dict(ctx.stats)
+    result.stats["duration_s"] = round(_time.time() - t0, 2)
+    return _finish(result, args, cfg)
+
+
 def cmd_autoruns(args, cfg: Config) -> int:
     from aegis.scanners.persistence import collect_entries
 
@@ -509,9 +642,13 @@ def cmd_config(args, cfg: Config) -> int:
 
     if args.action == "show":
         d = asdict(cfg)
-        for k in ("virustotal_api_key", "abusech_auth_key", "google_safebrowsing_api_key"):
+        try:
+            from aegis.core.alerts import SECRET_FIELDS
+        except Exception:
+            SECRET_FIELDS = ()
+        for k in ("virustotal_api_key", "abusech_auth_key", "google_safebrowsing_api_key", *SECRET_FIELDS):
             if d.get(k):
-                d[k] = d[k][:4] + "****"
+                d[k] = str(d[k])[:4] + "****"
         _print(json.dumps(d, indent=2))
         _print(f"\n(file: {cfg.path})")
         return EXIT_CLEAN
@@ -640,6 +777,13 @@ def build_parser() -> argparse.ArgumentParser:
     cf.add_argument("--json", action="store_true")
     cf.set_defaults(func=cmd_check_file)
 
+    cpj = sub.add_parser("check-project", help="supply-chain check of code projects: malicious / vulnerable "
+                         "dependencies (OSV.dev), install-script droppers, typosquats, Shai-Hulud worm")
+    cpj.add_argument("path", nargs="+", help="project folder(s) or lockfile(s)")
+    cpj.add_argument("--offline", action="store_true", help="no OSV.dev lookups (local heuristics + cache only)")
+    output_opts(cpj)
+    cpj.set_defaults(func=cmd_check_project)
+
     ar = sub.add_parser("autoruns", help="list every autostart / persistence entry (like Sysinternals Autoruns)")
     ar.add_argument("--json", action="store_true")
     ar.set_defaults(func=cmd_autoruns)
@@ -657,6 +801,30 @@ def build_parser() -> argparse.ArgumentParser:
     i = sub.add_parser("info", help="show version, environment, signatures and scanners")
     i.add_argument("--json", action="store_true")
     i.set_defaults(func=cmd_info)
+
+    hi = sub.add_parser("history", help="past scans, what changed since the previous scan, and score trend")
+    hi.add_argument("action", nargs="?", default="list", choices=["list", "show", "diff", "trend"])
+    hi.add_argument("ids", nargs="*", help="scan id(s) for show / diff")
+    hi.add_argument("--profile", help="only scans of this profile (quick, full, audit, custom)")
+    hi.add_argument("--limit", type=int, default=20)
+    hi.add_argument("--days", type=int, default=90)
+    hi.add_argument("--json", action="store_true")
+    hi.add_argument("-v", "--verbose", action="store_true")
+    hi.set_defaults(func=cmd_history)
+
+    dr = sub.add_parser("doctor", help="self-check: privileges, signature freshness, data-folder permissions, services")
+    dr.add_argument("--fix", action="store_true", help="apply the safe fixes (folder permissions, signature update)")
+    dr.add_argument("--json", action="store_true")
+    dr.set_defaults(func=cmd_doctor)
+
+    al = sub.add_parser("alert", help="Slack / Teams / Discord / webhook / email alerts")
+    al.add_argument("action", choices=["status", "test"])
+    al.set_defaults(func=cmd_alert)
+
+    sg = sub.add_parser("sigma", help="Sigma detection rules: list what's loaded, or test rules against events")
+    sg.add_argument("action", choices=["list", "test"])
+    sg.add_argument("paths", nargs="*", help="for test: RULE_OR_DIR EVENTS.json")
+    sg.set_defaults(func=cmd_sigma)
 
     pr = sub.add_parser("protect", help="web protection (malicious-domain blocklist) and C2 IP blocking")
     pr.add_argument("what", choices=["web", "ips"], help="web = hosts-file domain blocklist, ips = firewall block rules")

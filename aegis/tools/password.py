@@ -15,12 +15,13 @@ import urllib.request
 from functools import lru_cache
 from typing import Dict, List, Tuple
 
+from aegis import __version__
 from aegis.core.config import PACKAGE_DATA
 
 log = logging.getLogger("aegis.password")
 
 HIBP_URL = "https://api.pwnedpasswords.com/range/"
-USER_AGENT = "Aegis-Security-Suite/1.0"
+USER_AGENT = "Aegis-Security-Suite/" + __version__
 
 _KEYBOARD_ROWS = ["1234567890", "qwertyuiop", "asdfghjkl", "zxcvbnm", "qazwsxedcrfvtgbyhnujmikolp",
                   "1qaz2wsx3edc4rfv5tgb6yhn7ujm8ik9ol0p"]

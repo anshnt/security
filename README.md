@@ -27,6 +27,10 @@ score. Use it from the command line or the desktop GUI.
 | **Secrets** | Plaintext passwords files, crypto seed phrases, wallet files, cloud/API tokens, unencrypted SSH keys, saved RDP/FileZilla credentials, unattend.xml passwords. All values are masked in reports |
 | **Real-time protection** | A file guard (scan on write, auto-quarantine), a process guard (new-process analysis, optional kill), a ransomware guard (hidden canary files plus mass-modification detection that suspends the culprit), a persistence guard (alerts on new autoruns and hosts changes) and desktop notifications |
 | **Threat hunting** | Windows event-log hunting (log clearing, new admins, RDP password-guessing success, suspicious service/task installs, Defender tampering, malicious PowerShell script blocks), vulnerable/abused kernel drivers (BYOVD) + Microsoft driver blocklist & memory-integrity checks, DLL side-loading, risky USB drives, malicious email attachments & spoofed senders, YARA memory scanning |
+| **Sigma detection** | The community detection-rule standard: 20 bundled rules plus 1,100+ SigmaHQ Windows rules via `aegis update`. Rules are evaluated against Windows event logs and, in real time, against every new process. The engine was cross-checked against the reference pySigma implementation |
+| **Supply-chain protection** | Reads lockfiles of every major ecosystem (npm/yarn/pnpm, pip/poetry/uv/Pipfile, Cargo, Go, Ruby, PHP, NuGet) and checks them against OSV.dev for **known-malicious packages** (CRITICAL) and vulnerable versions, with the exact fixed version. Also flags install-script droppers, typosquats, Shai-Hulud worm indicators, auto-run VS Code tasks, and malicious VS Code / Cursor / Windsurf extensions (Microsoft's removed-extensions list) |
+| **Protection & hardening** | `aegis protect web` sinks malicious domains via a managed hosts-file block. `aegis protect ips` blocks botnet C2 IPs in the firewall. `aegis harden` applies a reviewed profile: Defender PUA/cloud/network protection, Attack Surface Reduction rules, SMBv1, LLMNR, WDigest, LSA protection, process-command-line auditing, Office macro blocking. Every change is journaled and reversible with `aegis undo` |
+| **History & alerts** | Every scan is recorded: "new since last scan", resolved items and score trend in reports and the dashboard. Optional alerts to Slack, Microsoft Teams, Discord, any webhook or email (new findings only, rate-limited, secrets masked). `aegis doctor` self-checks privileges, signature freshness, data-folder permissions and services |
 | **Tools** | Phishing/URL checker (lookalike domains, homoglyphs, brand impersonation, URLhaus, optional Google Safe Browsing), password strength and breach check (HIBP k-anonymity), deep file analysis, file integrity monitoring, threat-intel updater |
 | **Remediation** | Quarantine/restore, kill process, remove registry autoruns, disable tasks/services, remove WMI persistence, clean hosts file, apply hardening fixes. Every change is backed up |
 | **Reporting** | Security score and grade, HTML/JSON/CSV/TXT reports, MITRE ATT&CK mapping, scripting exit codes |
@@ -75,7 +79,16 @@ aegis fix [--id ID] [-y --min-severity high]   apply fixes from the last scan
 aegis allow --id ID | --hash SHA256 | --path P suppress false positives
 aegis quarantine list|restore|delete|add ...
 aegis monitor [--auto-quarantine] [--kill]     real-time protection (foreground)
-aegis update                         MalwareBazaar, Feodo C2 IPs, URLhaus, malicious extensions, YARA Forge
+aegis update                         MalwareBazaar, Feodo C2 IPs, URLhaus, malicious extensions, LOLDrivers,
+                                     YARA Forge, SigmaHQ rules, malicious IDE extensions
+aegis check-project PATH [--offline] malicious / vulnerable dependencies, install-script droppers, typosquats
+aegis protect web|ips on|off|status  malicious-domain blocklist / C2 IP firewall blocking
+aegis harden [--profile recommended|strict] [--apply] [--list]   reviewed hardening, plan first
+aegis undo [list|latest|ID]          revert any fix, hardening run or protection change
+aegis history [list|show ID|diff|trend]   past scans and what changed
+aegis doctor [--fix]                 self-check of the installation
+aegis alert status|test              Slack / Teams / Discord / webhook / email alerts
+aegis sigma list | sigma test RULE EVENTS.json
 aegis check-file FILE [--cloud]      deep static analysis (+ Defender + VirusTotal)
 aegis check-url URL                  phishing / malicious URL verdict
 aegis check-password                 strength + breach check (k-anonymity)
@@ -119,6 +132,8 @@ Exit codes: `0` means clean, `1` means findings at or above `--fail-on` (default
 | usb | ✅ | ✅ | ✅ | device history |
 | email | ✅ | ✅ | ✅ | – |
 | memory | ✅ | ✅ | ✅ | other users' processes |
+| supplychain | ✅ | ✅ | ✅ | – |
+| ide | ✅ | ✅ | ✅ | – |
 
 The `full` profile runs every scanner. A threat-hunting pass on its own:
 `aegis scan custom --scanners eventlog,drivers,sideload,usb,email,memory`.

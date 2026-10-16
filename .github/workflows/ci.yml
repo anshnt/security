@@ -131,7 +131,7 @@ jobs:
           run_scan audit audit
           run_scan quick quick
           # threat-hunting scanners: event logs, drivers, sideloading, USB, email, process memory
-          run_scan hunt custom --scanners eventlog,drivers,sideload,usb,email,memory
+          run_scan hunt custom --scanners eventlog,drivers,sideload,usb,email,memory,supplychain,ide
           # deep scan of a large tree: exercises the multi-process file scanner inside the frozen exe
           run_scan deepfiles custom --scanners files --deep --path "$pythonLocation/Lib"
           python - <<'PY'
@@ -154,6 +154,24 @@ jobs:
                   bad = True
           sys.exit(1 if bad else 0)
           PY
+
+      - name: Real-Windows smoke - v1.1 commands in the packaged exe
+        shell: bash
+        env:
+          AEGIS_HOME: ${{ runner.temp }}/aegis-home-e2e
+        run: |
+          set -o pipefail
+          ok() { local rc=0; "$@" || rc=$?; echo ">> $* -> exit $rc"; [ "$rc" -le 1 ] || exit "$rc"; }
+          ok ./dist/aegis.exe sigma list          # PyYAML + bundled Sigma rules made it into the exe
+          ok ./dist/aegis.exe doctor
+          ok ./dist/aegis.exe harden              # plan only - never applied in CI
+          ok ./dist/aegis.exe harden --profile strict
+          ok ./dist/aegis.exe protect web status
+          ok ./dist/aegis.exe protect ips status
+          ok ./dist/aegis.exe history
+          ok ./dist/aegis.exe history diff
+          ok ./dist/aegis.exe undo list
+          ok ./dist/aegis.exe alert status
 
       - uses: actions/upload-artifact@v4
         if: always()

@@ -31,6 +31,11 @@ be honest, because a security tool that overstates what it does is a risk in its
 | Process memory scanning (YARA) | ✅ user-mode | ✅ | ✅ | ✅ | ❌ | ❌ | ❌ |
 | Email attachment & sender-spoofing analysis (.eml, Outlook cache, Thunderbird) | ✅ | 🟡 | ❌ | ✅ 💲 | ❌ | ❌ | 🟡 |
 | USB / removable-media threats (autorun, shortcut virus) | ✅ | ✅ | ✅ | ✅ | ❌ | ❌ | ❌ |
+| Sigma rules (community detection standard) on event logs + live processes | ✅ | ❌ | ❌ | 🟡 EDR 💲 | ❌ | ❌ | ❌ |
+| Software supply chain: malicious/vulnerable dependencies in local projects, malicious IDE extensions | ✅ (OSV.dev, Microsoft list) | ❌ | ❌ | 🟡 | ❌ | ❌ | ❌ |
+| Web protection (malicious-domain blocking) + C2 IP firewall blocking | ✅ hosts/firewall | ✅ SmartScreen / Network Protection | ✅ 💲 | ✅ | ❌ | ❌ | ❌ |
+| One-command hardening incl. ASR rules, with full undo | ✅ | 🟡 (manual / Intune 💲) | ❌ | 🟡 | ❌ | ❌ | ❌ |
+| Scan history, "new since last scan", alerts to Slack/Teams/Discord/email | ✅ | 🟡 (Defender for Endpoint 💲) | 🟡 💲 | 🟡 💲 | ❌ | ❌ | ❌ |
 | Exposed secrets / seed phrases / plaintext credentials on disk | ✅ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ |
 | Phishing / malicious URL checker | ✅ (offline heuristics + URLhaus + optional Safe Browsing) | ✅ SmartScreen | ✅ 💲 | ✅ | ❌ | ❌ | ❌ |
 | Password breach check (HIBP k-anonymity) | ✅ | ✅ (Edge) | ❌ | ✅ 💲 | ❌ | ❌ | ❌ |
