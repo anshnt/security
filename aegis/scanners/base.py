@@ -91,6 +91,8 @@ def load_all() -> Dict[str, Type[Scanner]]:
         "usb",
         "email",
         "memory",
+        "supplychain",
+        "ide",
     ):
         try:
             importlib.import_module(f"aegis.scanners.{mod}")
