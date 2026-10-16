@@ -492,3 +492,16 @@ def test_backups_never_overwrite_each_other_within_one_clock_tick(monkeypatch):
     from aegis.protect import undo
     ids = {e["id"] for e in undo.list_backups(cfg)}
     assert {a.stem, b.stem} <= ids
+
+
+def test_scanners_help_and_full_profile_name_every_scanner():
+    """The --scanners help text and the full profile must not go stale when a scanner is added."""
+    from aegis.cli import build_parser
+    from aegis.core.engine import PROFILES
+    from aegis.scanners.base import REGISTRY, load_all
+
+    load_all()
+    scan = next(a for a in build_parser()._subparsers._group_actions[0].choices["scan"]._actions if "--scanners" in a.option_strings)
+    for name in REGISTRY:
+        assert name in scan.help, name
+        assert name in PROFILES["full"], name
