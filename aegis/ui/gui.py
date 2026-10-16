@@ -22,12 +22,13 @@ import threading
 import time
 import traceback
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from aegis import __app_name__, __version__
 from aegis.core.config import Config
 from aegis.core.models import Finding, Severity
 from aegis.core.platform import IS_WINDOWS, is_admin
+from aegis.core.scoring import grade_for
 
 log = logging.getLogger("aegis.gui")
 
@@ -44,7 +45,7 @@ GRADE_COLOR = {"A": C["good"], "B": C["ok"], "C": C["warn"], "D": C["orange"], "
 FONT = "Segoe UI" if IS_WINDOWS else "Helvetica"
 MONO = "Consolas" if IS_WINDOWS else "Courier"
 SECRET_ENVS = (("virustotal_api_key", "AEGIS_VT_API_KEY"), ("abusech_auth_key", "AEGIS_ABUSECH_KEY"),
-               ("google_safebrowsing_api_key", "AEGIS_GSB_API_KEY"))
+               ("google_safebrowsing_api_key", "AEGIS_GSB_API_KEY"), ("alert_email_smtp_password", "AEGIS_SMTP_PASSWORD"))
 
 NAV = [("dashboard", "Dashboard"), ("scan", "Scan"), ("protection", "Protection"), ("quarantine", "Quarantine"),
        ("tools", "Tools"), ("settings", "Settings")]
@@ -187,6 +188,81 @@ class Gauge:
         step()
 
 
+class ScoreChart:
+    """Line chart of the last scan scores (oldest to newest) on a Canvas; segments and dots take the grade colour."""
+
+    MAX_POINTS = 20
+    BANDS = ((90, "A"), (80, "B"), (65, "C"), (50, "D"))
+
+    def __init__(self, app: "GuiApp", parent: Any, width: int = 640, height: int = 130):
+        self.app = app
+        self.w, self.h = width, height
+        self.canvas = app.tk.Canvas(parent, width=width, height=height, bg=C["panel"], highlightthickness=0)
+        self.points: List[Tuple[str, int]] = []
+        try:
+            self.canvas.bind("<Configure>", self._on_configure)
+        except Exception:
+            pass
+        self.draw()
+
+    def _on_configure(self, event: Any) -> None:
+        try:
+            w, h = int(event.width), int(event.height)
+        except (TypeError, ValueError, AttributeError):
+            return
+        if w > 60 and h > 60 and (w, h) != (self.w, self.h):
+            self.w, self.h = w, h
+            self.draw()
+
+    def set(self, points: List[Tuple[str, int]]) -> None:
+        self.points = [(str(d), int(v)) for d, v in points][-self.MAX_POINTS:]
+        self.draw()
+
+    @staticmethod
+    def _label(iso: str) -> str:
+        try:
+            return dt.datetime.fromisoformat(iso).strftime("%d %b")
+        except (ValueError, TypeError):
+            return iso[:10]
+
+    def draw(self) -> None:
+        c, w, h = self.canvas, self.w, self.h
+        left, right, top, bottom = 34, 18, 14, 24
+        c.delete("all")
+        span_y = h - top - bottom
+        pts = self.points
+        # scores are mostly 50-100: use the full height for that range unless a score is lower
+        lo = max(0, min(50, (min(v for _d, v in pts) // 10) * 10)) if pts else 50
+
+        def y_of(score: float) -> float:
+            return top + span_y * (1 - (max(float(lo), min(100.0, score)) - lo) / (100.0 - lo))
+
+        for value, _grade in self.BANDS:  # faint grade thresholds
+            if value <= lo:
+                continue
+            y = y_of(value)
+            c.create_line(left, y, w - right, y, fill=C["border"], dash=(2, 4), tags="grid")
+            c.create_text(left - 6, y, text=str(value), fill=C["muted"], font=(FONT, 7), anchor="e", tags="grid")
+        if not pts:
+            c.create_text(w / 2, h / 2, text="No scans recorded yet - run a Quick scan", fill=C["muted"], font=(FONT, 10), tags="empty")
+            return
+        n = len(pts)
+        xs = [left + (w - left - right) * (i / (n - 1) if n > 1 else 0.5) for i in range(n)]
+        ys = [y_of(v) for _d, v in pts]
+        for i in range(1, n):
+            col = GRADE_COLOR.get(grade_for(pts[i][1]), C["accent"])
+            c.create_line(xs[i - 1], ys[i - 1], xs[i], ys[i], fill=col, width=2, tags="line")
+        for i, (_d, v) in enumerate(pts):
+            col = GRADE_COLOR.get(grade_for(v), C["accent"])
+            r = 5 if i == n - 1 else 3
+            c.create_oval(xs[i] - r, ys[i] - r, xs[i] + r, ys[i] + r, fill=col, outline=C["panel"], tags="dot")
+        last_col = GRADE_COLOR.get(grade_for(pts[-1][1]), C["accent"])
+        c.create_text(xs[-1], max(top - 2, ys[-1] - 12), text=str(pts[-1][1]), fill=last_col, font=(FONT, 9, "bold"), tags="value")
+        c.create_text(xs[0], h - 9, text=self._label(pts[0][0]), fill=C["muted"], font=(FONT, 8), anchor="w", tags="axis")
+        if n > 1:
+            c.create_text(xs[-1], h - 9, text=self._label(pts[-1][0]), fill=C["muted"], font=(FONT, 8), anchor="e", tags="axis")
+
+
 # --------------------------------------------------------------------------- application
 
 class GuiApp:
@@ -281,6 +357,11 @@ class GuiApp:
         finally:
             for attr, val in swapped.items():
                 setattr(cfg, attr, val)
+        if os.name == "posix":  # config.json may hold webhook URLs / an SMTP password: owner only
+            try:
+                os.chmod(cfg.path, 0o600)
+            except OSError:
+                pass
 
     # ---- theme & shell
     def apply_theme(self) -> None:
@@ -362,7 +443,7 @@ class GuiApp:
             pass
 
     def build_shell(self) -> None:
-        tk, ttk = self.tk, self.ttk
+        ttk = self.ttk
         self.root.columnconfigure(1, weight=1)
         self.root.rowconfigure(0, weight=1)
         side = ttk.Frame(self.root, style="Side.TFrame", width=210)
@@ -592,6 +673,21 @@ class DashboardPage(Page):
         self.sig_label.pack(anchor="w", pady=(12, 0))
         f.rowconfigure(3, weight=1)
 
+        hist = app.card(f, "Score history")
+        hist.grid(row=4, column=0, columnspan=2, sticky="ew", pady=(14, 0))
+        hrow = ttk.Frame(hist, style="Panel.TFrame")
+        hrow.pack(fill="x", pady=(0, 6))
+        self.new_label = tk.Label(hrow, text="New since last scan: -", bg=C["panel"], fg=C["muted"], font=(FONT, 11, "bold"), anchor="w")
+        self.new_label.pack(side="left")
+        self.new_detail = ttk.Label(hrow, text="", style="Muted.TLabel")
+        self.new_detail.pack(side="left", padx=(14, 0))
+        self.chart = ScoreChart(app, hist)
+        self.chart.canvas.pack(fill="x", expand=True)
+        self._hist_busy = False
+        self._hist_again = False
+        self._hist_at = 0.0
+        self._hist_result: Any = None
+
     def go_scan(self, mode: str) -> None:
         self.app.show("scan")
         self.app.pages["scan"].start(mode)
@@ -643,6 +739,7 @@ class DashboardPage(Page):
         else:
             self.gauge.set(None)
             self.last_scan.configure(text="Last scan: never - run a Quick scan to get started")
+        self.refresh_history(force=result is not self._hist_result)
         on = app.protection_on
         self.prot_status.configure(text=f"Real-time protection: {'ON' if on else 'OFF'}", style="Good.TLabel" if on else "Bad.TLabel")
         self.prot_btn.configure(text="Turn off real-time protection" if on else "Turn on real-time protection",
@@ -671,6 +768,54 @@ class DashboardPage(Page):
             self.sig_label.configure(text=f"Signatures: {s['hashes']:,} hashes, {s['content_rules']} content rules, "
                                           f"{s['yara_rule_files']} YARA files, {s['malicious_ips']:,} bad IPs, "
                                           f"{s['malicious_domains']:,} bad domains.  Last update: {updated}")
+
+
+    # ---- score history (SQLite via aegis.core.history, loaded off the UI thread)
+    def refresh_history(self, force: bool = False) -> None:
+        if self._hist_busy:
+            self._hist_again = self._hist_again or force
+            return
+        if not force and time.time() - self._hist_at < 5.0:  # realtime events refresh the dashboard often
+            return
+        self._hist_busy = True
+        result = self.app.last_result
+        config = self.app.config
+
+        def work() -> Dict[str, Any]:
+            from aegis.core import history
+
+            return history.dashboard_data(config)
+
+        def done(data: Dict[str, Any]) -> None:
+            self._hist_busy = False
+            self._hist_at = time.time()
+            self._hist_result = result
+            self.apply_history(data)
+            if self._hist_again:
+                self._hist_again = False
+                self.refresh_history(force=True)
+
+        def err(exc: BaseException) -> None:
+            self._hist_busy = False
+            self._hist_again = False
+            log.debug("score history unavailable: %s", exc)
+
+        self.app.run_bg(work, done, err, name="aegis-history")
+
+    def apply_history(self, data: Dict[str, Any]) -> None:
+        self.chart.set(data.get("points") or [])
+        new, resolved, change = data.get("new"), data.get("resolved"), data.get("score_change")
+        if new is None:
+            self.new_label.configure(text="New since last scan: -", fg=C["muted"])
+            hint = (f"Nothing to compare yet - the next {data.get('profile') or 'scan'} scan will show what changed."
+                    if data.get("latest") else "No scans recorded yet.")
+            self.new_detail.configure(text=hint)
+            return
+        self.new_label.configure(text=f"New since last scan: {new}", fg=C["good"] if new == 0 else C["orange"])
+        bits = [f"Resolved: {resolved}"] if resolved is not None else []
+        if isinstance(change, int):
+            bits.append(f"Score change: {change:+d}")
+        self.new_detail.configure(text="   ".join(bits) + f"   ({data.get('profile', '')} scans)")
 
 
 # ---- Scan
@@ -1469,16 +1614,29 @@ class ToolsPage(Page):
 class SettingsPage(Page):
     key = "settings"
 
+    # (label, config attribute) of the masked webhook entries on the Alerts tab
+    ALERT_HOOKS = (("Slack incoming webhook URL", "alert_slack_webhook"),
+                   ("Microsoft Teams (Workflows) webhook URL", "alert_teams_webhook"),
+                   ("Discord webhook URL", "alert_discord_webhook"),
+                   ("Generic JSON webhook URL", "alert_webhook_url"))
+    ALERT_SEVERITIES = ["info", "low", "medium", "high", "critical"]
+
     def build(self) -> None:
         app, ttk, tk = self.app, self.ttk, self.tk
         cfg = app.config
         f = self.frame
         f.columnconfigure(0, weight=1)
-        f.columnconfigure(1, weight=1)
-        app.heading(f, "Settings", "Stored locally in your Aegis data folder").grid(row=0, column=0, columnspan=2, sticky="w")
+        f.rowconfigure(1, weight=1)
+        app.heading(f, "Settings", "Stored locally in your Aegis data folder").grid(row=0, column=0, sticky="w")
+        self.nb = ttk.Notebook(f)
+        self.nb.grid(row=1, column=0, sticky="nsew", pady=(12, 0))
+        general = ttk.Frame(self.nb, padding=(0, 12, 0, 0))
+        self.nb.add(general, text="General")
+        general.columnconfigure(0, weight=1)
+        general.columnconfigure(1, weight=1)
 
-        excl = app.card(f, "Exclusions")
-        excl.grid(row=1, column=0, sticky="nsew", pady=(12, 0), padx=(0, 8))
+        excl = app.card(general, "Exclusions")
+        excl.grid(row=0, column=0, sticky="nsew", padx=(0, 8))
         ttk.Label(excl, text="Paths or patterns (e.g. C:\\Dev, *\\node_modules\\*) that are never scanned.",
                   style="Muted.TLabel", wraplength=420, justify="left").pack(anchor="w")
         self.excl_list = tk.Listbox(excl, height=8, bg=C["panel2"], fg=C["text"], relief="flat", highlightthickness=0,
@@ -1490,10 +1648,10 @@ class SettingsPage(Page):
         ttk.Entry(r, textvariable=self.excl_var).pack(side="left", fill="x", expand=True)
         ttk.Button(r, text="Add", command=self.add_exclusion).pack(side="left", padx=(6, 0))
         ttk.Button(r, text="Folder...", command=self.add_folder).pack(side="left", padx=(6, 0))
-        ttk.Button(r, text="Remove selected", command=self.remove_exclusion).pack(anchor="w", pady=(8, 0))
+        ttk.Button(excl, text="Remove selected", command=self.remove_exclusion).pack(anchor="w", pady=(8, 0))
 
-        right = ttk.Frame(f)
-        right.grid(row=1, column=1, sticky="nsew", pady=(12, 0), padx=(8, 0))
+        right = ttk.Frame(general)
+        right.grid(row=0, column=1, sticky="nsew", padx=(8, 0))
         right.columnconfigure(0, weight=1)
         keys = app.card(right, "Threat-intelligence keys (optional)")
         keys.grid(row=0, column=0, sticky="ew")
@@ -1510,7 +1668,7 @@ class SettingsPage(Page):
             "cloud_lookup": tk.BooleanVar(value=cfg.cloud_lookup),
             "use_windows_defender_engine": tk.BooleanVar(value=cfg.use_windows_defender_engine),
         }
-        ttk.Checkbutton(keys, text="Cloud lookup: send SHA-256 of suspicious files to VirusTotal",
+        ttk.Checkbutton(keys, text="VirusTotal lookup of suspicious files (hash only)",
                         variable=self.flags["cloud_lookup"]).pack(anchor="w", pady=(10, 0))
         ttk.Checkbutton(keys, text="Use Microsoft Defender engine as a second opinion",
                         variable=self.flags["use_windows_defender_engine"]).pack(anchor="w")
@@ -1527,13 +1685,144 @@ class SettingsPage(Page):
         ttk.Spinbox(g, from_=1, to=4096, textvariable=self.maxsize_var, width=6).grid(row=1, column=1, padx=10)
         ttk.Label(perf, text="Larger files are hashed only.", style="Muted.TLabel").pack(anchor="w")
 
+        alerts_tab = ttk.Frame(self.nb, padding=(0, 12, 0, 0))
+        self.nb.add(alerts_tab, text="Alerts")
+        self.build_alerts(alerts_tab)
+
         row = ttk.Frame(f)
-        row.grid(row=2, column=0, columnspan=2, sticky="e", pady=(14, 0))
+        row.grid(row=2, column=0, sticky="e", pady=(14, 0))
         self.saved = ttk.Label(row, text="", style="MutedBg.TLabel")
         self.saved.pack(side="left", padx=12)
         ttk.Button(row, text="Save settings", style="Accent.TButton", command=self.save).pack(side="left")
         self.load_exclusions()
 
+    # ---- alerts tab
+    def build_alerts(self, tab: Any) -> None:
+        app, ttk, tk = self.app, self.ttk, self.tk
+        cfg = app.config
+        tab.columnconfigure(0, weight=1)
+        tab.columnconfigure(1, weight=1)
+        self.secret_entries: List[Any] = []
+
+        hooks = app.card(tab, "Chat and webhook alerts (optional)")
+        hooks.grid(row=0, column=0, sticky="nsew", padx=(0, 8))
+        self.alert_vars: Dict[str, Any] = {}
+        for label, key in self.ALERT_HOOKS:
+            self.alert_vars[key] = tk.StringVar(value=getattr(cfg, key, ""))
+            ttk.Label(hooks, text=label, style="Panel.TLabel").pack(anchor="w", pady=(4, 0))
+            ent = ttk.Entry(hooks, textvariable=self.alert_vars[key], show="*")
+            ent.pack(fill="x")
+            self.secret_entries.append(ent)
+        ttk.Label(hooks, text="URLs must start with https://. They are secrets: they are kept in config.json in your Aegis "
+                              "data folder and never included in alert messages.",
+                  style="Muted.TLabel", wraplength=430, justify="left").pack(anchor="w", pady=(8, 0))
+
+        mail = app.card(tab, "Email alerts (optional)")
+        mail.grid(row=0, column=1, sticky="nsew", padx=(8, 0))
+        self.alert_vars["alert_email_smtp_host"] = tk.StringVar(value=cfg.alert_email_smtp_host)
+        self.alert_vars["alert_email_smtp_port"] = tk.StringVar(value=str(cfg.alert_email_smtp_port))
+        self.alert_vars["alert_email_smtp_user"] = tk.StringVar(value=cfg.alert_email_smtp_user)
+        self.alert_vars["alert_email_smtp_password"] = tk.StringVar(value=cfg.alert_email_smtp_password)
+        self.alert_vars["alert_email_from"] = tk.StringVar(value=cfg.alert_email_from)
+        self.alert_vars["alert_email_to"] = tk.StringVar(value=cfg.alert_email_to)
+        self.alert_vars["alert_email_starttls"] = tk.BooleanVar(value=bool(cfg.alert_email_starttls))
+        hp = ttk.Frame(mail, style="Panel.TFrame")
+        hp.pack(fill="x", pady=(4, 0))
+        hp.columnconfigure(0, weight=1)
+        ttk.Label(hp, text="SMTP server", style="Panel.TLabel").grid(row=0, column=0, sticky="w")
+        ttk.Label(hp, text="Port", style="Panel.TLabel").grid(row=0, column=1, sticky="w", padx=(8, 0))
+        ttk.Entry(hp, textvariable=self.alert_vars["alert_email_smtp_host"]).grid(row=1, column=0, sticky="ew")
+        ttk.Entry(hp, textvariable=self.alert_vars["alert_email_smtp_port"], width=7).grid(row=1, column=1, padx=(8, 0))
+        for label, key, masked in (("User name", "alert_email_smtp_user", False), ("Password", "alert_email_smtp_password", True),
+                                   ("From address", "alert_email_from", False),
+                                   ("To address(es), comma separated", "alert_email_to", False)):
+            ttk.Label(mail, text=label, style="Panel.TLabel").pack(anchor="w", pady=(4, 0))
+            ent = ttk.Entry(mail, textvariable=self.alert_vars[key], show="*" if masked else "")
+            ent.pack(fill="x")
+            if masked:
+                self.secret_entries.append(ent)
+        ttk.Checkbutton(mail, text="Use STARTTLS (recommended)", variable=self.alert_vars["alert_email_starttls"]).pack(
+            anchor="w", pady=(8, 0))
+        if os.environ.get("AEGIS_SMTP_PASSWORD"):
+            ttk.Label(mail, text="AEGIS_SMTP_PASSWORD is set and overrides the password above.", style="Muted.TLabel").pack(anchor="w")
+
+        rules = app.card(tab, "When to alert")
+        rules.grid(row=1, column=0, columnspan=2, sticky="ew", pady=(12, 0))
+        self.alert_vars["alert_min_severity"] = tk.StringVar(value=(cfg.alert_min_severity or "high").lower())
+        self.alert_vars["alert_on"] = tk.StringVar(value="all" if str(cfg.alert_on).lower() == "all" else "new")
+        r1 = ttk.Frame(rules, style="Panel.TFrame")
+        r1.pack(fill="x")
+        ttk.Label(r1, text="Alert at severity", style="Panel.TLabel").pack(side="left")
+        ttk.Combobox(r1, textvariable=self.alert_vars["alert_min_severity"], values=self.ALERT_SEVERITIES, width=10,
+                     state="readonly").pack(side="left", padx=(8, 20))
+        ttk.Radiobutton(r1, text="New findings only", value="new", variable=self.alert_vars["alert_on"]).pack(side="left", padx=(0, 12))
+        ttk.Radiobutton(r1, text="All findings", value="all", variable=self.alert_vars["alert_on"]).pack(side="left")
+        self.show_secrets = tk.BooleanVar(value=False)
+        ttk.Checkbutton(r1, text="Show secrets", variable=self.show_secrets, command=self.toggle_secrets).pack(side="right")
+        r2 = ttk.Frame(rules, style="Panel.TFrame")
+        r2.pack(fill="x", pady=(10, 0))
+        self.test_btn = ttk.Button(r2, text="Send test alert", command=self.send_test)
+        self.test_btn.pack(side="left")
+        self.test_out = ttk.Label(r2, text="Sends a harmless test message to every channel above (unsaved edits are used).",
+                                  style="Muted.TLabel", wraplength=800, justify="left")
+        self.test_out.pack(side="left", padx=12)
+
+    def toggle_secrets(self) -> None:
+        show = "" if self.show_secrets.get() else "*"
+        for ent in self.secret_entries:
+            ent.configure(show=show)
+
+    def alert_values(self) -> Dict[str, Any]:
+        """The Alerts-tab form as config attributes. Raises ValueError for a bad port."""
+        out: Dict[str, Any] = {}
+        for key, var in self.alert_vars.items():
+            if key == "alert_email_starttls":
+                out[key] = bool(var.get())
+            elif key == "alert_email_smtp_port":
+                text = str(var.get()).strip() or "587"
+                if not text.isdigit() or not 0 < int(text) < 65536:
+                    raise ValueError("The SMTP port must be a number between 1 and 65535.")
+                out[key] = int(text)
+            else:
+                out[key] = str(var.get()).strip()
+        return out
+
+    def send_test(self) -> None:
+        from dataclasses import replace
+
+        from aegis.core import alerts
+
+        try:
+            cfg = replace(self.app.config, **self.alert_values())
+        except ValueError as exc:
+            self.test_out.configure(text=str(exc))
+            return
+        problems = alerts.validate_config(cfg)
+        if problems:
+            self.test_out.configure(text="Fix first: " + " ".join(problems))
+            return
+        if not alerts.configured_channels(cfg):
+            self.test_out.configure(text="Add at least one webhook URL or an SMTP server with a recipient first.")
+            return
+        self.test_btn.state(["disabled"])
+        self.test_out.configure(text="Sending test alert...")
+
+        def work() -> Dict[str, Any]:
+            return alerts.test_alert(cfg)
+
+        def done(res: Dict[str, Any]) -> None:
+            self.test_btn.state(["!disabled"])
+            parts = [f"{ch}: sent" if r.get("ok") else f"{ch}: FAILED ({r.get('error') or r.get('skipped') or 'unknown error'})"
+                     for ch, r in res.items()]
+            self.test_out.configure(text="   ".join(parts) or "Nothing was sent.")
+
+        def err(exc: BaseException) -> None:
+            self.test_btn.state(["!disabled"])
+            self.test_out.configure(text=f"Test failed: {type(exc).__name__}: {exc}")
+
+        self.app.run_bg(work, done, err, name="aegis-alert-test")
+
+    # ---- general tab
     def load_exclusions(self) -> None:
         self.excl_list.delete(0, "end")
         for e in self.app.config.exclusions:
@@ -1560,7 +1849,20 @@ class SettingsPage(Page):
             self.excl_list.delete(idx)
 
     def save(self) -> None:
+        from dataclasses import replace
+
+        from aegis.core import alerts
+
         cfg = self.app.config
+        try:  # validate the alert form first so a bad URL never leaves settings half-saved
+            alert_values = self.alert_values()
+        except ValueError as exc:
+            self.app.messagebox.showerror("Settings", str(exc))
+            return
+        problems = alerts.validate_config(replace(cfg, **alert_values))
+        if problems:
+            self.app.messagebox.showerror("Settings", "The alert settings need attention:\n\n" + "\n".join(problems))
+            return
         for key, var in self.key_vars.items():
             setattr(cfg, key, var.get().strip())
         for key, var in self.flags.items():
@@ -1571,6 +1873,8 @@ class SettingsPage(Page):
         except (ValueError, self.tk.TclError):
             self.app.messagebox.showerror("Settings", "Threads and max file size must be whole numbers.")
             return
+        for key, value in alert_values.items():
+            setattr(cfg, key, value)
         self.app.save_config()
         self.saved.configure(text="Saved " + dt.datetime.now().strftime("%H:%M:%S"))
         self.app.set_status("Settings saved")

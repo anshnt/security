@@ -53,6 +53,7 @@ WatchSpec = Tuple[Path, bool]  # (directory, recursive)
 NOTIFY_MIN_SEVERITY = Severity.MEDIUM
 DEDUP_WINDOW_S = 30.0
 EVENT_LOG_NAME = "realtime_events.jsonl"
+HEARTBEAT_INTERVAL_S = 30.0  # monitor.heartbeat is rewritten this often; `aegis doctor` reads it
 
 SKIP_DIR_NAMES = {".git", "node_modules", "__pycache__", ".venv", "venv", "site-packages", ".cache", "$recycle.bin",
                   "system volume information", ".tox", ".mypy_cache", ".pytest_cache"}
@@ -1219,6 +1220,7 @@ class RansomwareGuard:
 # =========================================================================== process guard
 
 HIGH_CONFIDENCE_PREFIXES = ("AEG-SIG", "AEG-RULE", "AEG-YARA", "AEG-DEFENDER", "AEG-VT")
+SIGMA_RELOAD_S = 600.0  # how often the process guard checks whether the Sigma rule files changed
 
 
 class ProcessGuard:
@@ -1227,11 +1229,15 @@ class ProcessGuard:
 
     def __init__(self, monitor: "RealtimeMonitor", interval: float = 1.5,
                  analyse_fn: Optional[Callable[[str], list]] = None,
-                 scan_fn: Optional[Callable[[Any, Path], List[Finding]]] = None):
+                 scan_fn: Optional[Callable[[Any, Path], List[Finding]]] = None,
+                 sigma_rules: Optional[Any] = None):
         self.monitor = monitor
         self.interval = interval
         self.analyse_fn = analyse_fn
         self.scan_fn = scan_fn
+        self._sigma_fixed = sigma_rules  # explicit SigmaRuleSet (tests); otherwise loaded lazily from disk
+        self._sigma: Any = None  # lazily loaded process_creation rules; False = engine unavailable
+        self._sigma_checked = float("-inf")
         self._seen: Dict[int, float] = {}
         self._retries: Dict[int, int] = {}  # pids re-read because their cmdline was empty
         self._scanned_exes: "collections.OrderedDict[Tuple[str, int, int], List[Finding]]" = collections.OrderedDict()
@@ -1392,6 +1398,58 @@ class ProcessGuard:
             log.debug("processes scanner unavailable: %s", exc)
             return None
 
+    def _sigma_ruleset(self) -> Any:
+        """The Sigma process_creation rules, loaded on first use and reloaded when the rule files change.
+        None when PyYAML is missing or no rules are installed."""
+        if self._sigma_fixed is not None:
+            return self._sigma_fixed
+        now = time.monotonic()
+        if self._sigma is not None and now - self._sigma_checked < SIGMA_RELOAD_S:
+            return self._sigma or None
+        self._sigma_checked = now
+        try:
+            from aegis.core import sigma
+
+            cfg = self.monitor.config
+            if self._sigma and sigma.rules_signature(cfg) == self._sigma.signature:
+                return self._sigma
+            rules = sigma.load_rules(cfg, categories=("process_creation",))
+            self._sigma = rules if rules.available and len(rules) else False
+        except Exception:
+            log.debug("sigma rules unavailable", exc_info=True)
+            self._sigma = self._sigma or False
+        return self._sigma or None
+
+    def _with_sigma(self, info: Dict[str, Any], findings: List[Finding]) -> List[Finding]:
+        """Add the Sigma process_creation matches for this process. A match that describes the same technique as a
+        finding we already have is folded into it (one alert per behaviour); Sigma alone never auto-terminates.
+        Optional and guarded: without PyYAML, rules or the Sigma module the findings are returned unchanged."""
+        if self._sigma_fixed is None and (self.analyse_fn is not None or self.scan_fn is not None):
+            return findings  # analysis functions were injected (tests): evaluate exactly what was asked for
+        try:
+            rules = self._sigma_ruleset()
+            if not rules:
+                return findings
+            from aegis.core import sigma
+
+            ev = sigma.event_from_process(info, "windows" if IS_WINDOWS else "linux")
+            exe = info.get("exe") or ""
+            for rule, matched in rules.match(ev):
+                sf = sigma.finding_for_match(rule, matched, ev)
+                if sf.severity < Severity.MEDIUM:
+                    continue
+                sf.severity = min(sf.severity, Severity.HIGH)  # a behaviour rule alone is not grounds to kill a process
+                base = next((f for f in findings if sigma.same_technique(f.mitre, sf.mitre)), None)
+                if base is not None:
+                    sigma.fold_finding(base, sf)
+                    continue
+                sf.remediation = Remediation("kill_process", {"pid": info["pid"], "path": exe, "quarantine": False},
+                                             f"Terminate {info.get('name')} (pid {info['pid']})")
+                findings.append(sf)
+        except Exception:
+            log.debug("sigma evaluation failed for pid %s", info.get("pid"), exc_info=True)
+        return findings
+
     def evaluate(self, info: Dict[str, Any]) -> List[Finding]:
         exe = info.get("exe") or ""
         cmd = " ".join(info.get("cmdline") or [])
@@ -1411,7 +1469,7 @@ class ProcessGuard:
                     Remediation("kill_process", {"pid": info["pid"], "path": exe, "quarantine": False},
                                 f"Terminate {info.get('name')} (pid {info['pid']})"),
                     "realtime", list(mitre or [])))
-        findings = list(findings) + self._scan_exe(exe)  # hash / rules / heuristics on the image itself
+        findings = self._with_sigma(info, list(findings)) + self._scan_exe(exe)  # + hash / rules / heuristics on the image
         for f in findings:
             f.scanner = f.scanner or "realtime"
             f.evidence.setdefault("pid", info["pid"])
@@ -1658,6 +1716,7 @@ class RealtimeMonitor:
         self._lock = threading.RLock()
         self._ctx: Any = None
         self._recent: Dict[str, float] = {}
+        self._alerts: Any = None  # aegis.core.alerts.AlertBatcher while running
         self.files = FileGuard(self, watch_specs, backend, poll_interval, stable_secs)
         self.processes = ProcessGuard(self)
         self.ransomware = RansomwareGuard(self, canary_dirs)
@@ -1741,6 +1800,12 @@ class RealtimeMonitor:
                     self.on_event(finding)
                 except Exception:
                     log.exception("on_event callback raised")
+            alerts = self._alerts
+            if alerts is not None:  # outbound alerts (Slack/Teams/...): queued and batched on their own thread
+                try:
+                    alerts.add(finding)
+                except Exception:
+                    log.debug("alert queue failed", exc_info=True)
             return True
         except Exception:
             log.exception("emit failed")
@@ -1771,7 +1836,39 @@ class RealtimeMonitor:
                     guard.start(self._stop)
                 except Exception:
                     log.exception("failed to start %s guard", name)
+            self._start_services()
             log.info("real-time protection started (%s)", ", ".join(self.components))
+
+    def _start_services(self) -> None:
+        """Heartbeat file (read by `aegis doctor`) and the outbound-alert batcher thread."""
+        self.spawn("heartbeat", lambda stop=self._stop: self._heartbeat_loop(stop))
+        try:
+            from aegis.core.alerts import AlertBatcher
+
+            self._alerts = AlertBatcher(self.config)
+            self._alerts.start()
+        except Exception:
+            log.exception("alert batcher failed to start")
+            self._alerts = None
+
+    def _heartbeat_loop(self, stop: threading.Event) -> None:
+        from aegis.core.doctor import write_heartbeat
+
+        while True:
+            write_heartbeat(self.config, self.started_at, self.components)
+            if stop.wait(HEARTBEAT_INTERVAL_S):
+                return
+
+    def _stop_services(self) -> None:
+        alerts, self._alerts = self._alerts, None
+        if alerts is not None:
+            alerts.stop(timeout=2.0)  # flushes what is queued; a slow network never blocks shutdown for long
+        try:
+            from aegis.core.doctor import clear_heartbeat
+
+            clear_heartbeat(self.config)
+        except Exception:
+            log.debug("could not remove heartbeat", exc_info=True)
 
     def stop(self, timeout: float = 3.0) -> None:
         with self._lock:
@@ -1787,6 +1884,7 @@ class RealtimeMonitor:
         with self._lock:
             self._threads = [t for t in self._threads if t.is_alive()]
             self._running = False
+        self._stop_services()
         log.info("real-time protection stopped")
 
     def run_forever(self) -> None:

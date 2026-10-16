@@ -22,7 +22,7 @@ log = logging.getLogger("aegis.engine")
 PROFILES: Dict[str, List[str]] = {
     "quick": ["processes", "persistence", "files", "browser", "network"],
     "full": ["processes", "persistence", "files", "browser", "network", "system_audit", "software", "secrets",
-             "eventlog", "drivers", "sideload", "usb", "email", "memory"],
+             "eventlog", "drivers", "sideload", "usb", "email", "memory", "supplychain", "ide"],
     "audit": ["system_audit", "software", "network", "browser"],
     "custom": [],
 }
@@ -139,6 +139,19 @@ class ScanEngine:
                 log.warning("auto-remediation %s: %s", "ok" if ok else "failed", msg)
 
     def _save_last(self, result: ScanResult) -> None:
+        diff = None
+        try:  # scan history + "what changed since last time" (sets result.stats); must never break a scan
+            from aegis.core import history
+
+            diff = history.record_and_compare(result, self.config)
+        except Exception as exc:  # pragma: no cover
+            log.debug("could not record scan history: %s", exc)
+        try:  # opt-in outbound alerts (Slack/Teams/Discord/webhook/email) for NEW findings
+            from aegis.core import alerts
+
+            alerts.alert_after_scan(result, self.config, diff)
+        except Exception as exc:  # pragma: no cover
+            log.debug("could not send alerts: %s", exc)
         try:
             stamp = dt.datetime.now().strftime("%Y%m%d-%H%M%S")
             out = self.config.reports_dir / f"scan-{result.profile}-{stamp}.json"

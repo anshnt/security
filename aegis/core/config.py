@@ -79,6 +79,21 @@ class Config:
     # Reporting
     report_dir: str = ""
 
+    # Outbound alerts (aegis.core.alerts). Opt-in: nothing is sent unless a channel below is configured.
+    alert_webhook_url: str = ""  # generic JSON POST
+    alert_slack_webhook: str = ""
+    alert_teams_webhook: str = ""  # Teams Workflows / Power Automate "when a webhook request is received"
+    alert_discord_webhook: str = ""
+    alert_email_smtp_host: str = ""
+    alert_email_smtp_port: int = 587
+    alert_email_smtp_user: str = ""
+    alert_email_smtp_password: str = ""  # env AEGIS_SMTP_PASSWORD overrides (keeps it off disk)
+    alert_email_from: str = ""
+    alert_email_to: str = ""  # one or more addresses separated by comma or semicolon
+    alert_email_starttls: bool = True
+    alert_min_severity: str = "high"  # info | low | medium | high | critical
+    alert_on: str = "new"  # "new": only findings that appeared since the previous comparable scan; "all"
+
     @property
     def home(self) -> Path:
         return data_home()
@@ -89,6 +104,11 @@ class Config:
 
     def save(self) -> Path:
         self.path.write_text(json.dumps(asdict(self), indent=2), encoding="utf-8")
+        if not IS_WINDOWS:  # may hold API keys / webhook URLs / SMTP password: owner-only
+            try:
+                os.chmod(self.path, 0o600)
+            except OSError:
+                pass
         return self.path
 
     @classmethod

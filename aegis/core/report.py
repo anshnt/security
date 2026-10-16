@@ -7,11 +7,11 @@ import html
 import io
 import json
 from pathlib import Path
-from typing import Dict, List
+from typing import Any, Dict, List, Optional, Tuple
 
 from aegis import __app_name__, __version__
 from aegis.core.models import CheckStatus, Finding, ScanResult, Severity
-from aegis.core.scoring import security_score
+from aegis.core.scoring import grade_for, security_score
 
 _ANSI = {
     Severity.CRITICAL: "\033[1;97;41m",
@@ -44,6 +44,10 @@ def render_text(result: ScanResult, color: bool = False, verbose: bool = False, 
     counts = result.counts()
     w("Findings: " + "  ".join(_c(f"{k.upper()} {v}", _ANSI[Severity[k.upper()]], color) for k, v in counts.items() if k != "info")
       + f"  INFO {counts['info']}")
+    if isinstance(result.stats.get("new_findings"), int):
+        sc = result.stats.get("score_change")
+        w(f"Since the previous {result.profile} scan: {result.stats['new_findings']} new, "
+          f"{result.stats.get('resolved_findings', 0)} resolved" + (f", score {sc:+d}" if isinstance(sc, int) else ""))
     if not result.host.get("admin"):
         w(_c("Note: not running as Administrator/root - some checks were limited.", _DIM, color))
     w("")
@@ -97,8 +101,102 @@ document.getElementById('filters').addEventListener('click',function(ev){
 _SEV_COLORS = {"critical": "#b3261e", "high": "#e8590c", "medium": "#f2c94c", "low": "#4dabf7", "info": "#9aa5b1"}
 
 
-def render_html(result: ScanResult) -> str:
+_HISTORY_CSS = """
+.cols{display:grid;grid-template-columns:repeat(auto-fit,minmax(300px,1fr));gap:16px}
+h3{margin:0 0 8px;font-size:15px}.chg{list-style:none;padding:0;margin:0}
+.chg li{padding:6px 0;border-bottom:1px solid var(--line)}.chg .badge{margin-right:6px;font-size:10px;min-width:58px;display:inline-block}
+.chg code{display:block;margin-top:2px;color:var(--muted)}.up{color:#2f9e44}.down{color:#e03131}
+.trend{display:flex;gap:12px;align-items:center;flex-wrap:wrap;margin-top:14px;color:var(--muted);font-size:13px}
+"""
+
+
+def _as_dicts(value: Any) -> List[Dict[str, Any]]:
+    return [x for x in value if isinstance(x, dict)] if isinstance(value, list) else []
+
+
+def _clean_trend(value: Any) -> List[Tuple[str, int]]:
+    out: List[Tuple[str, int]] = []
+    for item in value if isinstance(value, list) else []:
+        try:
+            out.append((str(item[0]), max(0, min(100, int(item[1])))))
+        except (TypeError, ValueError, IndexError, KeyError):
+            continue
+    return out
+
+
+def _sparkline(points: List[Tuple[str, int]]) -> str:
+    """Inline SVG line of the scores (oldest first). Every value is an int or escaped text."""
+    if len(points) < 2:
+        return ""
+    w, h, pad = 260, 56, 6
+    n = len(points)
+    xs = [pad + i * (w - 2 * pad) / (n - 1) for i in range(n)]
+    ys = [h - pad - (v / 100.0) * (h - 2 * pad) for _d, v in points]
+    line = " ".join(f"{x:.1f},{y:.1f}" for x, y in zip(xs, ys))
+    last = points[-1][1]
+    ring = "#2f9e44" if grade_for(last) in ("A", "B") else "#f59f00" if grade_for(last) == "C" else "#e03131"
+    y90 = h - pad - 0.9 * (h - 2 * pad)
+    label = f"Score trend over the last {n} scans: {points[0][1]} to {last}"
+    return (f'<svg viewBox="0 0 {w} {h}" width="{w}" height="{h}" role="img" aria-label="{html.escape(label)}">'
+            f"<title>{html.escape(label)}</title>"
+            f'<line x1="{pad}" y1="{y90:.1f}" x2="{w - pad}" y2="{y90:.1f}" style="stroke:var(--line)" stroke-dasharray="3 3"/>'
+            f'<polyline fill="none" stroke="#4c8dff" stroke-width="2" stroke-linejoin="round" points="{line}"/>'
+            f'<circle cx="{xs[-1]:.1f}" cy="{ys[-1]:.1f}" r="4" fill="{ring}"/></svg>')
+
+
+def _change_items(items: List[Dict[str, Any]], limit: int = 50) -> str:
+    e = html.escape
+    rows = []
+    for x in items[:limit]:
+        sev = str(x.get("severity", "info")).lower()
+        sev = sev if sev in _SEV_COLORS else "info"
+        loc = str(x.get("location", ""))
+        ink = ";color:#222" if sev == "medium" else ""
+        rows.append(f'<li><span class="badge sev-{sev}" style="background:{_SEV_COLORS[sev]}{ink}">{sev.upper()}</span>'
+                    f'{e(str(x.get("title", "")))}' + (f"<code>{e(loc)}</code>" if loc else "") + "</li>")
+    if len(items) > limit:
+        rows.append(f'<li class="meta">...and {len(items) - limit} more</li>')
+    return "".join(rows) or '<li class="meta">None</li>'
+
+
+def _render_changes(h: Optional[Dict[str, Any]]) -> str:
+    """"Changes since previous scan" section + score trend sparkline; '' when there is nothing to show."""
+    if not isinstance(h, dict):
+        return ""
+    e = html.escape
+    prev = h.get("previous") if isinstance(h.get("previous"), dict) else None
+    trend = _clean_trend(h.get("trend"))[-20:]
+    if prev is None and len(trend) < 2:
+        return ""
+    out = ['<section id="changes"><h2>Changes since previous scan</h2>']
+    if prev is not None:
+        new, resolved = _as_dicts(h.get("new")), _as_dicts(h.get("resolved"))
+        try:
+            change = int(h.get("score_change"))  # type: ignore[arg-type]
+        except (TypeError, ValueError):
+            change = None
+        out.append(f'<div class="sub">Compared with the {e(str(prev.get("profile", "")))} scan of {e(str(prev.get("started", "")))}'
+                   f' (score {e(str(prev.get("score", "?")))}, grade {e(str(prev.get("grade", "?")))})</div>')
+        tiles = [("New", len(new), "#e03131" if new else "#2f9e44"), ("Resolved", len(resolved), "#2f9e44")]
+        if change is not None:
+            tiles.append(("Score change", f"{change:+d}", "#2f9e44" if change > 0 else "#e03131" if change < 0 else "#9aa5b1"))
+        out.append('<div class="tiles">' + "".join(
+            f'<div class="tile"><div class="n" style="color:{c}">{e(str(v))}</div><div class="l">{lab}</div></div>'
+            for lab, v, c in tiles) + "</div>")
+        out.append(f'<div class="cols"><div><h3>New ({len(new)})</h3><ul class="chg">{_change_items(new)}</ul></div>'
+                   f'<div><h3>Resolved ({len(resolved)})</h3><ul class="chg">{_change_items(resolved)}</ul></div></div>')
+    if len(trend) >= 2:
+        out.append(f'<div class="trend">{_sparkline(trend)}<span>Score over the last {len(trend)} scans '
+                   f'({e(trend[0][0][:10])} to {e(trend[-1][0][:10])}): {trend[0][1]} &rarr; {trend[-1][1]}</span></div>')
+    out.append("</section>")
+    return "".join(out)
+
+
+def render_html(result: ScanResult, history: Optional[Dict[str, Any]] = None) -> str:
+    """Self-contained HTML report. ``history`` (default: ``result.stats["history"]``, filled in by the scan engine)
+    adds the "Changes since previous scan" section and the score sparkline."""
     d = result.to_dict()
+    changes = _render_changes(history if history is not None else (result.stats or {}).get("history"))
     score, grade = d["score"], d["grade"]
     e = html.escape
     ring = "#2f9e44" if grade in ("A", "B") else "#f59f00" if grade == "C" else "#e03131"
@@ -169,7 +267,7 @@ table{{width:100%;border-collapse:collapse}}td{{padding:6px 8px;border-bottom:1p
 .pill-pass{{background:#2f9e44}}.pill-fail{{background:#e03131}}.pill-warn{{background:#f59f00}}
 footer{{color:var(--muted);font-size:12px;text-align:center;margin:24px 0}}
 @media print{{details.finding{{break-inside:avoid}} details.finding[open] summary ~ *{{display:block}} .filters{{display:none}}}}
-</style></head><body><main>
+{_HISTORY_CSS}</style></head><body><main>
 <header>
   <div class="gauge"><div><b>{score}</b><span>grade {grade}</span></div></div>
   <div><h1>Aegis Security Report</h1>
@@ -178,6 +276,7 @@ footer{{color:var(--muted);font-size:12px;text-align:center;margin:24px 0}}
   <div class="sub">Scanners: {e(', '.join(d['scanners']))}</div></div>
 </header>
 <div class="tiles">{tiles}</div>
+{changes}
 <section><h2>Findings ({len(d['findings'])})</h2>
 <div class="filters" id="filters"><button class="on" data-f="all">All</button>
 <button data-f="critical">Critical</button><button data-f="high">High</button><button data-f="medium">Medium</button>
