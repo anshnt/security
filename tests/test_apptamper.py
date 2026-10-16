@@ -312,47 +312,57 @@ def _same_path(a, b):
 
 @pytest.mark.skipif(sys.platform != "win32", reason="creates shortcuts with WScript.Shell, which only exists on Windows")
 def test_parse_real_windows_shortcuts(tmp_path):
+    """Shortcuts written by Windows itself (WScript.Shell) parse to the same target, arguments and working directory.
+
+    PowerShell creates the folder, the target files and the shortcuts itself under %TEMP%: on the CI runners
+    WScript.Shell could not save a shortcut inside pytest's tmp_path (created with mode 0o700, which recent Pythons
+    turn into an owner-only ACL)."""
     ps = shutil.which("powershell") or shutil.which("pwsh")
     if not ps:
         pytest.skip("PowerShell not found")
-    tools = tmp_path / "tools dir"
-    tools.mkdir()
-    workdir = tmp_path / "work dir"
-    workdir.mkdir()
-    cases = [
-        (tools / "plain.exe", '--profile-directory="Profile 1" --app-id=abcdefghijklmnop'),
-        (tools / "quoted.exe", '--load-extension="C:\\Some Dir\\ext one" --flag=a b "quoted arg" \'single\' --end'),
-        (tools / "тест-Ünïcödé-日本語.exe", "--new-window https://example.com/a?b=1&c=2"),
-        (tools / "no args.exe", ""),
-    ]
-    spec = []
-    for i, (target, args) in enumerate(cases):
-        target.write_bytes(b"MZ" + b"\0" * 64)
-        spec.append({"lnk": str(tmp_path / f"case{i}.lnk"), "target": str(target), "args": args, "wd": str(workdir)})
+    names = [("plain.exe", '--profile-directory="Profile 1" --app-id=abcdefghijklmnop'),
+             ("quoted.exe", '--load-extension="C:\\Some Dir\\ext one" --flag=a b "quoted arg" \'single\' --end'),
+             ("тест-Ünïcödé-日本語.exe", "--new-window https://example.com/a?b=1&c=2"),
+             ("no args.exe", "")]
 
     def q(text):  # PowerShell single-quoted literal
         return "'" + text.replace("'", "''") + "'"
 
-    lines = ["$ErrorActionPreference = 'Stop'", "$ws = New-Object -ComObject WScript.Shell"]
-    for i, c in enumerate(spec):
-        lines += [f"Write-Output 'case {i}'", f"$s = $ws.CreateShortcut({q(c['lnk'])})", f"$s.TargetPath = {q(c['target'])}"]
-        if c["args"]:
-            lines.append(f"$s.Arguments = {q(c['args'])}")
-        lines += [f"$s.WorkingDirectory = {q(c['wd'])}", "$s.Save()"]
+    base_name = f"aegis-lnk-test-{os.getpid()}-{random.randrange(1 << 30)}"
+    lines = ["$ErrorActionPreference = 'Stop'",
+             f"$base = Join-Path $env:TEMP {q(base_name)}",
+             "$tools = New-Item -ItemType Directory -Path (Join-Path $base 'tools dir') -Force",
+             "$work = New-Item -ItemType Directory -Path (Join-Path $base 'work dir') -Force",
+             "[IO.File]::WriteAllText((Join-Path $base 'probe.txt'), 'x')",
+             "Write-Output \"BASE=$base\"",
+             "$ws = New-Object -ComObject WScript.Shell"]
+    for i, (name, args) in enumerate(names):
+        lines += [f"Write-Output 'case {i}'",
+                  f"$t = Join-Path $tools.FullName {q(name)}",
+                  "[IO.File]::WriteAllBytes($t, [byte[]](77, 90, 0, 0))",
+                  f"$s = $ws.CreateShortcut((Join-Path $base 'case{i}.lnk'))",
+                  "$s.TargetPath = $t"]
+        if args:
+            lines.append(f"$s.Arguments = {q(args)}")
+        lines += ["$s.WorkingDirectory = $work.FullName", "$s.Save()"]
     script = tmp_path / "make.ps1"
-    script.write_text("\r\n".join(lines) + "\r\n", encoding="utf-8-sig")  # BOM: Windows PowerShell 5.1 reads it as UTF-8
+    script.write_bytes(("\r\n".join(lines) + "\r\n").encode("utf-8-sig"))  # BOM: Windows PowerShell 5.1 reads UTF-8
     done = subprocess.run([ps, "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File", str(script)],
-                          capture_output=True, text=True, timeout=180)
-    if done.returncode != 0:
-        pytest.fail(f"PowerShell could not create the shortcuts (exit {done.returncode}):\n{done.stdout}\n{done.stderr}")
-    for (target, args), item in zip(cases, spec):
-        lnk = Path(item["lnk"])
-        assert lnk.is_file(), (str(lnk), sorted(p.name for p in tmp_path.iterdir()), done.stdout[-500:], done.stderr[-500:])
-        info = read_lnk(item["lnk"])
-        assert info is not None, (str(lnk), lnk.stat().st_size, lnk.read_bytes()[:96].hex())
-        assert _same_path(info.target_path, target), (info.target_path, str(target))
-        assert info.arguments == args
-        assert _same_path(info.working_dir, workdir)
+                          capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=180)
+    base = next((ln[5:].strip() for ln in done.stdout.splitlines() if ln.startswith("BASE=")), "")
+    try:
+        if done.returncode != 0:
+            pytest.fail(f"PowerShell could not create the shortcuts (exit {done.returncode}):\n{done.stdout}\n{done.stderr}")
+        for i, (name, args) in enumerate(names):
+            lnk = Path(base) / f"case{i}.lnk"
+            info = read_lnk(str(lnk))
+            assert info is not None, (str(lnk), lnk.stat().st_size, lnk.read_bytes()[:96].hex())
+            assert _same_path(info.target_path, Path(base) / "tools dir" / name), (info.target_path, name)
+            assert info.arguments == args
+            assert _same_path(info.working_dir, Path(base) / "work dir")
+    finally:
+        if base and Path(base).name == base_name:
+            shutil.rmtree(base, ignore_errors=True)
 
 
 # =========================================================================== Discord classifier
