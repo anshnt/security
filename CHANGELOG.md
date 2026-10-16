@@ -26,6 +26,10 @@
   - The check `AEG-RA-CHK` ("Remote access tools reviewed") passes, fails with a summary per tool, or skips and names where
     it looked; profiles the scan may not read are named. ATT&CK ids are T1219.002 (Remote Desktop Software), T1133 and T1078.
 
+### App
+- **Fleet overview in the GUI** (Tools > Fleet overview): pick the folder with your PCs' scan results, build the overview
+  and open the HTML report, without the command line.
+
 ## [1.4.0] - 2026-10-16
 
 ### Detection

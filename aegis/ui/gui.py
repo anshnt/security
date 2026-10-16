@@ -1506,6 +1506,29 @@ class ToolsPage(Page):
         self.app_updates: List[Any] = []
         self.app_source = ""
 
+        # Fleet overview
+        t7 = ttk.Frame(nb, style="Panel.TFrame", padding=18)
+        nb.add(t7, text="Fleet overview")
+        ttk.Label(t7, text="Combine the scan results of several PCs into one report: which PCs need attention first and which "
+                           "problems many of them share. Collect each PC's scan result (aegis scan --json, or Export report > "
+                           "JSON) in one folder.",
+                  style="Muted.TLabel", wraplength=800, justify="left").pack(anchor="w")
+        r = ttk.Frame(t7, style="Panel.TFrame")
+        r.pack(fill="x", pady=8)
+        self.fleet_var = tk.StringVar()
+        ttk.Entry(r, textvariable=self.fleet_var).pack(side="left", fill="x", expand=True)
+        ttk.Button(r, text="Browse...", command=self.pick_fleet_folder).pack(side="left", padx=8)
+        self.fleet_recursive = tk.BooleanVar(value=True)
+        ttk.Checkbutton(r, text="Include sub-folders", variable=self.fleet_recursive).pack(side="left", padx=(0, 8))
+        self.fleet_btn = ttk.Button(r, text="Build overview", style="Accent.TButton", command=self.build_fleet)
+        self.fleet_btn.pack(side="left")
+        self.fleet_open_btn = ttk.Button(r, text="Open report", command=self.open_fleet)
+        self.fleet_open_btn.pack(side="left", padx=(8, 0))
+        self.fleet_open_btn.state(["disabled"])
+        self.fleet_out = app.text_box(t7, height=10, mono=True)  # the summary is a fixed-width table
+        self.fleet_out.pack(fill="both", expand=True)
+        self.fleet_path: Optional[Path] = None
+
         # Updates
         t4 = ttk.Frame(nb, style="Panel.TFrame", padding=18)
         nb.add(t4, text="Signature update")
@@ -1655,6 +1678,55 @@ class ToolsPage(Page):
             self.app.set_text(self.apps_out, [(f"Update check failed: {e}", "critical")])
 
         self.app.run_bg(work, done, failed)
+
+    def pick_fleet_folder(self) -> None:
+        d = self.app.filedialog.askdirectory(title="Folder with the scan results of your PCs")
+        if d:
+            self.fleet_var.set(d)
+
+    def build_fleet(self) -> None:
+        folder = self.fleet_var.get().strip()
+        if not folder:
+            self.app.messagebox.showinfo("Fleet overview", "Choose the folder that holds the scan results first.")
+            return
+        recursive = bool(self.fleet_recursive.get())
+        target = self.app.config.reports_dir / "fleet.html"
+        self.fleet_btn.state(["disabled"])
+        self.fleet_open_btn.state(["disabled"])
+        self._busy(self.fleet_out, "Reading scan results...")
+
+        def work() -> tuple:
+            from aegis.core import fleet
+
+            loaded = fleet.load_results([folder], recursive=recursive)
+            if not loaded.results:
+                return None, "", loaded
+            overview = fleet.build_fleet(loaded.results, load=loaded)
+            return fleet.write_fleet(overview, target), fleet.render_text(overview), loaded
+
+        def done(res: tuple) -> None:
+            path, text, loaded = res
+            self.fleet_btn.state(["!disabled"])
+            if path is None:
+                note = f" ({len(loaded.skipped)} file(s) were not Aegis scan results)" if loaded.skipped else ""
+                self.app.set_text(self.fleet_out, [(f"No Aegis scan results found in {folder}{note}.\n", "medium")])
+                return
+            self.fleet_path = Path(path)
+            self.app.set_text(self.fleet_out, [(text + "\n\n", None), (f"Report written to {path}\n", "muted")])
+            self.fleet_open_btn.state(["!disabled"])
+            self.app.set_status("Fleet overview ready")
+
+        def failed(e: BaseException) -> None:
+            self.fleet_btn.state(["!disabled"])
+            self.app.set_text(self.fleet_out, [(f"Could not build the overview: {e}", "critical")])
+
+        self.app.run_bg(work, done, failed)
+
+    def open_fleet(self) -> None:
+        if self.fleet_path and self.fleet_path.is_file():
+            import webbrowser
+
+            webbrowser.open(self.fleet_path.resolve().as_uri())
 
     def upgrade_apps(self) -> None:
         from aegis.tools import appupdates

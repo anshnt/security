@@ -317,3 +317,49 @@ def test_dashboard_what_to_do_first_fixes_only_that_group(gui, monkeypatch):
     assert [f.rule_id for f in app.last_result.findings] == ["AEG-D", "AEG-U"]
     assert [p["title"] for p in dash.plan_items][0] == "Discord client code was modified"  # plan refreshed
     assert not errors, errors
+
+
+def test_tools_fleet_overview_from_a_folder_of_results(gui, tmp_path, monkeypatch):
+    import datetime as dt
+    import webbrowser
+
+    from aegis.core.models import Category, Finding, ScanResult, Severity
+
+    app, errors = gui
+    tools = app.pages["tools"]
+    app.show("tools")
+    pump(app, 0.2)
+    asked = []
+    monkeypatch.setattr(app.messagebox, "showinfo", lambda title, msg: asked.append(title))
+    tools.build_fleet()
+    assert asked == ["Fleet overview"]  # no folder chosen yet
+
+    folder = tmp_path / "results"
+    (folder / "office").mkdir(parents=True)
+    now = dt.datetime.now()
+    for name, host, sev in (("pc-one.json", "pc-one", Severity.HIGH), ("office/pc-two.json", "pc-two", Severity.LOW)):
+        r = ScanResult(profile="quick", started=now, finished=now, host={"hostname": host}, scanners=["files"])
+        r.add(Finding("AEG-GUI-SHARED", "Shared problem", sev, Category.MALWARE, location="C:\\x\\shared.exe"))
+        (folder / name).write_text(r.to_json(), encoding="utf-8")
+    (folder / "notes.json").write_text('{"not": "a scan"}', encoding="utf-8")
+    tools.fleet_var.set(str(folder))
+    tools.fleet_recursive.set(True)
+    tools.build_fleet()
+    assert pump(app, 20, until=lambda: "Report written to" in tools.fleet_out.get("1.0", "end")), \
+        tools.fleet_out.get("1.0", "end")
+    text = tools.fleet_out.get("1.0", "end")
+    assert "pc-one" in text and "pc-two" in text
+    assert tools.fleet_path is not None and tools.fleet_path.is_file() and tools.fleet_path.suffix == ".html"
+    assert not tools.fleet_open_btn.instate(["disabled"]) and not tools.fleet_btn.instate(["disabled"])
+    opened = []
+    monkeypatch.setattr(webbrowser, "open", lambda url: opened.append(url))
+    tools.open_fleet()
+    assert opened == [tools.fleet_path.resolve().as_uri()]
+
+    empty = tmp_path / "empty"
+    empty.mkdir()
+    tools.fleet_var.set(str(empty))
+    tools.build_fleet()
+    assert pump(app, 20, until=lambda: "No Aegis scan results" in tools.fleet_out.get("1.0", "end"))
+    assert tools.fleet_open_btn.instate(["disabled"])
+    assert not errors, errors
