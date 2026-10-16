@@ -329,23 +329,22 @@ def test_parse_real_windows_shortcuts(tmp_path):
     for i, (target, args) in enumerate(cases):
         target.write_bytes(b"MZ" + b"\0" * 64)
         spec.append({"lnk": str(tmp_path / f"case{i}.lnk"), "target": str(target), "args": args, "wd": str(workdir)})
+
+    def q(text):  # PowerShell single-quoted literal
+        return "'" + text.replace("'", "''") + "'"
+
+    lines = ["$ErrorActionPreference = 'Stop'", "$ws = New-Object -ComObject WScript.Shell"]
+    for i, c in enumerate(spec):
+        lines += [f"Write-Output 'case {i}'", f"$s = $ws.CreateShortcut({q(c['lnk'])})", f"$s.TargetPath = {q(c['target'])}"]
+        if c["args"]:
+            lines.append(f"$s.Arguments = {q(c['args'])}")
+        lines += [f"$s.WorkingDirectory = {q(c['wd'])}", "$s.Save()"]
     script = tmp_path / "make.ps1"
-    script.write_text(
-        "$ErrorActionPreference = 'Stop'\n"
-        "$ws = New-Object -ComObject WScript.Shell\n"
-        # Windows PowerShell 5.1 emits a JSON array as ONE pipeline object; assigning it unwraps it for foreach
-        "$cases = ConvertFrom-Json -InputObject $env:LNK_CASES\n"
-        "foreach ($c in $cases) {\n"
-        "  $s = $ws.CreateShortcut($c.lnk)\n"
-        "  $s.TargetPath = $c.target\n"
-        "  if ($c.args) { $s.Arguments = $c.args }\n"
-        "  $s.WorkingDirectory = $c.wd\n"
-        "  $s.Save()\n"
-        "}\n", encoding="ascii")
-    env = dict(os.environ, LNK_CASES=json.dumps(spec))  # json escapes non-ASCII, so the environment stays ASCII
+    script.write_text("\r\n".join(lines) + "\r\n", encoding="utf-8-sig")  # BOM: Windows PowerShell 5.1 reads it as UTF-8
     done = subprocess.run([ps, "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File", str(script)],
-                          capture_output=True, text=True, timeout=180, env=env)
-    assert done.returncode == 0, (done.stdout, done.stderr)
+                          capture_output=True, text=True, timeout=180)
+    if done.returncode != 0:
+        pytest.fail(f"PowerShell could not create the shortcuts (exit {done.returncode}):\n{done.stdout}\n{done.stderr}")
     for (target, args), item in zip(cases, spec):
         lnk = Path(item["lnk"])
         assert lnk.is_file(), (str(lnk), sorted(p.name for p in tmp_path.iterdir()), done.stdout[-500:], done.stderr[-500:])
