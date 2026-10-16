@@ -98,15 +98,38 @@ def test_new_since_previous_score_change_and_trend():
     assert len(single.trend) == 1
 
 
-def test_previous_is_the_same_kind_of_scan():
-    ubuntu = host(build(), "ubuntu-1")  # a quick scan precedes the full one: not comparable, so no baseline
-    assert ubuntu.profile == "full" and ubuntu.scans == 2
-    assert ubuntu.new_findings is None and ubuntu.score_change is None and len(ubuntu.trend) == 1
-    custom = [scan("h", "2026-10-01T09:00:00", [A()], profile="custom", scanners=("files",)),
-              scan("h", "2026-10-02T09:00:00", [A(), B()], profile="custom", scanners=("network",)),
-              scan("h", "2026-10-03T09:00:00", [A(), B(), D()], profile="custom", scanners=("files",))]
-    h = host(build(custom), "h")  # custom: same scanners only, so the 10-01 scan is the baseline
-    assert h.previous_scan == "2026-10-01T09:00:00" and h.new_findings == 2 and len(h.trend) == 2
+def _from(scanner, f):
+    f.scanner = scanner
+    return f
+
+
+def test_host_row_merges_the_latest_result_of_each_area():
+    """Real-Windows CI found it: a narrow file-only scan run last hid everything the audit had found."""
+    audit = scan("h", "2026-10-01T09:00:00", [_from("system_audit", D()), _from("network", B())], profile="audit",
+                 scanners=("system_audit", "network"))
+    quick = scan("h", "2026-10-02T09:00:00", [_from("files", A())], profile="quick", scanners=("files", "processes"))
+    files_only = scan("h", "2026-10-03T09:00:00", [], profile="custom", scanners=("files",))
+    h = host(build([audit, quick, files_only]), "h")
+    assert h.counts["medium"] == 2  # the audit's findings still count
+    assert h.counts["high"] == 0  # the newer files-only scan found the outdated-Chrome file gone
+    assert h.profile == "custom, quick, audit" and h.scans == 3 and h.last_scan == "2026-10-03T09:00:00"
+    assert h.score_change is not None and h.score_change > 0  # the newest scan fixed something
+    assert h.previous_scan == "2026-10-02T09:00:00" and h.new_findings == 0 and len(h.trend) == 3
+
+
+def test_new_since_previous_compares_the_state_before_and_after_the_newest_scan():
+    full = scan("h", "2026-10-01T09:00:00", [_from("files", A()), _from("system_audit", B())], scanners=("files", "system_audit"))
+    quick = scan("h", "2026-10-02T09:00:00", [_from("files", A()), _from("files", D())], profile="quick", scanners=("files",))
+    h = host(build([full, quick]), "h")
+    assert h.new_findings == 1 and {f["rule_id"] for f in h.findings} == {"R-A", "R-B", "R-D"}
+    assert [f["rule_id"] for f in h.findings if f["new"]] == ["R-D"]
+
+
+def test_host_state_keeps_findings_without_a_scanner_name_once():
+    older = scan("h", "2026-10-01T09:00:00", [A()], scanners=())
+    newer = scan("h", "2026-10-02T09:00:00", [A(), B()], scanners=())
+    state = F.host_state([(F.parse_time(r.started), r) for r in (older, newer)])
+    assert sorted(f.rule_id for f in state.findings) == ["R-A", "R-B"]
 
 
 def test_new_findings_follow_the_minimum_severity_and_ignore_pid_suffixes():

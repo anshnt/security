@@ -5,7 +5,7 @@ Scheduled scans on several PCs can write their JSON results to a shared folder
 "which machines need attention, and what is wrong across the fleet?":
 
 * :func:`load_results`  -> find the JSON files, keep only real Aegis scan results   (the only part that does I/O)
-* :func:`build_fleet`   -> newest result per host, trend, new findings, stale hosts, issues shared by many hosts
+* :func:`build_fleet`   -> current state per host, trend, new findings, stale hosts, issues shared by many hosts
 * :func:`render_html`, :func:`render_json`, :func:`render_csv`, :func:`render_text`, :func:`write_fleet`
 
 Design notes
@@ -13,9 +13,10 @@ Design notes
   anything else is skipped and counted. Nothing from a file is ever executed, and the score is recomputed from the
   findings instead of trusting the stored number.
 * Loaded results are slimmed down (no evidence or descriptions), so a few thousand files stay small in memory.
-* Results of one host are matched by host name (case-insensitive). "Previous" means the most recent earlier result
-  of the same profile (and, for ``custom``, the same scanners), like :func:`aegis.core.history.latest_comparable`,
-  so a quick scan is never compared with a full one. Findings are matched with :func:`history.match_key`.
+* Results of one host are matched by host name (case-insensitive). A host's row is its current state
+  (:func:`host_state`): for every scanner, the findings of the most recent result that ran it, so a narrow scan run
+  last does not hide what a broader one found. "New since previous" and the score change compare that state before
+  and after the newest result. Findings are matched with :func:`history.match_key`.
 * The HTML and JSON outputs are recognised by :func:`aegis.core.report.is_aegis_report` (:func:`is_fleet_html`,
   :func:`is_fleet_json`), so a saved fleet report that quotes malicious strings is not flagged by the file scanner.
   Both validators are strict: the HTML must be the fixed page frame around allow-listed markup, the JSON must have
@@ -35,7 +36,7 @@ import re
 import stat
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Dict, Iterator, List, Optional, Sequence, Tuple
+from typing import Any, Dict, Iterator, List, Optional, Sequence, Set, Tuple
 
 from aegis.core.history import SPARKLINE_POINTS, match_key
 from aegis.core.models import GENERATOR, CheckStatus, Finding, Remediation, ScanResult, Severity
@@ -312,36 +313,63 @@ def _hostname(r: ScanResult) -> str:
     return _clean(Path(str(src)).stem, 253) or "unknown" if src else "unknown"
 
 
-def _comparable(a: ScanResult, b: ScanResult) -> bool:
-    return a.profile == b.profile and (a.profile != "custom" or sorted(a.scanners) == sorted(b.scanners))
-
-
 def _finding_order(f: Finding) -> Tuple[int, str, str]:
     return -int(f.severity), f.title.lower(), f.location.lower()
+
+
+def host_state(entries: Sequence[Tuple[_dt.datetime, ScanResult]]) -> ScanResult:
+    """A host's current state from its results (oldest first): for every scanner, the findings of the most recent result
+    that ran it. A daily quick scan therefore does not hide what last week's full scan or audit found in other areas,
+    while a newer scan of the same area replaces what an older one said about it (fixed issues disappear). Findings
+    without a scanner name are kept from the result that reported them."""
+    newest = entries[-1][1]
+    state = ScanResult(profile=newest.profile, started=newest.started, finished=newest.finished, host=dict(newest.host),
+                       scanners=[], stats=dict(newest.stats))
+    covered: Set[str] = set()
+    seen: Set[str] = set()
+    profiles: List[str] = []
+    for _when, r in reversed(entries):  # newest first
+        ran = set(r.scanners or [])
+        if r.scanners and ran <= covered:
+            continue  # every area this scan looked at was looked at again later
+        for f in r.findings:
+            if (f.scanner and f.scanner in covered) or f.fingerprint in seen:
+                continue
+            seen.add(f.fingerprint)
+            state.findings.append(f)
+        state.scanners.extend(sorted(ran - covered))
+        covered |= ran
+        if r.profile not in profiles:
+            profiles.append(r.profile)
+    state.stats["profiles"] = profiles
+    return state
 
 
 def _host_summary(entries: List[Tuple[_dt.datetime, ScanResult]], now: _dt.datetime, since_days: Optional[int],
                   min_severity: Severity) -> HostSummary:
     when, newest = entries[-1]
-    series = [(t, r) for t, r in entries if _comparable(r, newest)]
-    previous = series[-2][1] if len(series) > 1 else None
-    score, grade = security_score(newest)
-    shown = sorted((f for f in newest.findings if f.severity >= min_severity), key=_finding_order)
-    new_keys = {match_key(f) for f in newest.findings} - {match_key(f) for f in previous.findings} \
+    current = host_state(entries)
+    previous = host_state(entries[:-1]) if len(entries) > 1 else None
+    score, grade = security_score(current)
+    shown = sorted((f for f in current.findings if f.severity >= min_severity), key=_finding_order)
+    new_keys = {match_key(f) for f in current.findings} - {match_key(f) for f in previous.findings} \
         if previous is not None else set()
-    plan = action_plan(newest, limit=3, min_severity=max(min_severity, Severity.LOW))
+    plan = action_plan(current, limit=3, min_severity=max(min_severity, Severity.LOW))
     age = now - when
     src = str(newest.stats.get("source_file", ""))
+    trend = [(entries[i][0].strftime("%Y-%m-%d"), security_score(host_state(entries[:i + 1]))[0])
+             for i in range(max(0, len(entries) - SPARKLINE_POINTS), len(entries))]
     return HostSummary(
         hostname=_hostname(newest), os=_clean(newest.host.get("os") or "", 40),
         platform=_clean(newest.host.get("platform") or "", 200),
-        admin=bool(newest.host.get("admin")), last_scan=when.isoformat(timespec="seconds"), profile=newest.profile,
-        score=score, grade=grade, counts=newest.counts(),
+        admin=bool(newest.host.get("admin")), last_scan=when.isoformat(timespec="seconds"),
+        profile=", ".join(current.stats.get("profiles") or [newest.profile]),
+        score=score, grade=grade, counts=current.counts(),
         new_findings=sum(1 for f in shown if match_key(f) in new_keys) if previous is not None else None,
         score_change=score - security_score(previous)[0] if previous is not None else None,
-        previous_scan=series[-2][0].isoformat(timespec="seconds") if previous is not None else None,
+        previous_scan=entries[-2][0].isoformat(timespec="seconds") if previous is not None else None,
         stale=since_days is not None and age > _dt.timedelta(days=since_days), age_days=max(0, age.days),
-        scans=len(entries), trend=[(t.strftime("%Y-%m-%d"), security_score(r)[0]) for t, r in series[-SPARKLINE_POINTS:]],
+        scans=len(entries), trend=trend,
         findings_total=len(shown),
         findings=[{"rule_id": f.rule_id, "severity": f.severity.name.lower(), "title": f.title,
                    "location": f.location[:500], "fingerprint": f.fingerprint, "new": match_key(f) in new_keys}
@@ -376,8 +404,9 @@ def build_fleet(results: Sequence[ScanResult], now: Optional[_dt.datetime] = Non
                 min_severity: Severity = Severity.MEDIUM, load: Optional[LoadReport] = None) -> Fleet:
     """Aggregate scan results of many hosts.
 
-    The newest result of each host (by ``started``) is the host's row; older results of the same host only feed its
-    score trend and the "new since previous scan" / score-change numbers. A host whose newest result is more than
+    Each host's row is its current state (:func:`host_state`: per scanner, the most recent result that ran it), so a
+    narrow scan does not hide what a broader one found; "new since previous scan" and the score change compare that
+    state before and after the host's newest result. A host whose newest result is more than
     ``since_days`` old is marked stale (and stays in every list). ``min_severity`` limits the findings that are listed,
     counted as new, and grouped into common issues. ``load`` adds the skipped-file information of :func:`load_results`.
     Results without a readable ``started`` time are ignored."""
@@ -401,7 +430,7 @@ def build_fleet(results: Sequence[ScanResult], now: Optional[_dt.datetime] = Non
             seen.add((when, r.profile))
             unique.append((when, r))
         hosts.append(_host_summary(unique, now, since_days, min_severity))
-        newest.append(unique[-1][1])
+        newest.append(host_state(unique))
     hosts.sort(key=lambda h: (-h.counts["critical"], -h.counts["high"], -h.counts["medium"], h.score, h.hostname.lower()))
     issues, kinds = _common_issues(newest, min_severity)
     scores = [h.score for h in hosts]
