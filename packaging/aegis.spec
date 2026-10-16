@@ -18,7 +18,7 @@ VERSION_TUPLE = tuple((int(x) for x in (VERSION.split(".") + ["0", "0", "0"])[:3
 # analysis cannot see them: list them explicitly.
 hiddenimports = sorted(set(
     collect_submodules("aegis.scanners") + collect_submodules("aegis.tools") + collect_submodules("aegis.realtime")
-    + collect_submodules("aegis.ui") + collect_submodules("aegis.core")
+    + collect_submodules("aegis.ui") + collect_submodules("aegis.core") + collect_submodules("aegis.protect")
     + ["psutil", "sqlite3", "tkinter", "tkinter.ttk", "tkinter.filedialog", "tkinter.messagebox"]
 ))
 try:  # optional native YARA engine, bundled only when installed

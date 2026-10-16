@@ -134,6 +134,22 @@ def run_fix_command(cfg: Config, params: dict, finding: Finding) -> Result:
     return rc == 0, (out or err).strip()[:300] or "done"
 
 
+def run_harden(cfg: Config, params: dict, finding: Finding) -> Result:
+    """Apply selected hardening actions from aegis.protect.harden (journalled, undo with `aegis undo`).
+
+    params: ``ids`` (list of harden action ids), optional ``asr_mode`` (AuditMode | Enabled | Warn) and
+    ``cfa_mode``. Nothing is applied for ids that are already compliant or not applicable here."""
+    from aegis.protect import harden
+
+    ids = [str(i) for i in params.get("ids") or []]
+    if not ids:
+        return False, "no hardening action ids were given"
+    options = {k: params[k] for k in ("asr_mode", "asr_set", "cfa_mode") if params.get(k)}
+    items = harden.plan("custom", only=ids, options=options)
+    out = harden.apply(items, cfg, options=options)
+    return bool(out["ok"]), out["message"]
+
+
 ACTIONS: Dict[str, Callable[[Config, dict, Finding], Result]] = {
     "quarantine_file": quarantine_file,
     "kill_process": kill_process,
@@ -145,6 +161,7 @@ ACTIONS: Dict[str, Callable[[Config, dict, Finding], Result]] = {
     "restore_hosts": restore_hosts,
     "remove_path": remove_path,
     "run_command": run_fix_command,
+    "harden": run_harden,
 }
 
 WINDOWS_ONLY = {"delete_registry_value", "set_registry_value", "disable_task", "disable_service", "remove_wmi_subscription"}

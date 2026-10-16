@@ -324,16 +324,33 @@ class HostsEntry:
     line: str  # stripped original line (used for remediation matching)
 
 
+AEGIS_BLOCK_BEGIN = "# >>> Aegis web protection >>>"  # written by aegis.protect.webguard
+AEGIS_BLOCK_END = "# <<< Aegis web protection <<<"
+
+
 def parse_hosts(text: str) -> List[HostsEntry]:
     out: List[HostsEntry] = []
+    in_aegis_block = False
     for raw in text.splitlines():
         line = raw.strip()
+        if line == AEGIS_BLOCK_BEGIN:
+            in_aegis_block = True
+            continue
+        if line == AEGIS_BLOCK_END:
+            in_aegis_block = False
+            continue
         if not line or line.startswith("#"):
             continue
         body = line.split("#", 1)[0].split()
         if len(body) < 2 or _ip(body[0]) is None:
             continue
-        out.append(HostsEntry(body[0], [h.lower().rstrip(".") for h in body[1:]], line))
+        hosts = [h.lower().rstrip(".") for h in body[1:]]
+        # Aegis's own web-protection block only sinks malicious domains to 0.0.0.0. Anything
+        # else inside the markers (a redirect, or blocking an AV/update/bank domain) is still
+        # analysed, so malware cannot hide a hijack between our markers.
+        if in_aegis_block and body[0] == "0.0.0.0" and not any(classify_host(h) for h in hosts):
+            continue
+        out.append(HostsEntry(body[0], hosts, line))
     return out
 
 

@@ -49,6 +49,17 @@ from aegis.core.platform import (
     reg_values,
     run,
 )
+from aegis.protect.asr import (
+    CLIENT_GUIDS,
+    CONSUMER_GUIDS,
+    MODE_AUDIT,
+    MODE_DISABLED,
+    MODE_ENABLED,
+    MODE_WARN,
+    RULES_BY_GUID,
+    parse_asr_state,
+    summarize_asr,
+)
 from aegis.scanners.base import Emitted, ScanContext, Scanner, register
 
 log = logging.getLogger("aegis.system_audit")
@@ -259,7 +270,7 @@ $r=[ordered]@{}
 try{$r['av']=@(Get-CimInstance -Namespace root/SecurityCenter2 -ClassName AntiVirusProduct | ForEach-Object {[pscustomobject]@{name=[string]$_.displayName;state=[int64]$_.productState;exe=[string]$_.pathToSignedProductExe}})}catch{}
 try{$r['fw']=@(Get-CimInstance -Namespace root/SecurityCenter2 -ClassName FirewallProduct | ForEach-Object {[pscustomobject]@{name=[string]$_.displayName;state=[int64]$_.productState}})}catch{}
 try{$m=Get-MpComputerStatus; if($m){$r['mp']=[pscustomobject]@{AMServiceEnabled=[bool]$m.AMServiceEnabled;AntivirusEnabled=[bool]$m.AntivirusEnabled;RealTimeProtectionEnabled=[bool]$m.RealTimeProtectionEnabled;BehaviorMonitorEnabled=[bool]$m.BehaviorMonitorEnabled;IsTamperProtected=[bool]$m.IsTamperProtected;AntivirusSignatureAge=[int64]$m.AntivirusSignatureAge;QuickScanAge=[int64]$m.QuickScanAge;AMRunningMode=[string]$m.AMRunningMode}}}catch{}
-try{$p=Get-MpPreference; if($p){$r['pref']=[pscustomobject]@{ExclusionPath=@($p.ExclusionPath|Where-Object{$_});ExclusionProcess=@($p.ExclusionProcess|Where-Object{$_});ExclusionExtension=@($p.ExclusionExtension|Where-Object{$_});PUAProtection=[int]$p.PUAProtection;EnableControlledFolderAccess=[int]$p.EnableControlledFolderAccess;MAPSReporting=[int]$p.MAPSReporting}}}catch{}
+try{$p=Get-MpPreference; if($p){$r['pref']=[pscustomobject]@{ExclusionPath=@($p.ExclusionPath|Where-Object{$_});ExclusionProcess=@($p.ExclusionProcess|Where-Object{$_});ExclusionExtension=@($p.ExclusionExtension|Where-Object{$_});PUAProtection=[int]$p.PUAProtection;EnableControlledFolderAccess=[int]$p.EnableControlledFolderAccess;MAPSReporting=[int]$p.MAPSReporting;EnableNetworkProtection=[int]$p.EnableNetworkProtection;AttackSurfaceReductionRules_Ids=@($p.AttackSurfaceReductionRules_Ids|Where-Object{$_}|ForEach-Object{[string]$_});AttackSurfaceReductionRules_Actions=@($p.AttackSurfaceReductionRules_Actions|ForEach-Object{[int]$_})}}}catch{}
 try{$s=New-Object -ComObject Microsoft.Update.Session;$se=$s.CreateUpdateSearcher();$n=$se.GetTotalHistoryCount();if($n -gt 0){$h=@($se.QueryHistory(0,[Math]::Min($n,300))|Where-Object{$_.ResultCode -eq 2 -and $_.Title -notmatch 'Definition|Security Intelligence|Malicious Software Removal|Defender Antivirus'}|Sort-Object Date -Descending|Select-Object -First 1);if($h.Count -gt 0){$r['wu_last']=$h[0].Date.ToUniversalTime().ToString('o');$r['wu_title']=[string]$h[0].Title}}}catch{}
 if(-not $r['wu_last']){try{$hf=Get-HotFix|Where-Object{$_.InstalledOn}|Sort-Object InstalledOn -Descending|Select-Object -First 1;if($hf){$r['wu_last']=$hf.InstalledOn.ToUniversalTime().ToString('o');$r['wu_title']=[string]$hf.HotFixID}}catch{}}
 try{$r['users']=@(Get-LocalUser|ForEach-Object{[pscustomobject]@{name=[string]$_.Name;sid=[string]$_.SID.Value;enabled=[bool]$_.Enabled;pwreq=[bool]$_.PasswordRequired;never_expires=($null -eq $_.PasswordExpires)}})}catch{}
@@ -722,6 +733,71 @@ def check_defender_prefs(env: AuditEnv) -> List[Check]:
             run_ps("Set-MpPreference -MAPSReporting Advanced", "Turn on Defender cloud-delivered protection")))
     else:
         out.append(passed("DEFENDER-CLOUD", t_maps))
+    return out
+
+
+# =========================================================================== Attack Surface Reduction
+ASR_MIN_ENABLED = 5  # fewer ASR rules in block/warn mode than this is reported (LOW)
+_ASR_MODE_TEXT = {MODE_ENABLED: "block mode", MODE_WARN: "warn mode", MODE_AUDIT: "audit mode (logs only, blocks nothing)",
+                  MODE_DISABLED: "explicitly disabled"}
+
+
+@dataclass
+class InfoCheck(Check):
+    """A reported state that is shown as a CheckResult but never becomes a Finding (one row per enforced ASR rule)."""
+
+    def to_finding(self) -> Optional[Finding]:
+        return None
+
+
+def check_asr(env: AuditEnv) -> List[Check]:
+    """Defender Attack Surface Reduction rule state: a row per enforced (block/warn) or explicitly disabled rule plus
+    one aggregated result/finding that also counts the audit-mode and unconfigured rules."""
+    title = "Attack Surface Reduction (ASR) rules are enabled"
+    pref = env.facts.get("pref") if isinstance(env.facts.get("pref"), dict) else None
+    st = build_av_state(env.facts)
+    if pref is None or not (st and st.defender_primary):
+        return [skipped("ASR-RULES", title, "Microsoft Defender is not the active antivirus."
+                        if pref else "Defender preferences unavailable.")]
+    if "AttackSurfaceReductionRules_Ids" not in pref:
+        return [skipped("ASR-RULES", title, "ASR rule state was not reported by this Windows/Defender version.")]
+    state = parse_asr_state(pref.get("AttackSurfaceReductionRules_Ids"), pref.get("AttackSurfaceReductionRules_Actions"))
+    out: List[Check] = []
+    for guid in CLIENT_GUIDS:
+        mode = state.get(guid)
+        if mode is None or mode == MODE_AUDIT:
+            continue  # not configured / audit only: the aggregate reports these (keeps the report short)
+        rule = RULES_BY_GUID[guid]
+        text = _ASR_MODE_TEXT.get(mode, f"action {mode}")
+        out.append(InfoCheck(key="ASR-" + rule.key.upper().replace("_", "-"), title=f"ASR rule: {rule.name}",
+                             ok=mode in (MODE_ENABLED, MODE_WARN), detail=text, severity=Severity.INFO))
+    recommended = summarize_asr(state, CONSUMER_GUIDS)
+    overall = summarize_asr(state)
+    enabled = overall["enabled"]
+    if enabled >= ASR_MIN_ENABLED:
+        audit_note = f"; {len(overall['audit'])} more in audit mode" if overall["audit"] else ""
+        out.append(passed("ASR-RULES", title, f"{enabled} ASR rule(s) are in block or warn mode{audit_note}."))
+        return out
+    audit_n = len(overall["audit"])
+    missing = recommended["audit"] + recommended["disabled"] + recommended["not_configured"]
+    nxt = "Enabled" if audit_n else "AuditMode"
+    out.append(failed(
+        "ASR-RULES", "Few Defender Attack Surface Reduction rules are enabled", Severity.LOW,
+        f"Only {enabled} of {recommended['total']} recommended ASR rules block anything"
+        + (f" ({audit_n} more run in audit mode, which only logs)" if audit_n else "")
+        + ". ASR rules stop the behaviours malware depends on: Office macros launching programs, scripts downloading "
+          "executables, credential theft from LSASS, WMI persistence and ransomware-like activity. They are off by "
+          "default on most PCs.",
+        "Run `aegis harden --profile recommended --apply` to switch the consumer-safe rules on in audit mode first "
+        "(nothing is blocked), review Defender's events for a week, then run `aegis harden --profile strict --apply` "
+        "to block. Every change is journalled and can be reverted with `aegis undo`.",
+        "Microsoft Defender Attack Surface Reduction",
+        {"enabled": enabled, "audit": overall["audit"], "disabled": overall["disabled"],
+         "recommended_not_blocking": missing[:15], "minimum_expected": ASR_MIN_ENABLED},
+        Remediation("harden", {"ids": ["defender.asr"], "asr_mode": nxt},
+                    ("Set the consumer-safe ASR rules to block mode (reversible with `aegis undo`)" if audit_n else
+                     "Turn the consumer-safe ASR rules on in audit mode - nothing is blocked (reversible with `aegis undo`)")),
+        ["T1204.002", "T1566.001", "T1003.001"]))
     return out
 
 
@@ -1849,6 +1925,7 @@ def check_macos(env: AuditEnv) -> List[Check]:
 WINDOWS_CHECKS: List[Callable[[AuditEnv], List[Check]]] = [
     check_os_support, check_antivirus, check_defender_prefs, check_firewall, check_uac, check_smb, check_rdp,
     check_bitlocker, check_secure_boot, check_windows_update, check_credentials, check_hygiene, check_office,
+    check_asr,
 ]
 LINUX_CHECKS: List[Callable[[AuditEnv], List[Check]]] = [
     check_linux_firewall, check_linux_ssh, check_linux_updates, check_linux_files, check_linux_suid,

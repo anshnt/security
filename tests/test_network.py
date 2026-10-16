@@ -373,3 +373,16 @@ def test_root_store_classification_uses_physical_user_store():
     assert {c["Thumbprint"].upper(): c["Store"] for c in certs} == {"A" * 40: "LocalMachine", "b".upper() * 40: "CurrentUser"}
     ids = [f.rule_id for f in nw.rootca_findings(certs)]
     assert ids.count("AEG-NET-ROOTCA-NEW") == 1
+
+
+def test_aegis_web_protection_block_is_not_reported_but_cannot_hide_hijacks():
+    block = "\n".join(f"0.0.0.0 malware{i}.example" for i in range(60))
+    text = ("127.0.0.1 localhost\n" + nw.AEGIS_BLOCK_BEGIN + "\n" + block + "\n"
+            + "185.220.101.50 www.paypal.com\n0.0.0.0 update.eset.com\n" + nw.AEGIS_BLOCK_END + "\n")
+    entries = nw.parse_hosts(text)
+    hosts = {h for e in entries for h in e.hosts}
+    assert not any(h.startswith("malware") for h in hosts)  # our sinkhole entries are ignored
+    assert {"www.paypal.com", "update.eset.com"} <= hosts      # hijacks inside our markers are still seen
+    ids = {f.rule_id for f in nw.hosts_findings(text, "hosts")}
+    assert "AEG-NET-HOSTS-CUSTOM" not in ids
+    assert {"AEG-NET-HOSTS-REDIRECT", "AEG-NET-HOSTS-BLOCK"} <= ids

@@ -205,7 +205,109 @@ def cmd_update(args, cfg: Config) -> int:
         status = "OK " if info.get("ok") else "ERR"
         bad += 0 if info.get("ok") else 1
         _print(f"{status} {feed:<28} {info.get('count', 0):>8} entries  {info.get('error', '')}")
+    # Re-apply web/IP protection (if switched on) with the fresh threat intelligence.
+    try:
+        from aegis.core.signatures import SignatureDB
+        from aegis.protect.webguard import refresh_protections
+
+        for kind, r in refresh_protections(cfg, SignatureDB(cfg)).items():
+            if r.get("changed") or not r.get("ok"):
+                _print(f"{'OK ' if r.get('ok') else 'ERR'} protection:{kind:<17} {r.get('message', '')}")
+    except Exception as exc:  # protections are optional; never fail the update because of them
+        _print(f"ERR protection refresh failed: {exc}")
     return EXIT_CLEAN if bad < len(res) else EXIT_ERROR
+
+
+def _print_result(r: dict) -> int:
+    _print(("OK  " if r.get("ok") else "ERR ") + str(r.get("message", "")))
+    for k, v in (r.get("details") or {}).items():
+        if isinstance(v, (str, int, float, bool)) or v is None:
+            _print(f"    {k}: {v}")
+    return EXIT_CLEAN if r.get("ok") else EXIT_ERROR
+
+
+def cmd_protect(args, cfg: Config) -> int:
+    from aegis.protect import webguard as wg
+
+    if args.what == "web":
+        if args.action == "status":
+            return _print_result(wg.web_protection_status(cfg))
+        if args.action == "off":
+            return _print_result(wg.disable_web_protection(cfg, dry_run=args.dry_run))
+        from aegis.core.signatures import SignatureDB
+
+        return _print_result(wg.enable_web_protection(cfg, SignatureDB(cfg), dry_run=args.dry_run))
+    if args.action == "status":
+        return _print_result(wg.ip_blocking_status(cfg))
+    if args.action == "off":
+        return _print_result(wg.disable_ip_blocking(cfg, dry_run=args.dry_run))
+    from aegis.core.signatures import SignatureDB
+
+    return _print_result(wg.enable_ip_blocking(cfg, SignatureDB(cfg), dry_run=args.dry_run))
+
+
+def cmd_harden(args, cfg: Config) -> int:
+    from aegis.protect import harden
+
+    if args.list:
+        for a in harden.describe_catalogue():
+            d = a if isinstance(a, dict) else getattr(a, "__dict__", {})
+            _print(f"{d.get('id', ''):<28} {d.get('title', '')}")
+        return EXIT_CLEAN
+    options = {}
+    if args.asr_mode:
+        options["asr_mode"] = {"audit": "AuditMode", "block": "Enabled", "warn": "Warn"}[args.asr_mode]
+    only = [x.strip() for x in args.only.split(",")] if args.only else None
+    try:
+        items = harden.plan("custom" if only else args.profile, only=only, options=options or None)
+    except ValueError as exc:
+        _print(f"error: {exc}")
+        return EXIT_ERROR
+    labels = {"compliant": "ok      ", "will_change": "CHANGE  ", "not_applicable": "n/a     ", "needs_admin": "ADMIN   "}
+    for it in items:
+        d = it.to_dict()
+        _print(f"  {labels.get(d.get('state'), d.get('state', ''))} {d.get('id', ''):<28} {d.get('title', '')}")
+        if d.get("state") == "will_change" and d.get("detail"):
+            _print(f"           {d['detail']}")
+    pending = [it for it in items if it.to_dict().get("state") == "will_change"]
+    if not args.apply:
+        _print(f"\n{len(pending)} change(s) planned. Re-run with --apply to make them (every change can be undone "
+               f"with `aegis undo latest`).")
+        return EXIT_CLEAN
+    if not pending:
+        _print("\nNothing to change.")
+        return EXIT_CLEAN
+    r = harden.apply(items, cfg, options=options or None, profile="custom" if only else args.profile)
+    rc = _print_result(r)
+    for res in r.get("results", []):
+        res = res if isinstance(res, dict) else getattr(res, "__dict__", {})
+        _print(f"    {'OK ' if res.get('ok') else 'ERR'} {res.get('id', '')}: {res.get('message', '')}")
+    if r.get("journal"):
+        _print(f"\nUndo journal: {r['journal']}  (revert with `aegis undo latest`)")
+    if r.get("reboot_required"):
+        _print("A restart is required for some changes to take effect.")
+    return rc
+
+
+def cmd_undo(args, cfg: Config) -> int:
+    from aegis.protect import undo
+
+    if args.target in (None, "list"):
+        rows = undo.list_backups(cfg)
+        if not rows:
+            _print("No backups yet.")
+        for b in rows:
+            state = "undone" if b.get("undone") else ("" if b.get("undoable") else "not undoable")
+            _print(f"{b['id']:<44} {b.get('kind', ''):<9} {b.get('timestamp', '')}  {b.get('summary', '')}  {state}")
+        return EXIT_CLEAN
+    r = undo.undo(cfg, args.target, dry_run=args.dry_run, force=args.force, restore_to=args.to)
+    rc = _print_result(r)
+    for res in r.get("results", []):
+        res = res if isinstance(res, dict) else getattr(res, "__dict__", {})
+        _print(f"    {'OK ' if res.get('ok') else 'ERR'} {res.get('message', res)}")
+    if r.get("reboot_required"):
+        _print("A restart is required for some changes to take effect.")
+    return rc
 
 
 def cmd_check_url(args, cfg: Config) -> int:
@@ -555,6 +657,27 @@ def build_parser() -> argparse.ArgumentParser:
     i = sub.add_parser("info", help="show version, environment, signatures and scanners")
     i.add_argument("--json", action="store_true")
     i.set_defaults(func=cmd_info)
+
+    pr = sub.add_parser("protect", help="web protection (malicious-domain blocklist) and C2 IP blocking")
+    pr.add_argument("what", choices=["web", "ips"], help="web = hosts-file domain blocklist, ips = firewall block rules")
+    pr.add_argument("action", choices=["on", "off", "status"])
+    pr.add_argument("--dry-run", action="store_true", help="show what would change")
+    pr.set_defaults(func=cmd_protect)
+
+    hd = sub.add_parser("harden", help="plan or apply recommended security settings (reversible with `aegis undo`)")
+    hd.add_argument("--profile", default="recommended", choices=["recommended", "strict"])
+    hd.add_argument("--only", help="comma-separated action ids (see --list)")
+    hd.add_argument("--asr-mode", choices=["audit", "block", "warn"], help="attack surface reduction rule mode")
+    hd.add_argument("--apply", action="store_true", help="make the changes (default: show the plan only)")
+    hd.add_argument("--list", action="store_true", help="list every hardening action")
+    hd.set_defaults(func=cmd_harden)
+
+    ud = sub.add_parser("undo", help="list backups or revert a fix / hardening run / protection change")
+    ud.add_argument("target", nargs="?", help="'list' (default), 'latest', or a backup id")
+    ud.add_argument("--dry-run", action="store_true")
+    ud.add_argument("--force", action="store_true", help="undo even if already undone or the system changed since")
+    ud.add_argument("--to", help="destination folder (for restoring removed folders)")
+    ud.set_defaults(func=cmd_undo)
 
     c = sub.add_parser("config", help="show or change settings")
     c.add_argument("action", choices=["show", "set"])
