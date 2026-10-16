@@ -391,7 +391,10 @@ def _excluded(path: str, patterns: List[str]) -> bool:
 
 
 def iter_files(roots: Iterable[Path], ctx: ScanContext) -> Iterator[Path]:
-    excl = ctx.config.exclusions + [str(ctx.config.home)]  # never scan our own quarantine
+    from aegis.realtime.credcanary import decoy_roots
+
+    # never scan our own quarantine, nor the credential decoys (reading one raises the credential canary alarm)
+    excl = ctx.config.exclusions + [str(ctx.config.home)] + decoy_roots()
     skip = SKIP_DIRS_WIN if IS_WINDOWS else SKIP_DIRS_NIX
     for root in roots:
         if ctx.cancelled:

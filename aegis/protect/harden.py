@@ -555,6 +555,32 @@ def _process_audit_apply(env: HardenEnv, chk: Check, params: Dict[str, Any]) -> 
     return True, "process-creation auditing with command lines enabled"
 
 
+# =========================================================================== file-system auditing (credential canary)
+FILE_SYSTEM_GUID = "{0CCE921D-69AE-11D9-BED3-505054503030}"  # Object Access > File System
+
+
+def _file_audit_check(env: HardenEnv, params: Dict[str, Any]) -> Check:
+    if not env.admin:
+        return Check(WILL_CHANGE, "needs administrator rights to read and change the audit policy")
+    pol = _auditpol_get(FILE_SYSTEM_GUID)
+    if pol is None:
+        return Check(NOT_APPLICABLE, "could not read the File System audit policy (auditpol unavailable)")
+    current = {"file_system_audit": pol}
+    if pol & 1:
+        return Check(COMPLIANT, "successful access to audited files (Event 4663) is already logged", current)
+    return Check(WILL_CHANGE, "log successful access to files that carry an audit entry (Event 4663)", current,
+                 [{"type": "auditpol", "guid": FILE_SYSTEM_GUID, "previous": pol}], {"auditpol": pol})
+
+
+def _file_audit_apply(env: HardenEnv, chk: Check, params: Dict[str, Any]) -> Tuple[bool, str]:
+    ok, msg = _auditpol_set(FILE_SYSTEM_GUID, chk.data["auditpol"] | 1)
+    if not ok:
+        return False, f"auditpol failed: {msg}"
+    if (_auditpol_get(FILE_SYSTEM_GUID) or 0) & 1 == 0:
+        return False, "the audit policy did not change (a Group Policy may manage it)"
+    return True, "file-system auditing enabled"
+
+
 # =========================================================================== Windows applicability helpers
 def _office_present() -> bool:
     try:
@@ -998,6 +1024,13 @@ def _build_catalogue() -> List[HardenAction]:
         "Increases the Security log volume (it may wrap sooner) and command lines can contain secrets such as "
         "passwords typed into commands; only administrators can read the Security log.",
         "windows", "logging", BOTH, _process_audit_check, _process_audit_apply))
+    A.append(HardenAction(
+        "windows.file_audit", "File-system auditing (credential canary)",
+        "Lets Windows log which program reads a file that carries an audit entry (Security Event 4663). Aegis puts such "
+        "entries on its decoy browser-password and wallet files, so an infostealer that reads them is named.",
+        "Only files and folders with an audit entry are logged, so the Security log grows little. Software that sets its "
+        "own audit entries starts logging too.",
+        "windows", "logging", BOTH, _file_audit_check, _file_audit_apply))
 
     # ---- Office
     A.append(_registry_action(
@@ -1354,12 +1387,13 @@ def _revert_mp_asr(op: Dict[str, Any], dry_run: bool) -> Tuple[bool, str]:
 
 def _revert_auditpol(op: Dict[str, Any], dry_run: bool) -> Tuple[bool, str]:
     guid, prev = str(op.get("guid", "")).upper(), op.get("previous")
-    if guid != PROC_CREATION_GUID or prev not in (0, 1, 2, 3):
+    name = {PROC_CREATION_GUID: "Process Creation", FILE_SYSTEM_GUID: "File System"}.get(guid)
+    if name is None or prev not in (0, 1, 2, 3):
         return False, "refusing to restore an audit subcategory Aegis does not manage"
     if dry_run:
-        return True, f"would set Process Creation auditing back to {prev}"
+        return True, f"would set {name} auditing back to {prev}"
     ok, msg = _auditpol_set(guid, int(prev))
-    return ok, "restored the Process Creation audit policy" if ok else f"auditpol failed: {msg}"
+    return ok, f"restored the {name} audit policy" if ok else f"auditpol failed: {msg}"
 
 
 def _revert_firewall(op: Dict[str, Any], dry_run: bool) -> Tuple[bool, str]:

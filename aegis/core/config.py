@@ -69,6 +69,7 @@ class Config:
     realtime_clipboard_guard: bool = True  # ClickFix / fake-CAPTCHA commands and crypto address swaps (checked in memory only)
     realtime_clear_malicious_clipboard: bool = True  # and empty the clipboard when the command carries the lure text
     realtime_extension_guard: bool = True  # alert when a browser extension is installed (rated with the browser scanner's rules)
+    realtime_credential_canary: bool = True  # decoy browser-password and wallet files; any other reader is an infostealer
     ransomware_canaries: bool = True
     notifications: bool = True
 

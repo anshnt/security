@@ -44,6 +44,26 @@
   messages as they happen instead of polling once a second.
 - **Database and dev servers on all interfaces.** The network scanner now also reports Redis, MongoDB, Elasticsearch,
   Memcached, CouchDB, MySQL, PostgreSQL, SQL Server and the Docker API listening on every interface.
+- **Credential canary (infostealer detection) in real-time protection.** Following arXiv 2609.30070, which points to
+  runtime access to credential stores as a high-fidelity signal across RedLine, LummaC2, Vidar, StealC and Rhadamanthys,
+  `aegis monitor` plants a decoy Chromium-style profile (`Local State` with an `os_crypt` key, `Login Data` and
+  `Cookies` as real SQLite databases with fake `example.com` rows) and a decoy Electrum wallet (else an Ethereum
+  keystore), only in application folders that do not exist (Windows: `%LOCALAPPDATA%\Kometa`, else `Chromium`;
+  Linux: `~/.config/chromium`, `~/.electrum`). A decoy is retired when a real application is installed into its folder.
+  - **Windows:** an audit entry (SACL) for ReadData on each decoy and a live EvtSubscribe on Security event 4663 name
+    the process that read it (`AEG-RT-CREDCANARY`, HIGH), with an offer to terminate it and quarantine its file (a
+    Windows binary a stealer was injected into is terminated, never quarantined). Aegis itself, Microsoft Defender and
+    Windows Search (recognised by their admin-only folders) are not alerts; the decoys are excluded from indexing.
+    Needs administrator rights.
+  - **Linux:** inotify reports each open of a decoy, without the process (inotify does not say who). **macOS:** no
+    decoys, since user mode gets no signal for file reads.
+  - Aegis's own file, browser and secrets scanners skip the decoys. Setting: `realtime_credential_canary`, also on the
+    GUI Protection page; "Remove canary files" deletes the decoys too.
+
+### Hardening
+- **`windows.file_audit`** (recommended and strict profiles): turns on success auditing for the File System
+  subcategory, so Windows logs reads of files that carry an audit entry (event 4663). Only such files are logged.
+  Reversible with `aegis undo`.
 
 ### Releases
 - **A version bump on `main` publishes itself.** When a commit that changes `__version__` reaches `main`, the Release workflow tags it, builds the Windows executables and publishes the GitHub release; pushing a `v*` tag by hand still works.

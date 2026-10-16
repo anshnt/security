@@ -134,7 +134,7 @@ class FakeWindows:
         self.reg.put("HKLM", NT_KEY, "CurrentBuild", str(build))
         self.defender = defender or FakeDefender()
         self.admin = admin
-        self.audit = {harden.PROC_CREATION_GUID: 0}
+        self.audit = {harden.PROC_CREATION_GUID: 0, harden.FILE_SYSTEM_GUID: 0}
         self.fw_products: List[Dict[str, Any]] = []
         self.calls: List[List[str]] = []
 

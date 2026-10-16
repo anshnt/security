@@ -123,7 +123,7 @@ def test_catalogue_covers_the_requested_actions():
     wanted = {"defender.realtime", "defender.pua", "defender.cloud", "defender.network_protection", "defender.asr",
               "defender.cfa", "windows.firewall", "windows.smb1_server", "windows.llmnr", "windows.wdigest",
               "windows.lsa_ppl", "windows.file_extensions", "windows.autorun", "windows.ps_scriptblock",
-              "windows.process_audit", "office.macro_internet", "linux.ufw", "linux.aslr", "linux.ssh_root_login",
+              "windows.process_audit", "windows.file_audit", "office.macro_internet", "linux.ufw", "linux.aslr", "linux.ssh_root_login",
               "macos.firewall", "macos.gatekeeper"}
     assert wanted <= {a.id for a in harden.CATALOGUE}
     desc = harden.describe_catalogue()
@@ -139,6 +139,7 @@ def test_plan_on_a_fresh_windows_pc(win):
     assert st["defender.network_protection"] == st["defender.asr"] == "will_change"
     assert st["windows.smb1_server"] == st["windows.llmnr"] == st["windows.autorun"] == "will_change"
     assert st["windows.ps_scriptblock"] == st["windows.process_audit"] == st["windows.file_extensions"] == "will_change"
+    assert st["windows.file_audit"] == "will_change"
     assert st["windows.firewall"] == "compliant"  # absent value = firewall on
     assert st["windows.wdigest"] == "compliant" and st["windows.smb1_client"] == "compliant"
     assert st["office.macro_internet"] == "not_applicable" and "Office" in items["office.macro_internet"].detail
@@ -206,7 +207,7 @@ def test_plan_without_admin_marks_machine_wide_changes_needs_admin(monkeypatch):
     fw.reg.subkey_map[("HKLM", r"software\microsoft\office")] = ["16.0"]
     items = by_id(harden.plan("recommended", env=fw.env()))
     assert items["windows.llmnr"].state == "needs_admin" and items["defender.pua"].state == "needs_admin"
-    assert items["windows.process_audit"].state == "needs_admin"
+    assert items["windows.process_audit"].state == items["windows.file_audit"].state == "needs_admin"
     assert items["windows.file_extensions"].state == "will_change"  # HKCU only: no elevation needed
     assert items["office.macro_internet"].state == "will_change"
     assert items["windows.wdigest"].state == "compliant"
@@ -259,6 +260,7 @@ def test_apply_journal_undo_round_trip_restores_everything(win, cfg):
     assert win.reg.get("HKLM", SMB_KEY, "SMB1") == 0 and win.reg.get("HKCU", EXPLORER_ADV, "HideFileExt") == 0
     assert win.reg.get("HKLM", LLMNR_KEY, "EnableMulticast") == 0 and win.reg.get("HKLM", SBL_KEY, "EnableScriptBlockLogging") == 1
     assert win.reg.get("HKLM", harden._AUDIT_KEY, harden._CMDLINE_VALUE) == 1 and win.audit[GUID_PROC] == 3
+    assert win.audit[harden.FILE_SYSTEM_GUID] == 1
     p = win.defender.pref
     assert p["DisableRealtimeMonitoring"] is False and p["PUAProtection"] == 1 and p["MAPSReporting"] == 2
     assert p["EnableNetworkProtection"] == 1
@@ -274,6 +276,7 @@ def test_apply_journal_undo_round_trip_restores_everything(win, cfg):
     assert ops["windows.smb1_server"][0]["existed"] is True and ops["windows.smb1_server"][0]["data"] == 1
     assert ops["windows.llmnr"][0]["existed"] is False and ops["windows.llmnr"][0]["data"] is None
     assert {"type": "auditpol", "guid": GUID_PROC, "previous": 2} in ops["windows.process_audit"]
+    assert ops["windows.file_audit"] == [{"type": "auditpol", "guid": harden.FILE_SYSTEM_GUID, "previous": 0}]
     assert {"type": "mp_pref", "name": "PUAProtection", "previous": 2} in ops["defender.pua"]
     asr_op = ops["defender.asr"][0]
     assert asr_op["type"] == "mp_asr" and "c1db55ab-c21a-4637-bb3f-a12568109d35" not in asr_op["rules"]
@@ -524,6 +527,23 @@ def test_process_audit_reads_auditpol_numerically(win, cfg):
     win.audit.clear()
     item = by_id(harden.plan("custom", only=["windows.process_audit"], env=win.env()))["windows.process_audit"]
     assert item.state == "not_applicable" and "audit policy" in item.detail
+
+
+def test_file_audit_adds_success_auditing_and_undo_restores_the_policy(win, cfg):
+    fs = harden.FILE_SYSTEM_GUID
+    win.audit[fs] = 2  # failure-only auditing set by someone else: kept, and restored exactly
+    items = harden.plan("custom", only=["windows.file_audit"], env=win.env())
+    assert by_id(items)["windows.file_audit"].state == "will_change"
+    out = harden.apply(items, cfg, env=win.env(), profile="custom")
+    assert out["ok"] and win.audit[fs] == 3
+    assert undo.undo(cfg, Path(out["journal"]).stem)["ok"] and win.audit[fs] == 2
+    win.audit[fs] = 1
+    assert by_id(harden.plan("custom", only=["windows.file_audit"], env=win.env()))["windows.file_audit"].state == "compliant"
+    del win.audit[fs]  # auditpol unreadable -> never guess
+    item = by_id(harden.plan("custom", only=["windows.file_audit"], env=win.env()))["windows.file_audit"]
+    assert item.state == "not_applicable" and "audit policy" in item.detail
+    ok, msg = harden.revert_op({"type": "auditpol", "guid": fs, "previous": 0}, dry_run=True)
+    assert ok and "File System" in msg
 
 
 def test_smb1_client_is_left_alone_when_workstation_depends_on_it(win):

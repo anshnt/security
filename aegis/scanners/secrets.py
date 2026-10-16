@@ -717,7 +717,10 @@ def known_wallet_locations(home: Path) -> List[Path]:
         eth = b / "Ethereum" / "keystore"
         if eth.is_dir():
             out += sorted(eth.glob("UTC--*"))[:5]
-    return out
+    from aegis.realtime.credcanary import decoy_roots, is_decoy
+
+    decoys = decoy_roots()  # Aegis's own decoy wallet is not the user's
+    return [p for p in out if not is_decoy(p, decoys)]
 
 
 def ssh_private_key_files(ssh_dir: Path) -> List[Path]:
