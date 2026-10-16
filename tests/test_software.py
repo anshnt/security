@@ -241,6 +241,7 @@ def test_scanner_runs_with_mock_inventory(tmp_path, monkeypatch):
     monkeypatch.setattr(sw, "OS_NAME", "windows")
     monkeypatch.setattr(sw, "collect_inventory", lambda: [entry("OneLaunch", "1"), entry("WinRAR 7.12", "7.12"),
                                                            entry("AnyDesk", "9"), entry("Good App", "1")])
+    ctx.options["software_updates"] = False  # the update check has its own tests (test_appupdates.py)
     items = list(sw.SoftwareScanner().run(ctx))
     findings = [i for i in items if isinstance(i, Finding)]
     checks = {i.check_id: i for i in items if isinstance(i, CheckResult)}

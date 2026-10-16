@@ -25,6 +25,7 @@ be honest, because a security tool that overstates what it does is a risk in its
 | Network exposure (C2 IP feeds, risky ports, hosts/proxy/DNS hijack, rogue root CAs) | ✅ | 🟡 | 🟡 | ✅ 💲 | 🟡 TCPView | ❌ | ❌ |
 | Windows hardening audit (Defender, firewall, UAC, SMBv1, RDP/NLA, BitLocker, LSA, WDigest, OS EOL...) | ✅ | 🟡 (Security Center) | ❌ | 🟡 vulnerability scan 💲 | ❌ | ❌ | ❌ |
 | Vulnerable / end-of-life software detection | ✅ | 🟡 (Defender for Endpoint 💲) | ❌ | 🟡 💲 | ❌ | ❌ | ❌ |
+| Software updater (pending app updates, one-command upgrade via winget / apt / dnf / brew) | ✅ | ❌ | ❌ | ✅ 💲 | ❌ | ❌ | ❌ |
 | Windows event-log threat hunting (log clearing, new admins, RDP brute force, Defender tampering, malicious script blocks) | ✅ | 🟡 (Defender for Endpoint 💲) | ❌ | 🟡 EDR 💲 | ❌ | ❌ | ❌ |
 | Vulnerable / malicious driver detection (BYOVD, LOLDrivers) + driver blocklist & HVCI checks | ✅ | 🟡 (blocklist only) | ❌ | 🟡 | ❌ | ❌ | ❌ |
 | DLL side-loading detection | ✅ heuristic | ✅ | 🟡 | ✅ | ❌ | ❌ | ❌ |
@@ -46,6 +47,7 @@ be honest, because a security tool that overstates what it does is a risk in its
 | Quarantine with restore | ✅ | ✅ | ✅ | ✅ | ❌ | ✅ | 🟡 |
 | One-click / scripted remediation with backups | ✅ | 🟡 | ✅ | ✅ | 🟡 delete | ✅ | ❌ |
 | Security score + HTML/JSON/CSV reports, MITRE ATT&CK mapping | ✅ | 🟡 | 🟡 | 🟡 | ❌ | 🟡 log | ❌ |
+| SARIF output for GitHub code scanning and other SARIF tools | ✅ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ |
 | CLI + exit codes for automation / RMM | ✅ | 🟡 PowerShell | 🟡 💲 | 🟡 💲 | ✅ | ❌ | ✅ |
 | Open source, auditable, no telemetry | ✅ | ❌ | ❌ | ❌ | ❌ (free, closed) | ❌ | ✅ |
 | Linux / macOS support | 🟡 best-effort | 🟡 💲 | ✅ (mac) | ✅ | ❌ | ❌ | ✅ |

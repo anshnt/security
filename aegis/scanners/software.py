@@ -388,3 +388,28 @@ class SoftwareScanner(Scanner):
                      "{n} vulnerable or unsupported program(s) found.")
         yield result("AEG-SW-REMOTE", "No remote-access software installed", counts["remote"],
                      "{n} remote-access program(s) installed (inventory only).")
+        if ctx.options.get("software_updates", True) and not ctx.cancelled:
+            yield from self._updates(ctx)
+
+    def _updates(self, ctx: ScanContext) -> Iterator[Emitted]:
+        from aegis.tools import appupdates
+
+        ctx.report(self.name, "checking for app updates")
+        title = "Installed apps are up to date"
+        try:
+            source, updates, problem = appupdates.collect_updates()
+        except Exception as exc:  # pragma: no cover - defensive
+            yield CheckResult("AEG-SW-UPDATES", title, CheckStatus.ERROR, f"{type(exc).__name__}: {exc}", Category.VULNERABILITY)
+            return
+        if problem:
+            # a package manager that fails (offline, source outage) is not an Aegis error: warn and move on
+            yield CheckResult("AEG-SW-UPDATES", title, CheckStatus.SKIP if not source else CheckStatus.WARN, problem,
+                              Category.VULNERABILITY)
+            return
+        ctx.bump("software_updates_available", len(updates))
+        findings = appupdates.update_findings(source, updates)
+        yield from findings
+        risky = sum(1 for f in findings if f.rule_id == "AEG-SW-UPDATE")
+        yield CheckResult("AEG-SW-UPDATES", title, CheckStatus.FAIL if risky else CheckStatus.WARN if updates else CheckStatus.PASS,
+                          (f"{len(updates)} update(s) available from {source}" + (f", {risky} for high-risk apps" if risky else "")
+                           + ".") if updates else f"No pending updates reported by {source}.", Category.VULNERABILITY)

@@ -140,7 +140,7 @@ def run_fix_command(cfg: Config, params: dict, finding: Finding) -> Result:
     if params.get("powershell"):
         rc, out, err = powershell(cmd)
     else:
-        rc, out, err = run(cmd)
+        rc, out, err = run(cmd, timeout=int(params.get("timeout") or 60))
     return rc == 0, (out or err).strip()[:300] or "done"
 
 

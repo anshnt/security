@@ -317,6 +317,69 @@ def cmd_alert(args, cfg: Config) -> int:
     return EXIT_CLEAN if all(r.get("ok") for r in res.values()) else EXIT_ERROR
 
 
+def cmd_apps(args, cfg: Config) -> int:
+    from aegis.core.platform import run
+    from aegis.tools import appupdates as au
+
+    source, updates, problem = au.collect_updates()
+    if problem:
+        _print(problem)
+        return EXIT_ERROR
+    if args.action == "list":
+        if args.json:
+            _print(json.dumps({"source": source, "updates": [dict(u.to_dict(), risk=au.risk_label(u)) for u in updates]},
+                              indent=2))
+            return EXIT_FINDINGS if updates else EXIT_CLEAN
+        if not updates:
+            _print(f"No pending updates reported by {source}.")
+            return EXIT_CLEAN
+        width = min(40, max(len(u.name) for u in updates))
+        for u in sorted(updates, key=lambda x: (au.risk_label(x) is None, not x.security, x.name.lower())):
+            tags = [t for t in (au.risk_label(u), "security" if u.security else "", "pinned" if u.explicit else "") if t]
+            _print(f"{u.name[:width]:<{width}}  {u.installed or '?':>14} -> {u.available:<16} {u.id}"
+                   + (f"  [{', '.join(tags)}]" if tags else ""))
+        _print(f"\n{len(updates)} update(s) available from {source}. Install with: aegis apps upgrade ID... | --all")
+        return EXIT_FINDINGS
+    # upgrade
+    by_id = {u.id.lower(): u for u in updates}
+    if args.all:
+        chosen = [u for u in updates if not u.explicit]
+    else:
+        chosen, missing = [], []
+        for i in args.ids:
+            if i.lower() in by_id:
+                chosen.append(by_id[i.lower()])
+            else:
+                missing.append(i)
+        for i in missing:
+            _print(f"no pending update for {i!r} (see: aegis apps list)")
+        if missing and not chosen:
+            return EXIT_ERROR
+    if not chosen:
+        _print("Nothing to upgrade." if args.all or args.ids else "Give package IDs or --all (see: aegis apps list).")
+        return EXIT_CLEAN if args.all else EXIT_ERROR
+    if source == "pacman":
+        _print("Arch Linux does not support upgrading single packages; run: sudo pacman -Syu")
+        return EXIT_ERROR
+    if not args.yes:
+        _print("\n".join(f"  {u.name} {u.installed or '?'} -> {u.available}" for u in chosen))
+        if input(f"Upgrade {len(chosen)} package(s) with {source}? [y/N] ").strip().lower() != "y":
+            return EXIT_CLEAN
+    failed = 0
+    for u in chosen:
+        cmd = au.upgrade_command(u)
+        if not cmd:
+            _print(f"SKIP {u.name}: its ID is truncated in the {source} listing; upgrade it from {source} directly.")
+            failed += 1
+            continue
+        _print(f"Upgrading {u.name} -> {u.available} ...")
+        rc, out, err = run(cmd, timeout=au.UPGRADE_TIMEOUT_S)
+        ok = rc == 0
+        failed += 0 if ok else 1
+        _print(("  OK" if ok else f"  FAILED (exit {rc}): " + (err or out).strip()[-300:]))
+    return EXIT_CLEAN if failed == 0 else EXIT_ERROR
+
+
 def cmd_sigma(args, cfg: Config) -> int:
     from aegis.core import sigma
 
@@ -824,6 +887,15 @@ def build_parser() -> argparse.ArgumentParser:
     al = sub.add_parser("alert", help="Slack / Teams / Discord / webhook / email alerts")
     al.add_argument("action", choices=["status", "test"])
     al.set_defaults(func=cmd_alert)
+
+    ap = sub.add_parser("apps", help="software updater: list installed apps with pending updates, or upgrade them "
+                        "(winget / apt / dnf / brew)")
+    ap.add_argument("action", nargs="?", default="list", choices=["list", "upgrade"])
+    ap.add_argument("ids", nargs="*", help="for upgrade: package IDs as shown by `aegis apps list`")
+    ap.add_argument("--all", action="store_true", help="for upgrade: every pending update (pinned packages excluded)")
+    ap.add_argument("-y", "--yes", action="store_true", help="do not ask for confirmation")
+    ap.add_argument("--json", action="store_true")
+    ap.set_defaults(func=cmd_apps)
 
     sg = sub.add_parser("sigma", help="Sigma detection rules: list what's loaded, or test rules against events")
     sg.add_argument("action", choices=["list", "test"])
