@@ -9,6 +9,11 @@ history:
 * a CRITICAL verdict - a download-and-run command carrying the fake-CAPTCHA lure text - also empties the clipboard when
   ``realtime_clear_malicious_clipboard`` is on (the default), so the paste does nothing.
 
+It also catches crypto "clipper" malware (:mod:`aegis.realtime.clipper`): a copied wallet address replaced moments later
+by a different address of the same coin, written by another program. The original address is put back (Windows) and the
+program is named. Clippers react within milliseconds, so on Windows the guard listens for clipboard-change messages
+(``AddClipboardFormatListener``) instead of only polling.
+
 Privacy: clipboard text is only examined in memory. Nothing is logged or stored except, for an alert, a masked and
 shortened copy of the malicious command. On Windows the guard reads the clipboard only when its sequence number
 changes; it needs the user's desktop session, so it does not run inside the background service (session 0).
@@ -21,10 +26,12 @@ import logging
 import re
 import shutil
 import threading
+import time
 from typing import TYPE_CHECKING, Any, Callable, List, Optional, Tuple
 
 from aegis.core.models import Category, Finding, Severity
 from aegis.core.platform import IS_MAC, IS_WINDOWS, run
+from aegis.realtime.clipper import RESTORE_COOLDOWN_S, ClipperDetector, Owner, classify_address, swap_finding
 
 if TYPE_CHECKING:  # pragma: no cover
     from aegis.realtime.monitor import RealtimeMonitor
@@ -59,10 +66,40 @@ def _windows_api() -> Any:
     kernel32.GlobalLock.restype = wintypes.LPVOID
     kernel32.GlobalUnlock.argtypes = [wintypes.HGLOBAL]
     kernel32.ProcessIdToSessionId.argtypes = [wintypes.DWORD, ctypes.POINTER(wintypes.DWORD)]
+    user32.SetClipboardData.argtypes = [wintypes.UINT, wintypes.HANDLE]
+    user32.SetClipboardData.restype = wintypes.HANDLE
+    user32.GetClipboardOwner.restype = wintypes.HWND
+    user32.GetWindowThreadProcessId.argtypes = [wintypes.HWND, ctypes.POINTER(wintypes.DWORD)]
+    user32.GetWindowThreadProcessId.restype = wintypes.DWORD
+    user32.DefWindowProcW.argtypes = [wintypes.HWND, wintypes.UINT, wintypes.WPARAM, wintypes.LPARAM]
+    user32.DefWindowProcW.restype = ctypes.c_ssize_t
+    user32.CreateWindowExW.argtypes = [wintypes.DWORD, wintypes.LPCWSTR, wintypes.LPCWSTR, wintypes.DWORD, ctypes.c_int,
+                                       ctypes.c_int, ctypes.c_int, ctypes.c_int, wintypes.HWND, wintypes.HMENU,
+                                       wintypes.HINSTANCE, wintypes.LPVOID]
+    user32.CreateWindowExW.restype = wintypes.HWND
+    user32.AddClipboardFormatListener.argtypes = [wintypes.HWND]
+    user32.RemoveClipboardFormatListener.argtypes = [wintypes.HWND]
+    user32.SetTimer.argtypes = [wintypes.HWND, ctypes.c_size_t, wintypes.UINT, wintypes.LPVOID]
+    user32.KillTimer.argtypes = [wintypes.HWND, ctypes.c_size_t]
+    user32.GetMessageW.argtypes = [ctypes.POINTER(wintypes.MSG), wintypes.HWND, wintypes.UINT, wintypes.UINT]
+    user32.GetMessageW.restype = wintypes.BOOL
+    user32.DispatchMessageW.argtypes = [ctypes.POINTER(wintypes.MSG)]
+    user32.DestroyWindow.argtypes = [wintypes.HWND]
+    user32.UnregisterClassW.argtypes = [wintypes.LPCWSTR, wintypes.HINSTANCE]
+    kernel32.GlobalAlloc.argtypes = [wintypes.UINT, ctypes.c_size_t]
+    kernel32.GlobalAlloc.restype = wintypes.HGLOBAL
+    kernel32.GlobalFree.argtypes = [wintypes.HGLOBAL]
+    kernel32.GlobalFree.restype = wintypes.HGLOBAL
+    kernel32.GetModuleHandleW.argtypes = [wintypes.LPCWSTR]
+    kernel32.GetModuleHandleW.restype = wintypes.HMODULE
     return ctypes, user32, kernel32
 
 
 CF_UNICODETEXT = 13
+GMEM_MOVEABLE = 0x0002
+WM_TIMER = 0x0113
+WM_CLIPBOARDUPDATE = 0x031D
+HWND_MESSAGE = -3
 
 
 def windows_session_id() -> Optional[int]:
@@ -119,6 +156,97 @@ class WindowsClipboard:
             return bool(u.EmptyClipboard())
         finally:
             u.CloseClipboard()
+
+    def owner(self) -> Owner:
+        """The program whose window owns the clipboard (pid 0 when a program wrote it without a window)."""
+        hwnd = self._user32.GetClipboardOwner()
+        if not hwnd:
+            return Owner()
+        from ctypes import wintypes
+
+        pid = wintypes.DWORD(0)
+        self._user32.GetWindowThreadProcessId(hwnd, self._ctypes.byref(pid))
+        o = Owner(int(pid.value))
+        if o.pid:
+            try:
+                import psutil
+
+                proc = psutil.Process(o.pid)
+                o.name, o.exe = proc.name(), proc.exe()
+            except Exception:
+                pass
+        return o
+
+    def write(self, text: str) -> bool:
+        u, k, ct = self._user32, self._kernel32, self._ctypes
+        data = (text + "\0").encode("utf-16-le")
+        for _ in range(5):  # another program may hold the clipboard for a moment
+            if u.OpenClipboard(None):
+                break
+            time.sleep(0.02)
+        else:
+            return False
+        try:
+            if not u.EmptyClipboard():
+                return False
+            h = k.GlobalAlloc(GMEM_MOVEABLE, len(data))
+            ptr = k.GlobalLock(h) if h else None
+            if not ptr:
+                if h:
+                    k.GlobalFree(h)
+                return False
+            ct.memmove(ptr, data, len(data))
+            k.GlobalUnlock(h)
+            if not u.SetClipboardData(CF_UNICODETEXT, h):
+                k.GlobalFree(h)  # the system owns the memory only once SetClipboardData succeeds
+                return False
+            return True
+        finally:
+            u.CloseClipboard()
+
+    def listen(self, on_change: Callable[[], None], stop: threading.Event, interval: float) -> None:
+        """Call ``on_change`` on every WM_CLIPBOARDUPDATE, and every ``interval`` seconds as a fallback, until ``stop``
+        is set. Runs a message loop on a hidden message-only window owned by the calling thread."""
+        ct, u, k = self._ctypes, self._user32, self._kernel32
+        from ctypes import wintypes
+
+        wndproc_t = ct.WINFUNCTYPE(ct.c_ssize_t, wintypes.HWND, wintypes.UINT, wintypes.WPARAM, wintypes.LPARAM)
+
+        class WNDCLASSW(ct.Structure):
+            _fields_ = [("style", wintypes.UINT), ("lpfnWndProc", wndproc_t), ("cbClsExtra", ct.c_int),
+                        ("cbWndExtra", ct.c_int), ("hInstance", wintypes.HINSTANCE), ("hIcon", wintypes.HICON),
+                        ("hCursor", wintypes.HANDLE), ("hbrBackground", wintypes.HBRUSH),
+                        ("lpszMenuName", wintypes.LPCWSTR), ("lpszClassName", wintypes.LPCWSTR)]
+
+        def proc(hwnd: Any, msg: int, wparam: Any, lparam: Any) -> int:
+            if msg in (WM_CLIPBOARDUPDATE, WM_TIMER):
+                try:
+                    on_change()
+                except Exception:
+                    log.debug("clipboard change handler failed", exc_info=True)
+                return 0
+            return u.DefWindowProcW(hwnd, msg, wparam, lparam)
+
+        callback = wndproc_t(proc)  # must stay referenced while the window exists
+        hinst = k.GetModuleHandleW(None)
+        name = f"AegisClipboardListener{threading.get_ident()}"
+        u.RegisterClassW.argtypes = [ct.POINTER(WNDCLASSW)]
+        if not u.RegisterClassW(ct.byref(WNDCLASSW(0, callback, 0, 0, hinst, None, None, None, None, name))):
+            raise OSError(ct.get_last_error(), "RegisterClassW failed")
+        hwnd = u.CreateWindowExW(0, name, name, 0, 0, 0, 0, 0, wintypes.HWND(HWND_MESSAGE), None, hinst, None)
+        try:
+            if not hwnd or not u.AddClipboardFormatListener(hwnd):
+                raise OSError(ct.get_last_error(), "clipboard listener could not be registered")
+            u.SetTimer(hwnd, 1, max(100, int(interval * 1000)), None)
+            msg = wintypes.MSG()
+            while not stop.is_set() and u.GetMessageW(ct.byref(msg), hwnd, 0, 0) > 0:
+                u.DispatchMessageW(ct.byref(msg))
+        finally:
+            if hwnd:
+                u.KillTimer(hwnd, 1)
+                u.RemoveClipboardFormatListener(hwnd)
+                u.DestroyWindow(hwnd)
+            u.UnregisterClassW(name, hinst)
 
 
 def unix_clipboard_commands(which: Callable[[str], Optional[str]] = shutil.which) -> Optional[Tuple[List[str], List[str]]]:
@@ -198,12 +326,16 @@ def clipboard_finding(text: str, verdict: Any, cleared: Optional[bool]) -> Findi
 # =========================================================================== guard
 
 class ClipboardGuard:
-    def __init__(self, monitor: "RealtimeMonitor", interval: float = POLL_INTERVAL_S, clipboard: Any = None):
+    def __init__(self, monitor: "RealtimeMonitor", interval: float = POLL_INTERVAL_S, clipboard: Any = None,
+                 clock: Callable[[], float] = time.monotonic):
         self.monitor = monitor
         self.interval = interval
         self.clipboard = clipboard
         self._last_hash: Optional[str] = None
         self.available = True
+        self.clock = clock
+        self.clipper = ClipperDetector()
+        self._last_restore = -RESTORE_COOLDOWN_S
 
     def _default_clipboard(self) -> Any:
         if IS_WINDOWS:
@@ -233,11 +365,21 @@ class ClipboardGuard:
         return [self.monitor.spawn("clipboard-guard", lambda: self._loop(stop))]
 
     def _loop(self, stop: threading.Event) -> None:
-        while not stop.wait(self.interval):
+        listen = getattr(self.clipboard, "listen", None)
+        if listen is not None:  # Windows: react to every change at once, so a clipper's swap is seen as it happens
             try:
-                self.tick()
+                listen(self._safe_tick, stop, self.interval)
+                return
             except Exception:
-                log.debug("clipboard guard tick failed", exc_info=True)
+                log.warning("clipboard change messages unavailable, polling instead", exc_info=True)
+        while not stop.wait(self.interval):
+            self._safe_tick()
+
+    def _safe_tick(self) -> None:
+        try:
+            self.tick()
+        except Exception:
+            log.debug("clipboard guard tick failed", exc_info=True)
 
     def tick(self, baseline: bool = False) -> Optional[Finding]:
         cb = self.clipboard
@@ -250,6 +392,9 @@ class ClipboardGuard:
         if digest == self._last_hash:
             return None
         self._last_hash = digest
+        swap = self._check_clipper(text, baseline)
+        if swap is not None:
+            return swap
         if baseline:
             return None
         sigs = getattr(self.monitor, "signatures", None)
@@ -267,5 +412,37 @@ class ClipboardGuard:
                 self._last_hash = hashlib.sha256(b"").hexdigest()
                 self.monitor.stats["clipboard_cleared"] += 1
         finding = clipboard_finding(text, verdict, cleared)
+        self.monitor.emit(finding, "clipboard-guard")
+        return finding
+
+    def _check_clipper(self, text: str, baseline: bool) -> Optional[Finding]:
+        """Feed the clipper detector; on a swap put the original address back (once per cooldown) and report it."""
+        cb = self.clipboard
+        owner = Owner()
+        if classify_address(text) and hasattr(cb, "owner"):
+            try:
+                owner = cb.owner()
+            except Exception:
+                log.debug("clipboard owner lookup failed", exc_info=True)
+        swap = self.clipper.observe(text, self.clock(), owner)
+        if swap is None or baseline:
+            return None
+        restored = False
+        now = self.clock()
+        write = getattr(cb, "write", None)
+        if write is not None and now - self._last_restore >= RESTORE_COOLDOWN_S:
+            try:
+                restored = bool(write(swap.original))
+            except Exception:
+                log.debug("restoring the clipboard failed", exc_info=True)
+            if restored:
+                self._last_restore = now
+                self._last_hash = hashlib.sha256(swap.original.encode("utf-8", "replace")).hexdigest()
+                self.clipper.observe(swap.original, now, Owner())  # a clipper that swaps again is caught again
+        self.monitor.stats["clipboard_swaps"] += 1
+        finding = swap_finding(swap, restored)
+        remediate = getattr(self.monitor, "auto_remediate", None)
+        if remediate is not None:
+            remediate(finding)  # terminates and quarantines the clipper when auto-quarantine is on
         self.monitor.emit(finding, "clipboard-guard")
         return finding

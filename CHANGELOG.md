@@ -90,6 +90,12 @@
 - **Firewall rules for script hosts and fake system processes.** The network scanner's inbound rule review also flags
   allow rules for PowerShell, cmd, mshta, rundll32, regsvr32, certutil, netcat and similar tools, and for system
   process names (svchost.exe, lsass.exe, ...) outside System32 (`AEG-NET-FW-LOLBIN`, HIGH).
+- **Crypto clipboard hijackers (clipper malware), in the real-time clipboard guard.** When a copied wallet address
+  (Bitcoin, Ethereum and EVM chains, Litecoin, Bitcoin Cash, Monero, Tron, Dogecoin, XRP, TON, Cardano, Solana) is
+  replaced moments later by a different address of the same coin written by another program, Aegis puts the original
+  back (Windows), names the program and offers to terminate and quarantine it. A look-alike replacement (same first
+  and last characters, the "address poisoning" trick) is CRITICAL. On Windows the guard now reacts to clipboard-change
+  messages as they happen instead of polling once a second.
 - **Database and dev servers on all interfaces.** The network scanner now also reports Redis, MongoDB, Elasticsearch,
   Memcached, CouchDB, MySQL, PostgreSQL, SQL Server and the Docker API listening on every interface.
 - **Download origin review (`downloads`, part of the quick and full scans).**
