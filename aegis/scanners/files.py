@@ -156,10 +156,11 @@ def analyse_bytes(ctx: ScanContext, path: Path, data: bytes, ext: str, location:
         return findings  # definitive
 
     kind = fa.classify(data[:4096], ext)
+    lowered = data.lower()  # one copy shared by every rule's and heuristic's literal-atom prefilter
     for rule in sigs.rules:
         if not rule.applies_to(kind, ext):
             continue
-        hits = rule.match(data)
+        hits = rule.match(data, lowered)
         if hits is not None:
             findings.append(Finding(
                 rule.id, rule.name, rule.severity, rule.category, rule.description, location,
@@ -183,16 +184,16 @@ def analyse_bytes(ctx: ScanContext, path: Path, data: bytes, ext: str, location:
             inds.append(fa.Indicator("AEG-H-LOC-EXEC", "Unsigned executable in a user-writable drop location",
                                      Severity.LOW, 15, str(path.parent), ["T1204.002"]))
     elif kind in ("script", "text"):
-        inds += fa.content_indicators(data, kind)
+        inds += fa.content_indicators(data, kind, lowered)
         inds += fa.ransom_note_indicators(path, data)
     elif kind == "lnk":
-        inds += fa.lnk_indicators(data) + fa.content_indicators(data, kind)
+        inds += fa.lnk_indicators(data) + fa.content_indicators(data, kind, lowered)
     elif kind == "office":
         inds += fa.office_indicators(path if depth == 0 else _BytesPath(data), data)
     elif kind == "pdf":
         inds += fa.pdf_indicators(data)
     elif kind == "elf":
-        inds += fa.content_indicators(data, kind)
+        inds += fa.content_indicators(data, kind, lowered)
 
     strong = [i for i in inds if i.severity >= Severity.HIGH]
     score = sum(i.score for i in inds)

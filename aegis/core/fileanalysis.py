@@ -11,6 +11,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
+from aegis.core.atoms import Prefiltered
 from aegis.core.models import Severity
 
 EXEC_EXTS = {"exe", "dll", "scr", "com", "pif", "cpl", "sys", "ocx", "drv", "efi", "msi", "msp", "appx", "msix"}
@@ -380,11 +381,12 @@ _SCRIPT_PATTERNS: List[Tuple[str, str, str, int, List[str]]] = [
     ("AEG-H-SCR-MINER", "Cryptocurrency miner configuration", r"(?i)(stratum\+(tcp|ssl)://|\"donate-level\"|xmrig|minexmr|nicehash|--cpu-max-threads-hint)", 40, ["T1496"]),
     ("AEG-H-SCR-WEBSHELL", "Web shell", r"(?i)(eval\s*\(\s*(base64_decode|gzinflate|str_rot13)\s*\(\s*\$_(POST|GET|REQUEST|COOKIE)|assert\s*\(\s*\$_(POST|REQUEST)|system\s*\(\s*\$_(GET|POST|REQUEST)\[)", 60, ["T1505.003"]),
 ]
-_COMPILED_SCRIPT = [(rid, t, re.compile(p.encode("utf-8"), re.S), s, m) for rid, t, p, s, m in _SCRIPT_PATTERNS]
+_COMPILED_SCRIPT = [(rid, t, Prefiltered(re.compile(p.encode("utf-8"), re.S)), s, m) for rid, t, p, s, m in _SCRIPT_PATTERNS]
 
 
-def content_indicators(data: bytes, kind: str) -> List[Indicator]:
-    """Regex heuristics applied to scripts, text, shortcuts and documents."""
+def content_indicators(data: bytes, kind: str, lowered: Optional[bytes] = None) -> List[Indicator]:
+    """Regex heuristics applied to scripts, text, shortcuts and documents.
+    ``lowered`` (= data.lower()) may be passed to share the atom-prefilter copy."""
     out: List[Indicator] = []
     sample = data
     if data[:2] == b"\xff\xfe":
@@ -395,8 +397,9 @@ def content_indicators(data: bytes, kind: str) -> List[Indicator]:
     elif kind == "lnk":
         # LNK argument strings are UTF-16; flatten so regexes see them.
         sample = data + data.replace(b"\x00", b"")
+    low = lowered if (sample is data and lowered is not None) else sample.lower()
     for rid, title, rx, score, mitre in _COMPILED_SCRIPT:
-        m = rx.search(sample)
+        m = rx.search(sample, low)
         if m:
             sev = Severity.HIGH if score >= 45 else Severity.MEDIUM if score >= 25 else Severity.LOW
             out.append(Indicator(rid, title, sev, score, m.group(0)[:120].decode("utf-8", "replace"), mitre))

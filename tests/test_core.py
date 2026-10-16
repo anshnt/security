@@ -420,3 +420,10 @@ def test_no_retired_attack_technique_ids():
             if m.group(0) in retired:
                 bad.append(f"{p.name}: {m.group(0)} -> {retired[m.group(0)]}")
     assert not bad, bad
+
+
+def test_linux_rootkit_rule_ignores_generic_hide_helpers(ctx):
+    """setuptools ships a hide_file() helper; the rootkit rule must key on real tool names."""
+    rule = {r.id: r for r in ctx.signatures.rules}["AEG-NIX-ROOTKIT"]
+    assert rule.match(b"def hide_file(path):\n    SetFileAttributes(path, HIDDEN)\nclass Reptile: pass") is None
+    assert rule.match(b'static const char* process_to_filter = "miner"; readdir dlsym') is not None

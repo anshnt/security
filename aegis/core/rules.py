@@ -33,6 +33,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable, Dict, Iterable, List, Optional, Set
 
+from aegis.core.atoms import Prefiltered
 from aegis.core.models import Severity
 
 log = logging.getLogger("aegis.rules")
@@ -55,7 +56,11 @@ def _hex_to_regex(hexstr: str) -> bytes:
     return out
 
 
-def _compile_string(spec: dict) -> "re.Pattern[bytes]":
+def _compile_string(spec: dict) -> Prefiltered:
+    return Prefiltered(_compile_regex(spec))
+
+
+def _compile_regex(spec: dict) -> "re.Pattern[bytes]":
     flags = re.DOTALL
     if spec.get("nocase"):
         flags |= re.IGNORECASE
@@ -205,7 +210,7 @@ class Rule:
     category: str
     description: str
     file_types: List[str]
-    strings: Dict[str, "re.Pattern[bytes]"]
+    strings: Dict[str, Prefiltered]
     predicate: Pred
     mitre: List[str] = field(default_factory=list)
     source: str = ""
@@ -215,11 +220,13 @@ class Rule:
             return True
         return kind in self.file_types or ext.lstrip(".").lower() in self.file_types
 
-    def match(self, data: bytes) -> Optional[Dict[str, str]]:
+    def match(self, data: bytes, lowered: Optional[bytes] = None) -> Optional[Dict[str, str]]:
         """Evaluate the condition, searching each string only when the condition
         needs it (and at most once): `a and b` never searches b when a is absent.
-        Returns the strings that were found (the evidence) on a match."""
-        lazy = _LazyHits(self.strings, data)
+        ``lowered`` (= data.lower()) lets callers share one lower-cased copy across
+        rules for the literal-atom prefilter. Returns the strings that were found
+        (the evidence) on a match."""
+        lazy = _LazyHits(self.strings, data, lowered)
         if self.predicate(lazy):  # type: ignore[arg-type]
             return lazy.hits
         return None
@@ -228,18 +235,22 @@ class Rule:
 class _LazyHits:
     """Set-like view the compiled condition queries with `sid in hits`."""
 
-    __slots__ = ("_strings", "_data", "_checked", "hits")
+    __slots__ = ("_strings", "_data", "_lowered", "_checked", "hits")
 
-    def __init__(self, strings: Dict[str, "re.Pattern[bytes]"], data: bytes):
+    def __init__(self, strings: Dict[str, Prefiltered], data: bytes, lowered: Optional[bytes] = None):
         self._strings = strings
         self._data = data
+        self._lowered = lowered
         self._checked: Set[str] = set()
         self.hits: Dict[str, str] = {}
 
     def __contains__(self, sid: object) -> bool:
         if sid not in self._checked:
             self._checked.add(sid)  # type: ignore[arg-type]
-            m = self._strings[sid].search(self._data)  # type: ignore[index]
+            pat = self._strings[sid]  # type: ignore[index]
+            if pat.atoms is not None and self._lowered is None:
+                self._lowered = self._data.lower()  # once per match() call, shared by all strings
+            m = pat.search(self._data, self._lowered)
             if m:
                 self.hits[sid] = m.group(0)[:80].decode("utf-8", "replace")  # type: ignore[index]
         return sid in self.hits

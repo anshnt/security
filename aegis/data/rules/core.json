@@ -244,7 +244,7 @@
       "a": {"text": "/etc/ld.so.preload"},
       "b": {"regex": "(readdir64?|fopen64?)"},
       "c": {"regex": "dlsym"},
-      "d": {"regex": "(?i)(hide_?(pid|port|file|proc)|libprocesshider|diamorphine|reptile)"}
+      "d": {"regex": "(?i)(libprocesshider|process_to_filter|diamorphine_(?:init|cleanup|hide|show)|reptile_(?:cmd|shell|module|init)|/reptile/reptile)"}
     },
     "condition": "d or (a and b and c)"
   },
