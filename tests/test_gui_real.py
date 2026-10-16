@@ -272,3 +272,43 @@ def test_tools_app_updates_check_and_upgrade(gui, monkeypatch):
     assert pump(app, 15, until=lambda: "not available" in tools.apps_out.get("1.0", "end"))
     assert tools.apps_up_btn.instate(["disabled"]) and not tools.apps_btn.instate(["disabled"])
     assert not errors, errors
+
+
+def test_dashboard_what_to_do_first_fixes_only_that_group(gui, monkeypatch):
+    from aegis.core import remediation
+    from aegis.core.models import Category, Finding, Remediation, ScanResult, Severity
+
+    app, errors = gui
+    dash = app.pages["dashboard"]
+    app.last_result = None
+    monkeypatch.setattr("aegis.core.engine.last_scan", lambda cfg: None)
+    app.show("dashboard")
+    pump(app, 0.2)
+    assert dash.plan_items == []  # no scan yet: a hint instead of a plan
+
+    r = ScanResult(profile="quick", host={"hostname": "pc"})
+    for i in range(2):
+        r.add(Finding("AEG-M", "Mimikatz", Severity.CRITICAL, Category.MALWARE, location=f"C:\\m{i}.exe",
+                      remediation=Remediation("quarantine_file", {"path": f"C:\\m{i}.exe"})))
+    r.add(Finding("AEG-D", "Discord client code was modified", Severity.CRITICAL, Category.MALWARE, location="C:\\i.js",
+                  remediation=Remediation("restore_file_content", {"path": "C:\\i.js"})))
+    r.add(Finding("AEG-U", "Update available for Chrome", Severity.MEDIUM, Category.VULNERABILITY, location="u:c"))
+    app.last_result = r
+    dash.refresh()
+    pump(app, 0.3)
+    assert [(p["title"], p["count"], p["fixable"]) for p in dash.plan_items] == [
+        ("Mimikatz", 2, 2), ("Discord client code was modified", 1, 1), ("Update available for Chrome", 1, 0)]
+    buttons = [w for w in dash.plan_box.winfo_children() if w.winfo_class() == "TButton"]
+    assert [b.cget("text") for b in buttons] == ["Fix", "Fix", "Show all findings"]  # no Fix for the update
+
+    applied = []
+    monkeypatch.setattr(remediation, "apply_remediation", lambda f, cfg: (applied.append(f.location) or (True, "ok")))
+    monkeypatch.setattr(app.messagebox, "askyesno", lambda title, msg: True)
+    monkeypatch.setattr(app.messagebox, "showinfo", lambda title, msg: None)
+    buttons[0].invoke()
+    assert pump(app, 10, until=lambda: len(applied) == 2), applied
+    pump(app, 0.3)
+    assert sorted(applied) == ["C:\\m0.exe", "C:\\m1.exe"]  # only the Mimikatz group
+    assert [f.rule_id for f in app.last_result.findings] == ["AEG-D", "AEG-U"]
+    assert [p["title"] for p in dash.plan_items][0] == "Discord client code was modified"  # plan refreshed
+    assert not errors, errors

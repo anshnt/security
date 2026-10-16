@@ -222,9 +222,9 @@ MAX_PLAN_IDS = 6
 def action_plan(result: ScanResult, limit: int = 6, min_severity: Severity = Severity.LOW) -> List[Dict[str, Any]]:
     """The few things to do first: findings grouped by rule, worst severity first, then by how many there are.
 
-    Each item: ``severity``, ``title`` (of the worst finding, "+ N similar" when titles differ), ``count``,
-    ``locations`` (up to 3), ``recommendation``, ``fixable`` (how many have an automatic fix) and ``fix`` (the
-    command that applies those fixes, or "")."""
+    Each item: ``rule_id``, ``severity``, ``title`` (of the worst finding, "+ N similar" when titles differ), ``count``,
+    ``locations`` (up to 3), ``recommendation``, ``fixable`` (how many have an automatic fix), ``fingerprints`` (of
+    those) and ``fix`` (the command that applies those fixes, or "")."""
     groups: Dict[str, List[Finding]] = {}
     for f in result.sorted_findings():
         if f.severity >= min_severity:
@@ -240,6 +240,8 @@ def action_plan(result: ScanResult, limit: int = 6, min_severity: Severity = Sev
             fix = "aegis fix " + " ".join(f"--id {f.fingerprint}" for f in fixable) if len(fixable) <= MAX_PLAN_IDS \
                 else "aegis fix"
         plan.append({
+            "rule_id": top.rule_id,
+            "fingerprints": [f.fingerprint for f in fixable],
             "severity": top.severity.name.lower(),
             "title": top.title + (f" (+ {len(titles) - 1} similar)" if len(titles) > 1 else ""),
             "count": len(fs),

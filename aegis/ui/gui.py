@@ -81,6 +81,10 @@ def restart_as_admin() -> bool:
     return int(rc) > 32
 
 
+def _clip(text: str, n: int) -> str:
+    return text if len(text) <= n else text[:n - 1].rstrip() + "\u2026"
+
+
 def fixed_map(style: Any, option: str) -> list:
     """Work around the Tk 8.6.9 bug where Treeview tag colours are ignored."""
     return [e for e in style.map("Treeview", query_opt=option) if e[:2] != ("!disabled", "!selected")]
@@ -625,8 +629,8 @@ class DashboardPage(Page):
     def build(self) -> None:
         app, ttk, tk = self.app, self.ttk, self.tk
         f = self.frame
-        f.columnconfigure(0, weight=1)
-        f.columnconfigure(1, weight=1)
+        f.columnconfigure(0, weight=1, uniform="dash")
+        f.columnconfigure(1, weight=1, uniform="dash")
         app.heading(f, "Dashboard", "Your device's security posture at a glance").grid(row=0, column=0, columnspan=2, sticky="w")
 
         self.banner = ttk.Frame(f, style="Panel.TFrame")
@@ -674,15 +678,20 @@ class DashboardPage(Page):
         f.rowconfigure(3, weight=1)
 
         hist = app.card(f, "Score history")
-        hist.grid(row=4, column=0, columnspan=2, sticky="ew", pady=(14, 0))
+        hist.grid(row=4, column=0, sticky="nsew", pady=(14, 0), padx=(0, 8))
         hrow = ttk.Frame(hist, style="Panel.TFrame")
         hrow.pack(fill="x", pady=(0, 6))
         self.new_label = tk.Label(hrow, text="New since last scan: -", bg=C["panel"], fg=C["muted"], font=(FONT, 11, "bold"), anchor="w")
         self.new_label.pack(side="left")
         self.new_detail = ttk.Label(hrow, text="", style="Muted.TLabel")
         self.new_detail.pack(side="left", padx=(14, 0))
-        self.chart = ScoreChart(app, hist)
+        self.chart = ScoreChart(app, hist, width=360)  # natural size only: it stretches with its half of the page
         self.chart.canvas.pack(fill="x", expand=True)
+        plan = app.card(f, "What to do first")
+        plan.grid(row=4, column=1, sticky="nsew", pady=(14, 0), padx=(8, 0))
+        self.plan_box = ttk.Frame(plan, style="Panel.TFrame")
+        self.plan_box.pack(fill="x")
+        self.plan_items: List[Dict[str, Any]] = []
         self._hist_busy = False
         self._hist_again = False
         self._hist_at = 0.0
@@ -740,6 +749,7 @@ class DashboardPage(Page):
             self.gauge.set(None)
             self.last_scan.configure(text="Last scan: never - run a Quick scan to get started")
         self.refresh_history(force=result is not self._hist_result)
+        self.render_plan(result)
         on = app.protection_on
         self.prot_status.configure(text=f"Real-time protection: {'ON' if on else 'OFF'}", style="Good.TLabel" if on else "Bad.TLabel")
         self.prot_btn.configure(text="Turn off real-time protection" if on else "Turn on real-time protection",
@@ -769,6 +779,41 @@ class DashboardPage(Page):
                                           f"{s['yara_rule_files']} YARA files, {s['malicious_ips']:,} bad IPs, "
                                           f"{s['malicious_domains']:,} bad domains.  Last update: {updated}")
 
+
+    # ---- "What to do first" (the same grouping as the reports)
+    def render_plan(self, result: Any) -> None:
+        tk, ttk = self.app.tk, self.app.ttk
+        for w in self.plan_box.winfo_children():
+            w.destroy()
+        if result is None:
+            self.plan_items = []
+            ttk.Label(self.plan_box, text="Run a scan to see what to fix first.", style="Muted.TLabel").grid(sticky="w")
+            return
+        from aegis.core.report import action_plan
+
+        self.plan_items = action_plan(result, limit=3)
+        if not self.plan_items:
+            ttk.Label(self.plan_box, text="Nothing to fix: the last scan found no issues that need action.",
+                      style="Good.TLabel", wraplength=380).grid(sticky="w")
+            return
+        self.plan_box.columnconfigure(1, weight=1)
+        for i, item in enumerate(self.plan_items):
+            tk.Label(self.plan_box, text=item["severity"].upper(), bg=C["panel"], fg=SEV_COLOR[item["severity"]],
+                     font=(FONT, 9, "bold"), anchor="w").grid(row=i, column=0, sticky="w", pady=3)
+            count = f"  (x{item['count']})" if item["count"] > 1 else ""
+            ttk.Label(self.plan_box, text=_clip(item["title"], 40) + count, style="Panel.TLabel").grid(
+                row=i, column=1, sticky="w", padx=(8, 8), pady=3)
+            if item["fixable"]:
+                ttk.Button(self.plan_box, text="Fix", width=6, command=lambda it=item: self.fix_group(it)).grid(
+                    row=i, column=2, sticky="e", pady=3)
+        ttk.Button(self.plan_box, text="Show all findings", command=lambda: self.app.show("scan")).grid(
+            row=len(self.plan_items), column=0, columnspan=3, sticky="w", pady=(10, 0))
+
+    def fix_group(self, item: Dict[str, Any]) -> None:
+        result = self.app.last_result
+        wanted = set(item.get("fingerprints") or [])
+        fixable = [f for f in (result.findings if result else []) if f.fingerprint in wanted and f.remediation]
+        self.app.pages["scan"].confirm_and_fix(fixable)
 
     # ---- score history (SQLite via aegis.core.history, loaded off the UI thread)
     def refresh_history(self, force: bool = False) -> None:
@@ -1082,9 +1127,12 @@ class ScanPage(Page):
         if not sel:
             self.app.messagebox.showinfo("Fix selected", "Select one or more findings first.")
             return
-        fixable = [f for f in sel if f.remediation]
+        self.confirm_and_fix([f for f in sel if f.remediation])
+
+    def confirm_and_fix(self, fixable: List[Any]) -> None:
+        """Ask, then apply the automatic fixes of ``fixable`` in the background (used here and by the dashboard)."""
         if not fixable:
-            self.app.messagebox.showinfo("Fix selected", "None of the selected findings has an automatic fix.\n"
+            self.app.messagebox.showinfo("Fix", "None of these findings has an automatic fix.\n"
                                          "Follow the recommendation shown in the detail pane.")
             return
         lines = "\n".join(f"- {f.remediation.description or f.remediation.action}: {f.title}" for f in fixable[:12])
@@ -1105,13 +1153,12 @@ class ScanPage(Page):
             self.fix_btn.state(["!disabled"])
             ok = [r for r in results if r[1]]
             bad = [r for r in results if not r[1]]
-            for f, _o, _m in ok:
-                if f.fingerprint in self.findings:
-                    self.tree.delete(f.fingerprint)
-                    del self.findings[f.fingerprint]
-                    if self.app.last_result:
-                        self.app.last_result.findings = [x for x in self.app.last_result.findings
-                                                         if x.fingerprint != f.fingerprint]
+            fixed = {f.fingerprint for f, _o, _m in ok}
+            for fp in fixed & set(self.findings):
+                self.tree.delete(fp)
+                del self.findings[fp]
+            if self.app.last_result and fixed:
+                self.app.last_result.findings = [x for x in self.app.last_result.findings if x.fingerprint not in fixed]
             self._update_count()
             self.app.set_status(f"{len(ok)} fix(es) applied, {len(bad)} failed")
             msg = f"{len(ok)} fix(es) applied."
