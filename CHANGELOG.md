@@ -1,6 +1,6 @@
 # Changelog
 
-## [Unreleased]
+## [1.4.0] - 2026-10-16
 
 ### Detection
 - **Download origin review (`downloads`, part of the quick and full scans).**

@@ -19,13 +19,16 @@ be honest, because a security tool that overstates what it does is a risk in its
 | Second-opinion engines (Defender MpCmdRun + VirusTotal) | ✅ | – | ❌ | ❌ | 🟡 VT | ❌ | ❌ |
 | Process analysis (masquerading, typosquats, parent/child chains, miners, RATs) | ✅ | ✅ (behaviour) | ✅ | ✅ | 🟡 manual | ❌ | ❌ |
 | Autostart / persistence audit (Run keys, tasks, services, WMI, IFEO, LSA, COM) | ✅ | 🟡 | 🟡 | 🟡 | ✅ (manual review) | 🟡 | ❌ |
+| Hidden scheduled tasks (Tarrask: security descriptor removed, `Index` 0), with the command they run | ✅ | 🟡 (Defender for Endpoint 💲) | ❌ | 🟡 EDR 💲 | ❌ (lists only what Task Scheduler shows) | ❌ | ❌ |
 | Linux PAM backdoor / motd / generator persistence (`pam_exec`, `pam_permit`, unpackaged PAM modules, `update-motd.d`, systemd generators, at jobs) | ✅ | 🟡 (Defender for Endpoint 💲) | ❌ | 🟡 EDR 💲 | ❌ | ❌ | ❌ |
 | macOS login hooks, emond rules, periodic scripts, authorization plugins | ✅ | 🟡 (Defender for Endpoint 💲) | 🟡 | 🟡 EDR 💲 | ❌ | ❌ | ❌ |
 | Browser extension risk scoring + known-malicious extension IDs | ✅ | ❌ | 🟡 Browser Guard | 🟡 | ❌ | 🟡 | ❌ |
 | Browser hijack detection (search/homepage/policy/proxy/notification spam) | ✅ | ❌ | ✅ | 🟡 | ❌ | ✅ | ❌ |
 | PUP / adware / scareware detection | ✅ | 🟡 (PUA opt-in) | ✅ | ✅ | ❌ | ✅ | ❌ |
 | Network exposure (C2 IP feeds, risky ports, hosts/proxy/DNS hijack, rogue root CAs) | ✅ | 🟡 | 🟡 | ✅ 💲 | 🟡 TCPView | ❌ | ❌ |
+| Inbound firewall rule review (programs in user folders, allow-all rules, RDP/SMB/SSH open on public networks, stale rules) | ✅ | ❌ | ❌ | 🟡 (own firewall 💲) | ❌ | ❌ | ❌ |
 | Windows hardening audit (Defender, firewall, UAC, SMBv1, RDP/NLA, BitLocker, LSA, WDigest, OS EOL...) | ✅ | 🟡 (Security Center) | ❌ | 🟡 vulnerability scan 💲 | ❌ | ❌ | ❌ |
+| Secure Boot 2011 → 2023 certificate update status | ✅ | 🟡 (event log / Windows Security) | ❌ | ❌ | ❌ | ❌ | ❌ |
 | Vulnerable / end-of-life software detection | ✅ | 🟡 (Defender for Endpoint 💲) | ❌ | 🟡 💲 | ❌ | ❌ | ❌ |
 | Software updater (pending app updates, one-command upgrade via winget / apt / dnf / brew) | ✅ | ❌ | ❌ | ✅ 💲 | ❌ | ❌ | ❌ |
 | Windows event-log threat hunting (log clearing, new admins, RDP brute force, Defender tampering, malicious script blocks) | ✅ | 🟡 (Defender for Endpoint 💲) | ❌ | 🟡 EDR 💲 | ❌ | ❌ | ❌ |
@@ -39,11 +42,13 @@ be honest, because a security tool that overstates what it does is a risk in its
 | Web protection (malicious-domain blocking) + C2 IP firewall blocking | ✅ hosts/firewall | ✅ SmartScreen / Network Protection | ✅ 💲 | ✅ | ❌ | ❌ | ❌ |
 | One-command hardening incl. ASR rules, with full undo | ✅ | 🟡 (manual / Intune 💲) | ❌ | 🟡 | ❌ | ❌ | ❌ |
 | Scan history, "new since last scan", alerts to Slack/Teams/Discord/email | ✅ | 🟡 (Defender for Endpoint 💲) | 🟡 💲 | 🟡 💲 | ❌ | ❌ | ❌ |
+| Multi-PC overview built from scan results, no server needed (`aegis fleet`) | ✅ | 🟡 (Defender for Endpoint portal 💲) | 🟡 (cloud console 💲) | 🟡 (cloud console 💲) | ❌ | ❌ | ❌ |
 | Exposed secrets / seed phrases / plaintext credentials on disk | ✅ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ |
 | Infostealer persistence in trusted apps (Discord injection, wallet-app swaps, Electron/Node env abuse) | ✅ | 🟡 (signatures) | 🟡 | 🟡 | ❌ | ❌ | ❌ |
 | Hijacked browser shortcuts + browsers launched for cookie theft (remote debugging) | ✅ | 🟡 | ✅ | 🟡 | ❌ | ✅ (shortcuts) | ❌ |
 | Webcam / microphone / screen-capture access review (spyware, stalkerware) | ✅ (OS usage record) | ❌ | 🟡 💲 | ✅ 💲 (webcam protection) | ❌ | ❌ | ❌ |
 | ClickFix / fake-CAPTCHA traces (Run dialog, PowerShell and shell history), malicious domains in DNS cache and browser history | ✅ | 🟡 (behaviour blocking) | 🟡 Browser Guard | 🟡 EDR 💲 | ❌ | ❌ | ❌ |
+| Clipboard guard: warns about (and clears) ClickFix commands a web page copies | ✅ | 🟡 (blocks the command when it runs) | 🟡 Browser Guard | 🟡 | ❌ | ❌ | ❌ |
 | Download origin review (Mark-of-the-Web / macOS quarantine / xattr): known-bad and raw-IP sources, HTML smuggling, WebDAV delivery, deceptive file names | ✅ | 🟡 (SmartScreen reputation at download time) | 🟡 (web protection) | 🟡 (web protection) | 🟡 Streams (manual) | ❌ | ❌ |
 | Ransomware recovery readiness (restore points, File History, cloud versioning, Time Machine) with a grade | ✅ | 🟡 (CFA, OneDrive prompt) | ❌ | 🟡 (own backup 💲) | ❌ | ❌ | ❌ |
 | Exploit-protection audit (DEP, ASLR, CFG, SEHOP switched off) | ✅ | 🟡 (settings page) | ✅ 💲 (exploit protection) | ✅ | ❌ | ❌ | ❌ |
