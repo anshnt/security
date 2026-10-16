@@ -315,6 +315,28 @@ def test_scanner_windows_rwx_flow(monkeypatch, ctx):
     assert rwx.status == CheckStatus.FAIL and "Examined 2" in rwx.detail  # chrome is a JIT host and not examined
 
 
+def test_rwx_runs_first_and_its_processes_are_yara_scanned_first(monkeypatch, ctx):
+    """Real-Windows CI: a slow YARA pass used the whole budget and the RWX check examined 0 processes.
+    RWX now runs first with its own budget, and YARA starts with the processes it flagged."""
+    fake_procs(monkeypatch, [P(7201, "a.exe"), P(7202, "b.exe"), P(7203, "c.exe")])
+    monkeypatch.setattr(mem, "HAVE_YARA", True)
+    monkeypatch.setattr(mem, "IS_WINDOWS", True)
+    monkeypatch.setattr(mem, "private_exec_regions", lambda pid: [(0x10000, 8192, 0x40)] if pid == 7203 else [])
+    monkeypatch.setattr(mem, "loads_jit_runtime", lambda pid: False)
+    seen = []
+
+    def fake_scan(rules, procs, deadline, proc_timeout, cancelled=lambda: False, grace=0):
+        seen.extend(p.pid for p in procs)
+        return mem.MemResult(out_of_time=True)
+
+    monkeypatch.setattr(mem, "scan_processes", fake_scan)
+    out = list(mem.MemoryScanner().run(ctx_with(ctx, FakeRules())))
+    ids = [x.check_id for x in out if isinstance(x, CheckResult)]
+    assert ids == ["AEG-MEM-RWX", "AEG-MEM-YARA"]
+    rwx = [c for c in out if isinstance(c, CheckResult) and c.check_id == "AEG-MEM-RWX"][0]
+    assert "Examined 3" in rwx.detail and ctx.stats["memory_rwx_checked"] == 3
+    assert seen[0] == 7203 and sorted(seen) == [7201, 7202, 7203]
+
 def test_scanner_registered():
     load_all()
     cls = REGISTRY["memory"]

@@ -43,6 +43,7 @@ log = logging.getLogger("aegis.memory")
 
 DEFAULT_BUDGET_S = 60
 DEFAULT_PROC_TIMEOUT_S = 15
+RWX_BUDGET_S = 20  # at most this much (or half the budget) for the unbacked-memory check
 DEFAULT_MAX_PROCS = 150
 DEFAULT_MAX_PROCS_DEEP = 400
 WATCHDOG_GRACE_S = 5.0
@@ -544,6 +545,42 @@ class MemoryScanner(Scanner):
         ctx.bump("memory_processes_listed", st["total"])
         note = ("" if ctx.is_admin else " Run Aegis as Administrator/root to include system and other users' processes.")
 
+        # ---- unbacked executable memory (Windows only). Cheap, so it runs first with its own share of the budget:
+        # a slow YARA pass must not starve it, and the processes it flags are scanned with YARA first.
+        rwx_pids: Set[int] = set()
+        if not IS_WINDOWS:
+            yield CheckResult("AEG-MEM-RWX", "No unbacked executable memory", CheckStatus.SKIP,
+                              "The unbacked-executable-memory heuristic is only available on Windows.", Category.SUSPICIOUS)
+        else:
+            rwx_deadline = min(deadline, time.monotonic() + min(RWX_BUDGET_S, budget / 2))
+            flagged = 0
+            checked = 0
+            out_of_time = False
+            for p in chosen:
+                if ctx.cancelled:
+                    break
+                if time.monotonic() > rwx_deadline:
+                    out_of_time = True
+                    break
+                if p.pid == os.getpid() or p.lname in _JIT_HOSTS:
+                    continue
+                regions = private_exec_regions(p.pid)
+                if regions is None:
+                    continue
+                checked += 1
+                if regions and loads_jit_runtime(p.pid):  # .NET / Java / V8 JIT code is expected, not injection
+                    ctx.bump("memory_rwx_jit_skipped")
+                    continue
+                f = rwx_finding(p, regions)
+                if f:
+                    flagged += 1
+                    rwx_pids.add(p.pid)
+                    yield f
+            ctx.bump("memory_rwx_checked", checked)
+            yield CheckResult("AEG-MEM-RWX", "No unbacked executable memory in processes", CheckStatus.FAIL if flagged else CheckStatus.PASS,
+                              f"Examined {checked} process(es); {flagged} with writable+executable private memory"
+                              + ("; time budget reached" if out_of_time else "") + ".", Category.SUSPICIOUS)
+
         rules = ctx.signatures.yara_rules
         # ---- YARA over process memory
         if not HAVE_YARA:
@@ -555,7 +592,8 @@ class MemoryScanner(Scanner):
         else:
             ctx.report(self.name, f"scanning memory of up to {len(chosen)} process(es)")
             grace = float(ctx.options.get("memory_watchdog_grace_s", WATCHDOG_GRACE_S))
-            res = scan_processes(rules, chosen, deadline, proc_timeout, cancelled=lambda: ctx.cancelled, grace=grace)
+            targets = sorted(chosen, key=lambda p: p.pid not in rwx_pids)  # stable: RWX-flagged processes first
+            res = scan_processes(rules, targets, deadline, proc_timeout, cancelled=lambda: ctx.cancelled, grace=grace)
             ctx.bump("memory_processes_scanned", res.scanned)
             for f in res.findings:
                 yield f
@@ -588,33 +626,3 @@ class MemoryScanner(Scanner):
                 status = CheckStatus.PASS
             yield CheckResult("AEG-MEM-YARA", "No malware patterns in process memory (YARA)", status,
                               detail + ("" if status == CheckStatus.FAIL else note), Category.MALWARE)
-        # ---- unbacked executable memory (Windows only)
-        if not IS_WINDOWS:
-            yield CheckResult("AEG-MEM-RWX", "No unbacked executable memory", CheckStatus.SKIP,
-                              "The unbacked-executable-memory heuristic is only available on Windows.", Category.SUSPICIOUS)
-            return
-        flagged = 0
-        checked = 0
-        out_of_time = False
-        for p in chosen:
-            if ctx.cancelled:
-                break
-            if time.monotonic() > deadline:
-                out_of_time = True
-                break
-            if p.pid == os.getpid() or p.lname in _JIT_HOSTS:
-                continue
-            regions = private_exec_regions(p.pid)
-            if regions is None:
-                continue
-            checked += 1
-            if regions and loads_jit_runtime(p.pid):  # .NET / Java / V8 JIT code is expected, not injection
-                ctx.bump("memory_rwx_jit_skipped")
-                continue
-            f = rwx_finding(p, regions)
-            if f:
-                flagged += 1
-                yield f
-        yield CheckResult("AEG-MEM-RWX", "No unbacked executable memory in processes", CheckStatus.FAIL if flagged else CheckStatus.PASS,
-                          f"Examined {checked} process(es); {flagged} with writable+executable private memory"
-                          + ("; time budget reached" if out_of_time else "") + ".", Category.SUSPICIOUS)
