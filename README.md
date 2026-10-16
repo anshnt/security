@@ -29,6 +29,7 @@ score. Use it from the command line or the desktop GUI.
 | **Real-time protection** | A file guard (scan on write, auto-quarantine), a process guard (new-process analysis, optional kill), a ransomware guard (hidden canary files plus mass-modification detection that suspends the culprit), a persistence guard (alerts on new autoruns and hosts changes), a clipboard guard (warns when a fake CAPTCHA page copies a ClickFix command, and empties the clipboard when it carries the lure; text is only checked in memory) and desktop notifications |
 | **App tampering & session theft** | Detects Discord client injection by token stealers (with a one-click restore of the genuine file), `ELECTRON_RUN_AS_NODE` / `NODE_OPTIONS` code injection, hijacked browser shortcuts (forced extensions, remote-debugging ports, proxies, forced start pages, shortcuts disguised as a browser), browsers started hidden with remote debugging to steal cookies (also caught in real time), and Exodus / Atomic / Ledger Live wallet apps whose code was swapped |
 | **Recent-activity traces** | Finds the fingerprints of ClickFix / fake-CAPTCHA attacks: commands pasted into the Run dialog (Win+R) with the "I am not a robot" lure, download-and-run and Defender-tampering lines in PowerShell history, `curl \| sh` from raw IPs or paste sites, `base64 -d \| sh` and fake password dialogs in bash / zsh / fish history, plus known-malicious domains in the Windows DNS cache and in browser history (Chrome, Edge, Brave, Vivaldi, Opera, Firefox; last 30 days). Developer installers from well-known hosts are not flagged; evidence is masked and URLs lose their query strings |
+| **Download origins** | Reviews where the risky files in Downloads and on the Desktop came from, using the record the system keeps with a download: the Windows Mark-of-the-Web (`Zone.Identifier`), the macOS quarantine record and `kMDItemWhereFroms`, or the `user.xdg.origin.url` attribute that Chrome, `wget --xattr` and `curl --xattr` write on Linux. Flags known-malicious sources (HIGH), `blob:` / `data:` addresses built by the page itself (HTML smuggling), WebDAV shares and raw IP addresses (MEDIUM), paste and file-sharing hosts and plain `http://` (LOW), and deceptive names (right-to-left override, `invoice.pdf.exe`; HIGH). On Windows it also reports the policy that stops Windows marking downloads (`SaveZoneInformation`) with a one-click fix. The real-time file guard adds the origin to its alerts. Addresses lose their query strings; nothing is read from the file |
 | **Ransomware recovery readiness** | Answers "could I get my files back today?": System Restore and shadow copies, File History, OneDrive folder backup, Google Drive and Dropbox, Time Machine, and Linux snapshot and backup tools (Timeshift, snapper, ZFS, Btrfs, restic, Borg, Deja Dup), graded Good / Fair / Weak with exact steps. Read-only; part of `aegis audit` |
 | **Privacy / spyware** | Reviews the operating system's own record of which programs used the camera, microphone, location and screen capture (Windows ConsentStore) or hold camera, microphone, screen-recording, Accessibility and Input Monitoring permissions (macOS TCC). Flags script hosts, programs in Temp/Downloads/hidden folders, programs that deleted themselves afterwards, and anything recording right now, plus an inventory of every app that used each device |
 | **Threat hunting** | Windows event-log hunting (log clearing, new admins, RDP password-guessing success, suspicious service/task installs, Defender tampering, malicious PowerShell script blocks), vulnerable/abused kernel drivers (BYOVD) + Microsoft driver blocklist & memory-integrity checks, DLL side-loading, risky USB drives, malicious email attachments & spoofed senders, YARA memory scanning |
@@ -52,7 +53,7 @@ score. Use it from the command line or the desktop GUI.
 
 ```powershell
 .\aegis.exe update            # fetch latest threat intelligence
-.\aegis.exe scan quick        # ~1-2 min: processes, autoruns, downloads/desktop/temp, browsers, network
+.\aegis.exe scan quick        # ~1-2 min: processes, autoruns, downloads/desktop/temp, download origins, browsers, network
 .\aegis.exe scan full --report html   # everything + all drives, writes an HTML report
 .\aegis.exe fix               # review & apply fixes interactively
 .\aegis-gui.exe               # desktop app
@@ -180,6 +181,7 @@ means some PC has findings at or above `--fail-on` (default `high`), `2` that no
 | apptamper | ✅ | ✅ | ✅ | other users' processes |
 | recovery | ✅ | ✅ | ✅ | restore points / shadow copies (Windows), Full Disk Access (macOS) |
 | traces | ✅ | ✅ | ✅ | – |
+| downloads | ✅ | ✅ | ✅ | to change the HKLM attachment policy |
 
 The `full` profile runs every scanner. A threat-hunting pass on its own:
 `aegis scan custom --scanners eventlog,drivers,sideload,usb,email,memory`.

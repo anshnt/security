@@ -1555,7 +1555,10 @@ def collect_shell_rc(paths: LinuxPaths) -> List[Entry]:
     for h in paths.homes:
         files += [h / n for n in SHELL_RC_NAMES]
     for f in files:
-        if not f.is_file():
+        try:
+            if not f.is_file():
+                continue
+        except OSError:  # another user's home that this account cannot enter (is_file re-raises EACCES before Python 3.13)
             continue
         text = _read_text(f)
         if text is None:

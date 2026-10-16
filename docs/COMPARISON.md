@@ -42,6 +42,7 @@ be honest, because a security tool that overstates what it does is a risk in its
 | Hijacked browser shortcuts + browsers launched for cookie theft (remote debugging) | ✅ | 🟡 | ✅ | 🟡 | ❌ | ✅ (shortcuts) | ❌ |
 | Webcam / microphone / screen-capture access review (spyware, stalkerware) | ✅ (OS usage record) | ❌ | 🟡 💲 | ✅ 💲 (webcam protection) | ❌ | ❌ | ❌ |
 | ClickFix / fake-CAPTCHA traces (Run dialog, PowerShell and shell history), malicious domains in DNS cache and browser history | ✅ | 🟡 (behaviour blocking) | 🟡 Browser Guard | 🟡 EDR 💲 | ❌ | ❌ | ❌ |
+| Download origin review (Mark-of-the-Web / macOS quarantine / xattr): known-bad and raw-IP sources, HTML smuggling, WebDAV delivery, deceptive file names | ✅ | 🟡 (SmartScreen reputation at download time) | 🟡 (web protection) | 🟡 (web protection) | 🟡 Streams (manual) | ❌ | ❌ |
 | Ransomware recovery readiness (restore points, File History, cloud versioning, Time Machine) with a grade | ✅ | 🟡 (CFA, OneDrive prompt) | ❌ | 🟡 (own backup 💲) | ❌ | ❌ | ❌ |
 | Exploit-protection audit (DEP, ASLR, CFG, SEHOP switched off) | ✅ | 🟡 (settings page) | ✅ 💲 (exploit protection) | ✅ | ❌ | ❌ | ❌ |
 | Linux kernel hardening & hidden kernel module check (sysctls, rootkit LKMs, module-list cross-check, taint, AppArmor / SELinux) | ✅ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ |

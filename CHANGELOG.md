@@ -3,6 +3,18 @@
 ## [Unreleased]
 
 ### Detection
+- **Download origin review (`downloads`, part of the quick and full scans).**
+  - **Where downloads came from:** reads the origin the system keeps with a file (Windows Mark-of-the-Web, macOS
+    quarantine and `kMDItemWhereFroms`, the `user.xdg.origin.url` attribute on Linux) for the risky files in Downloads and
+    on the Desktop, and reports one finding per file.
+  - **HIGH:** the source is on the malicious-domain or malicious-IP feed, or the file name is deceptive (right-to-left
+    override, `invoice.pdf.exe`). HIGH findings offer to quarantine the file.
+  - **MEDIUM:** a `blob:` or `data:` address (HTML smuggling), a WebDAV or network share, or a bare IP address.
+  - **LOW:** paste, anonymous file-sharing and short-link hosts, and plain `http://` downloads.
+  - **Windows policy:** reports `SaveZoneInformation = 1` (Windows no longer marks downloads) with a fix that sets it back
+    to 2, and `ScanWithAntiVirus = 1`.
+  - Addresses are shown without query strings, and the content of a file is never read.
+- **Real-time file guard:** alerts for a file now carry where it was downloaded from, when the system recorded it.
 - **Linux kernel hardening and integrity in the audit (`AEG-AUDIT-KERNEL-*`).** Read-only checks of `/proc` and `/sys`.
   - **Weak kernel settings:** ASLR off (HIGH) or without heap randomisation, `kptr_restrict`, `dmesg_restrict`, Yama
     `ptrace_scope`, unprivileged eBPF (MEDIUM), `fs.protected_symlinks` / `hardlinks` (MEDIUM), `protected_fifos` /

@@ -159,6 +159,20 @@ jobs:
           # Task Scheduler, services, certificates, browsers... Findings are expected
           # (it's a CI box); internal scanner errors are not.
           mkdir -p e2e
+          # harmless files in Downloads with a recorded origin (Mark-of-the-Web) for the download-origin review
+          python - <<'PY'
+          import os
+          d = os.path.join(os.environ["USERPROFILE"], "Downloads")
+          os.makedirs(d, exist_ok=True)
+          for name, host in (("aegis-e2e-setup.exe", "http://45.9.148.10/dl/aegis-e2e-setup.exe?token=E2ESECRET"),
+                             ("aegis-e2e-movie.iso", "blob:https://share.example/0d7c4f1e-5b7a-4a43-9a51-7e8c2f0b1a2c"),
+                             ("aegis-e2e-invoice.pdf.exe", "https://cdn.example/invoice.pdf.exe")):
+              path = os.path.join(d, name)
+              with open(path, "wb") as fh:
+                  fh.write(b"harmless Aegis CI test file\r\n")
+              with open(path + ":Zone.Identifier", "w", newline="") as fh:
+                  fh.write(f"[ZoneTransfer]\r\nZoneId=3\r\nReferrerUrl=https://share.example/page\r\nHostUrl={host}\r\n")
+          PY
           run_scan() {  # name, then scan arguments
             local name="$1"; shift
             rc=0
@@ -191,6 +205,14 @@ jobs:
               for e in d["errors"]:
                   print(f"   SCANNER ERROR: {e}")
                   bad = True
+          quick = open("e2e/quick.json", encoding="utf-8").read()
+          got = {(f["rule_id"], f["evidence"].get("file")) for f in json.loads(quick)["findings"] if f["scanner"] == "downloads"}
+          want = {("AEG-DL-RAWIP", "aegis-e2e-setup.exe"), ("AEG-DL-SMUGGLED", "aegis-e2e-movie.iso"),
+                  ("AEG-DL-DECEPTIVE", "aegis-e2e-invoice.pdf.exe")}
+          print("download origin review:", sorted(got))
+          if not want <= got or "E2ESECRET" in quick:
+              print("   EXPECTED the planted downloads to be reported, without the token in their address")
+              bad = True
           sys.exit(1 if bad else 0)
           PY
 

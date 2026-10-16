@@ -41,6 +41,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable, Deque, Dict, Iterable, List, Optional, Sequence, Set, Tuple
 
+from aegis.core import provenance
 from aegis.core.config import Config
 from aegis.core.models import Category, Finding, Remediation, Severity
 from aegis.core.platform import IS_LINUX, IS_WINDOWS, env_path, is_under, normalize_path, system_binary_dirs, user_home, windows_dir
@@ -484,11 +485,16 @@ class FileGuard:
         mon.stats["files_scanned"] += 1
         handled: Set[str] = set()
         out: List[Finding] = []
+        origin: Optional[Dict[str, Any]] = None  # read once, and only for a file that has a finding
         for f in sorted(findings, key=lambda x: -int(x.severity)):
             if f.severity < Severity.LOW:
                 continue
             f.scanner = f.scanner or "realtime"
             f.evidence.setdefault("source", "file-guard")
+            if origin is None:
+                origin = download_origin(path)
+            for key, value in origin.items():
+                f.evidence.setdefault(key, value)
             rem = f.remediation
             target = rem.params.get("path") if rem and rem.action == "quarantine_file" else None
             if target and _norm(target) in handled:
@@ -509,6 +515,17 @@ def _can_open(path: str) -> bool:
         return True
     except OSError:
         return False
+
+
+def download_origin(path: str) -> Dict[str, Any]:
+    """Where a file was downloaded from (zone, query-free addresses, downloading app) as finding evidence; empty when the system
+    records no origin. Best effort: it never raises, so it cannot break the file guard."""
+    try:
+        origin = provenance.read_origin(path)
+        return provenance.origin_evidence(origin) if origin else {}
+    except Exception:
+        log.debug("could not read the origin of %s", path, exc_info=True)
+        return {}
 
 
 # =========================================================================== ransomware guard

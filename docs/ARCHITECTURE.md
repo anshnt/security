@@ -34,8 +34,8 @@
   visible as well.
 * **Scanner**: a plugin that registers itself with `@register` and yields findings and checks from
   `run(ctx)`. To add one, drop a module into `aegis/scanners/` and list it in `base.load_all()`.
-* **Profiles** (`core/engine.py`): `quick` runs processes, persistence, hot-spot files, browser and
-  network. `full` adds every drive, system audit, software, secrets and the threat-hunting scanners (eventlog,
+* **Profiles** (`core/engine.py`): `quick` runs processes, persistence, hot-spot files, browser, network and
+  downloads. `full` adds every drive, system audit, software, secrets and the threat-hunting scanners (eventlog,
   drivers, sideload, usb, email, memory, supplychain, ide, privacy, apptamper, recovery, traces). `audit` runs
   configuration checks only (system audit, software and updates, network, browser, recovery readiness).
 * **Action plan** (`core/report.py: action_plan`): groups findings by rule, worst first, with the fix command for

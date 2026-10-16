@@ -181,6 +181,127 @@ def test_file_guard_auto_quarantine_and_event(cfg, tmp_path, monkeypatch):
     assert json.loads(lines[-1])["rule_id"] == "AEG-SIG-HASH"
 
 
+def guard_with_finding(cfg, tmp_path, monkeypatch, severity=Severity.HIGH, **cfg_flags):
+    """A file guard whose scanner reports one finding for every file; returns (guard, events, watched folder)."""
+    import aegis.scanners.files as F
+
+    watch = tmp_path / "watch"
+    watch.mkdir(exist_ok=True)
+    monkeypatch.setattr(F, "scan_file", lambda ctx, p, cache=None: [
+        Finding("AEG-SIG-HASH", "Known malware: Test.Sample", severity, Category.MALWARE, "x", str(p), {"sha256": "ab"}, "q",
+                Remediation("quarantine_file", {"path": str(p)}))])
+    for key, value in cfg_flags.items():
+        setattr(cfg, key, value)
+    mon, events = make_monitor(cfg, watch_specs=[(watch, True)])
+    return mon.files, events, watch
+
+
+def test_file_guard_adds_the_download_origin_to_a_finding(cfg, tmp_path, monkeypatch):
+    from aegis.core import provenance
+
+    g, events, watch = guard_with_finding(cfg, tmp_path, monkeypatch)
+    f = watch / "setup.exe"
+    f.write_bytes(b"MZ" + b"B" * 100)
+    monkeypatch.setattr(provenance, "read_origin", lambda path: provenance.Origin(
+        3, "https://cdn.example/files/setup.exe?X-Amz-Signature=SECRETSIG#frag", "https://page.example/dl?session=SECRETSESSION",
+        "", "zone.identifier"))
+    (finding,) = g.scan_path(str(f))
+    ev = finding.evidence
+    assert ev["origin_source"] == "zone.identifier" and ev["zone"] == 3 and ev["agent"] == ""
+    assert ev["host_url"] == "https://cdn.example/files/setup.exe" and ev["referrer_url"] == "https://page.example/dl"
+    assert ev["source"] == "file-guard" and ev["sha256"] == "ab"  # the finding's own evidence is kept
+    assert "SECRET" not in json.dumps(finding.to_dict())
+    assert events and events[0] is finding
+    logged = json.loads((cfg.logs_dir / "realtime_events.jsonl").read_text(encoding="utf-8").splitlines()[-1])
+    assert logged["evidence"]["host_url"] == "https://cdn.example/files/setup.exe" and "SECRET" not in json.dumps(logged)
+
+
+def test_file_guard_origin_is_read_once_and_before_the_file_is_quarantined(cfg, tmp_path, monkeypatch):
+    from aegis.core import provenance
+    from aegis.core.quarantine import Quarantine
+
+    g, events, watch = guard_with_finding(cfg, tmp_path, monkeypatch, auto_quarantine=True, auto_quarantine_min_severity="high")
+    f = watch / "evil.exe"
+    f.write_bytes(b"MZ" + b"C" * 100)
+    seen = []
+
+    def read(path):
+        seen.append(os.path.exists(path))  # the guard must ask while the file is still where the browser saved it
+        return provenance.Origin(None, "http://45.9.148.10/evil.exe", "", "", "xattr")
+
+    monkeypatch.setattr(provenance, "read_origin", read)
+    (finding,) = g.scan_path(str(f))
+    assert seen == [True] and not f.exists() and len(Quarantine(cfg).list()) == 1
+    assert finding.evidence["host_url"] == "http://45.9.148.10/evil.exe" and finding.evidence["origin_source"] == "xattr"
+    assert "quarantined" in finding.evidence["auto_remediation"]
+
+
+def test_file_guard_without_an_origin_adds_nothing_and_a_failing_read_changes_nothing(cfg, tmp_path, monkeypatch):
+    from aegis.core import provenance
+
+    g, events, watch = guard_with_finding(cfg, tmp_path, monkeypatch)
+    f = watch / "setup.exe"
+    f.write_bytes(b"MZ" + b"D" * 100)
+    monkeypatch.setattr(provenance, "read_origin", lambda path: None)
+    (finding,) = g.scan_path(str(f))
+    assert not {"origin_source", "host_url", "referrer_url", "zone", "agent"} & set(finding.evidence)
+    assert finding.evidence["source"] == "file-guard" and finding.severity == Severity.HIGH
+
+    def boom(path):
+        raise RuntimeError("file system exploded")
+
+    monkeypatch.setattr(provenance, "read_origin", boom)
+    f2 = watch / "other.exe"
+    f2.write_bytes(b"MZ" + b"E" * 100)
+    (finding,) = g.scan_path(str(f2))  # the guard still raises its alert
+    assert finding.rule_id == "AEG-SIG-HASH" and "host_url" not in finding.evidence and len(events) == 2
+
+
+def test_file_guard_does_not_look_for_an_origin_when_nothing_was_found(cfg, tmp_path, monkeypatch):
+    import aegis.scanners.files as F
+    from aegis.core import provenance
+
+    watch = tmp_path / "watch"
+    watch.mkdir()
+    monkeypatch.setattr(F, "scan_file", lambda ctx, p, cache=None: [])
+    monkeypatch.setattr(provenance, "read_origin", lambda path: pytest.fail("a clean file has no finding to enrich"))
+    mon, _ = make_monitor(cfg, watch_specs=[(watch, True)])
+    f = watch / "clean.exe"
+    f.write_bytes(b"MZ" + b"F" * 100)
+    assert mon.files.scan_path(str(f)) == []
+
+
+def test_download_origin_helper_is_best_effort(monkeypatch):
+    from aegis.core import provenance
+
+    real_read = provenance.read_origin
+    monkeypatch.setattr(provenance, "read_origin",
+                        lambda path: provenance.Origin(3, "https://a.example/x?t=1", "", "", "zone.identifier"))
+    assert M.download_origin("x") == {"origin_source": "zone.identifier", "zone": 3, "host_url": "https://a.example/x",
+                                      "referrer_url": "", "agent": ""}
+    monkeypatch.setattr(provenance, "read_origin", lambda path: None)
+    assert M.download_origin("x") == {}
+    monkeypatch.setattr(provenance, "read_origin", lambda path: (_ for _ in ()).throw(OSError("denied")))
+    assert M.download_origin("x") == {}
+    monkeypatch.setattr(provenance, "read_origin", real_read)
+    assert M.download_origin(os.path.join(os.sep, "no", "such", "file.exe")) == {}  # the real reader on a missing file
+
+
+@pytest.mark.skipif(not sys.platform.startswith("linux") or not hasattr(os, "setxattr"), reason="needs Linux extended attributes")
+def test_file_guard_reads_a_real_origin_attribute(cfg, tmp_path, monkeypatch):
+    g, events, watch = guard_with_finding(cfg, tmp_path, monkeypatch)
+    f = watch / "setup.exe"
+    f.write_bytes(b"MZ" + b"G" * 100)
+    try:
+        os.setxattr(f, "user.xdg.origin.url", b"https://cdn.example/setup.exe?sig=SECRETSIG")
+        os.setxattr(f, "user.xdg.referrer.url", b"https://page.example/")
+    except OSError as exc:
+        pytest.skip(f"this file system keeps no user extended attributes ({exc})")
+    (finding,) = g.scan_path(str(f))
+    assert finding.evidence["host_url"] == "https://cdn.example/setup.exe" and finding.evidence["origin_source"] == "xattr"
+    assert finding.evidence["referrer_url"] == "https://page.example/" and "SECRET" not in json.dumps(finding.to_dict())
+
+
 def test_emit_dedup_allowlist_and_callback_errors(cfg):
     got = []
 
