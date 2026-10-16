@@ -3,6 +3,28 @@
 ## [Unreleased]
 
 ### Detection
+- **AI coding agents and MCP servers (`aiagents`, part of `aegis audit` and the full scan).** Reads the configs of
+  Claude Desktop and Claude Code, Cursor, VS Code (and Insiders, VSCodium), Windsurf, GitHub Copilot CLI, Gemini CLI,
+  Codex CLI and Cline, at user level and in project folders.
+  - **MCP servers:** a package on OSV's malicious list is CRITICAL (`postmark-mcp`, MAL-2025-47604, was the first one
+    caught in the wild); a pinned version with known vulnerabilities is MEDIUM; a launch command that downloads and
+    runs code, or a program in Temp / Downloads, is HIGH; a remote server over plain `http://` or on a raw IP or tunnel
+    host is MEDIUM; API tokens written into the config are MEDIUM (masked); servers that `npx` / `uvx` fetch unpinned
+    on every start are one LOW summary.
+  - **Agent permissions:** Claude Code `bypassPermissions` and `enableAllProjectMcpServers` (HIGH when a project sets it
+    for itself), VS Code `chat.tools.global.autoApprove`, Codex `approval_policy = "never"` with
+    `sandbox_mode = "danger-full-access"`, Gemini CLI YOLO mode and trusted servers.
+  - **Hooks and helper commands** (Claude Code `hooks`, `statusLine`, `apiKeyHelper`; Codex `notify` and `hooks`) that
+    download and run code are HIGH.
+  - **Hidden instructions ("Rules File Backdoor"):** `AGENTS.md`, `CLAUDE.md`, `GEMINI.md`, `.cursorrules`,
+    `.github/copilot-instructions.md`, Cursor / Claude / Copilot rule and prompt folders and agent skills are checked
+    for Unicode tag characters (decoded into the finding) and variation-selector payloads (HIGH), and bidirectional or
+    zero-width characters inside plain text (MEDIUM). Emoji sequences and Persian / Indic joiners are not flagged.
+  - **Malicious skills:** a skill that tells the agent to fetch code from a paste site, a raw IP or over plain HTTP, or
+    to run base64-decoded or hidden PowerShell commands, is HIGH (the ClawHavoc campaign). Vendors' HTTPS install lines
+    are not flagged.
+  - **Local AI servers:** Ollama on every interface (MEDIUM) and Ollama before 0.17.1 (CVE-2026-7482, HIGH when exposed),
+    `OLLAMA_HOST=0.0.0.0`, and MCP servers bound to 0.0.0.0 ("NeighborJack").
 - **Network exposure (`exposure`, part of `aegis audit` and the full scan).**
   - **Router port forwards:** asks the router over UPnP which ports it forwards from the internet. RDP, SMB, SSH, VNC,
     databases or the Docker API forwarded to this computer are HIGH, and so is a port opened for a program running

@@ -23,8 +23,8 @@ PROFILES: Dict[str, List[str]] = {
     "quick": ["processes", "persistence", "files", "browser", "network", "downloads"],
     "full": ["processes", "persistence", "files", "browser", "network", "system_audit", "software", "secrets",
              "eventlog", "drivers", "sideload", "usb", "email", "memory", "supplychain", "ide", "privacy",
-             "apptamper", "recovery", "traces", "exposure", "downloads", "remoteaccess"],
-    "audit": ["system_audit", "software", "network", "browser", "recovery", "exposure"],
+             "apptamper", "recovery", "traces", "exposure", "aiagents", "downloads", "remoteaccess"],
+    "audit": ["system_audit", "software", "network", "browser", "recovery", "exposure", "aiagents"],
     "custom": [],
 }
 
