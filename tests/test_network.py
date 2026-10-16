@@ -5,7 +5,7 @@ import datetime as dt
 import pytest
 
 from aegis.core.config import Config
-from aegis.core.models import CheckResult, Finding, Severity
+from aegis.core.models import CheckResult, CheckStatus, Finding, Severity
 from aegis.core.signatures import SignatureDB
 from aegis.scanners import network as nw
 from aegis.scanners.base import ScanContext
@@ -386,3 +386,135 @@ def test_aegis_web_protection_block_is_not_reported_but_cannot_hide_hijacks():
     ids = {f.rule_id for f in nw.hosts_findings(text, "hosts")}
     assert "AEG-NET-HOSTS-CUSTOM" not in ids
     assert {"AEG-NET-HOSTS-REDIRECT", "AEG-NET-HOSTS-BLOCK"} <= ids
+
+
+# ---------------------------------------------------------------- saved Wi-Fi profiles
+def _wlan_xml(name, auth, enc, mode="auto", hidden=False, conn="ESS"):
+    return f"""<?xml version="1.0"?>
+<WLANProfile xmlns="http://www.microsoft.com/networking/WLAN/profile/v1">
+\t<name>{name}</name>
+\t<SSIDConfig>
+\t\t<SSID>
+\t\t\t<hex>4E6574</hex>
+\t\t\t<name>{name}</name>
+\t\t</SSID>
+\t\t<nonBroadcast>{'true' if hidden else 'false'}</nonBroadcast>
+\t</SSIDConfig>
+\t<connectionType>{conn}</connectionType>
+\t<connectionMode>{mode}</connectionMode>
+\t<MSM>
+\t\t<security>
+\t\t\t<authEncryption>
+\t\t\t\t<authentication>{auth}</authentication>
+\t\t\t\t<encryption>{enc}</encryption>
+\t\t\t\t<useOneX>false</useOneX>
+\t\t\t</authEncryption>
+\t\t</security>
+\t</MSM>
+\t<MacRandomization xmlns="http://www.microsoft.com/networking/WLAN/profile/v3">
+\t\t<enableRandomization>false</enableRandomization>
+\t</MacRandomization>
+</WLANProfile>
+"""
+
+
+def test_parse_wlan_profile_xml():
+    from aegis.scanners import network as net
+
+    p = net.parse_wlan_profile_xml("﻿" + _wlan_xml("Airport Free WiFi", "open", "none"))
+    assert (p.name, p.ssid, p.auth, p.encryption, p.auto, p.hidden) == ("Airport Free WiFi", "Airport Free WiFi", "open",
+                                                                         "none", True, False)
+    assert p.is_open and not p.is_wep
+    home = net.parse_wlan_profile_xml(_wlan_xml("Home", "WPA2PSK", "AES", mode="manual", hidden=True))
+    assert (home.auth, home.encryption, home.auto, home.hidden) == ("wpa2psk", "aes", False, True) and not home.is_open
+    assert net.parse_wlan_profile_xml(_wlan_xml("adhoc", "open", "none", conn="IBSS")) is None
+    assert net.parse_wlan_profile_xml("<notwlan/>") is None and net.parse_wlan_profile_xml("garbage <") is None
+
+
+def test_wifi_profile_findings_rate_each_kind():
+    from aegis.scanners import network as net
+
+    P = net.WifiProfile
+    profiles = [P("Cafe", "Cafe", "open", "none", True), P("Library", "Library", "open", "none", False),
+                P("OldRouter", "OldRouter", "open", "wep", True), P("Shared", "Shared", "shared", "wep", False),
+                P("Legacy", "Legacy", "wpapsk", "tkip", True), P("Hidden", "Hidden", "wpa2psk", "aes", True, hidden=True),
+                P("Home", "Home", "wpa2psk", "aes", True), P("Enhanced", "Enhanced", "owe", "aes", True)]
+    by = {f.evidence["ssid"]: f for f in net.wifi_profile_findings(profiles)}
+    assert set(by) == {"Cafe", "OldRouter", "Shared", "Legacy", "Hidden"}  # manual open, WPA2 and OWE are fine
+    assert by["Cafe"].rule_id == "AEG-NET-WIFI-OPEN-AUTO" and by["Cafe"].severity == Severity.LOW
+    assert by["Cafe"].remediation.params["command"] == ["netsh", "wlan", "set", "profileparameter", "name=Cafe",
+                                                        "connectionmode=manual"]
+    assert by["OldRouter"].rule_id == "AEG-NET-WIFI-WEP" and by["OldRouter"].severity == Severity.MEDIUM
+    assert by["Shared"].remediation is None  # WEP but not auto-joined: nothing to switch to manual
+    assert by["Legacy"].rule_id == "AEG-NET-WIFI-TKIP" and by["Hidden"].rule_id == "AEG-NET-WIFI-HIDDEN-AUTO"
+    assert by["Cafe"].location == "Saved Wi-Fi network: Cafe"  # stable fingerprint across scans
+    many = [P(f"Hotspot {i}", f"Hotspot {i}", "open", "none", True) for i in range(40)]
+    assert len(net.wifi_profile_findings(many)) == net.MAX_WIFI_FINDINGS
+    nm = net.wifi_profile_findings([P("Cafe", "Cafe", "none", "none", True, source="networkmanager")])
+    assert nm[0].remediation.params["command"] == ["nmcli", "connection", "modify", "Cafe", "connection.autoconnect", "no"]
+
+
+def test_collect_windows_wifi_profiles_exports_without_keys_and_cleans_up(tmp_path):
+    from pathlib import Path
+
+    from aegis.scanners import network as net
+
+    seen = {}
+
+    def runner(cmd, timeout=60):
+        seen["cmd"] = cmd
+        folder = Path(next(a for a in cmd if a.startswith("folder="))[7:])
+        seen["folder"] = folder
+        (folder / "Wi-Fi-Cafe.xml").write_text(_wlan_xml("Cafe", "open", "none"), encoding="utf-8")
+        (folder / "Wi-Fi-Home.xml").write_text(_wlan_xml("Home", "WPA3SAE", "AES"), encoding="utf-8")
+        return 0, "Interface profile \"Cafe\" is saved in file ...", ""
+
+    profiles, why = net.collect_windows_wifi_profiles(runner)
+    assert why == "" and sorted(p.ssid for p in profiles) == ["Cafe", "Home"]
+    assert "key=absent" in seen["cmd"] and not seen["folder"].exists()  # never exports keys; temp folder removed
+    profiles, why = net.collect_windows_wifi_profiles(
+        lambda cmd, timeout=60: (1, "The Wireless AutoConfig Service (wlansvc) is not running.", ""))
+    assert profiles is None and "wlansvc" in why
+
+
+def test_collect_nm_wifi_profiles_parses_terse_output():
+    from aegis.scanners import network as net
+
+    detail = {
+        "Cafe": "802-11-wireless.ssid:Cafe\n802-11-wireless.hidden:no\n802-11-wireless-security.key-mgmt:\n"
+                "802-11-wireless-security.wep-key-type:\n",
+        "Home\\:5G": "802-11-wireless.ssid:Home:5G\n802-11-wireless.hidden:yes\n802-11-wireless-security.key-mgmt:sae\n"
+                     "802-11-wireless-security.wep-key-type:\n",
+        "Old": "802-11-wireless.ssid:Old\n802-11-wireless.hidden:no\n802-11-wireless-security.key-mgmt:none\n"
+               "802-11-wireless-security.wep-key-type:key\n",
+    }
+
+    def runner(cmd, timeout=60):
+        if cmd[:4] == ["nmcli", "-t", "-f", "NAME,TYPE,AUTOCONNECT"]:
+            return 0, "Wired connection 1:802-3-ethernet:yes\nCafe:802-11-wireless:yes\nHome\\:5G:802-11-wireless:yes\n" \
+                      "Old:802-11-wireless:no\n", ""
+        name = cmd[-1]
+        key = name.replace(":", "\\:")
+        return (0, detail[key], "") if key in detail else (10, "", "Error: unknown connection")
+
+    profiles, why = net.collect_nm_wifi_profiles(runner)
+    by = {p.name: p for p in profiles}
+    assert set(by) == {"Cafe", "Home:5G", "Old"} and why == ""
+    assert by["Cafe"].is_open and by["Cafe"].auto and by["Cafe"].source == "networkmanager"
+    assert by["Home:5G"].ssid == "Home:5G" and by["Home:5G"].hidden and not by["Home:5G"].is_open
+    assert by["Old"].is_wep and not by["Old"].auto
+    assert net.collect_nm_wifi_profiles(lambda cmd, timeout=60: (-1, "", "not found: nmcli"))[0] is None
+
+
+def test_saved_wifi_check_statuses():
+    from aegis.scanners import network as net
+
+    P = net.WifiProfile
+    out = list(net.NetworkScanner._saved_wifi(lambda: ([P("Cafe", "Cafe", "open", "none", True)], "")))
+    assert [type(x).__name__ for x in out] == ["Finding", "CheckResult"] and out[-1].status == CheckStatus.WARN
+    out = list(net.NetworkScanner._saved_wifi(lambda: ([P("Old", "Old", "open", "wep", True)], "")))
+    assert out[-1].status == CheckStatus.FAIL
+    out = list(net.NetworkScanner._saved_wifi(lambda: (None, "no adapter")))
+    assert len(out) == 1 and out[0].status == CheckStatus.SKIP and "no adapter" in out[0].detail
+    out = list(net.NetworkScanner._saved_wifi(lambda: ([P("Home", "Home", "wpa2psk", "aes", True)], "")))
+    assert out[-1].status == CheckStatus.PASS and "1 saved network(s), 1 joined automatically" in out[-1].detail

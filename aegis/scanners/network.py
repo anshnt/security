@@ -16,10 +16,10 @@ import os
 import re
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Sequence, Set, Tuple
+from typing import Any, Callable, Dict, List, Optional, Sequence, Set, Tuple
 
 from aegis.core.models import Category, CheckResult, CheckStatus, Finding, Remediation, Severity
-from aegis.core.platform import IS_WINDOWS, as_list, powershell_json, reg_subkeys, reg_values, run, windows_dir
+from aegis.core.platform import IS_LINUX, IS_WINDOWS, as_list, powershell_json, reg_subkeys, reg_values, run, windows_dir
 from aegis.scanners.base import ScanContext, Scanner, register
 
 log = logging.getLogger("aegis.network")
@@ -691,6 +691,186 @@ def wifi_findings(netsh_output: str) -> List[Finding]:
     return out
 
 
+# --------------------------------------------------------------------------- saved Wi-Fi networks
+
+@dataclass
+class WifiProfile:
+    """A saved Wi-Fi network: Windows WLAN profile or NetworkManager connection."""
+
+    name: str  # profile / connection name (what the fix addresses)
+    ssid: str
+    auth: str  # lower-case: open, shared, wpapsk, wpa2psk, wpa3sae, owe ... / NetworkManager key-mgmt
+    encryption: str  # lower-case: none, wep, tkip, aes, gcmp256 ... ("" when unknown)
+    auto: bool  # joins automatically when in range
+    hidden: bool = False  # non-broadcast SSID: the device keeps calling out the name to find it
+    source: str = "windows"  # windows | networkmanager
+
+    @property
+    def is_open(self) -> bool:
+        return self.auth in ("open", "none", "") and self.encryption in ("none", "")
+
+    @property
+    def is_wep(self) -> bool:
+        return self.auth == "shared" or self.encryption == "wep"
+
+    @property
+    def tkip_only(self) -> bool:
+        return self.encryption == "tkip"
+
+
+def _local_name(tag: str) -> str:
+    return tag.rsplit("}", 1)[-1]
+
+
+def parse_wlan_profile_xml(text: str) -> Optional[WifiProfile]:
+    """One profile exported by ``netsh wlan export profile key=absent`` (no keys are exported). Infrastructure (ESS)
+    networks only; ``None`` for anything that is not a WLAN profile."""
+    import xml.etree.ElementTree as ET
+
+    try:
+        root = ET.fromstring(text.lstrip("\ufeff"))
+    except ET.ParseError:
+        return None
+    if _local_name(root.tag) != "WLANProfile":
+        return None
+    found: Dict[str, str] = {}
+    for el in root.iter():
+        key = _local_name(el.tag)
+        if key not in found and el.text and el.text.strip():
+            found[key] = el.text.strip()
+    if found.get("connectionType", "ESS").upper() != "ESS":
+        return None
+    ssid_name = ""
+    for ssid in root.iter():
+        if _local_name(ssid.tag) == "SSID":
+            ssid_name = next((c.text.strip() for c in ssid if _local_name(c.tag) == "name" and c.text), "")
+            break
+    return WifiProfile(found.get("name", ssid_name), ssid_name or found.get("name", ""),
+                       found.get("authentication", "").lower(), found.get("encryption", "").lower(),
+                       found.get("connectionMode", "auto").lower() == "auto",
+                       found.get("nonBroadcast", "false").lower() == "true")
+
+
+def collect_windows_wifi_profiles(runner: Callable[..., Tuple[int, str, str]] = run) -> Tuple[Optional[List[WifiProfile]], str]:
+    """Export the saved profiles (without keys) to a private temp folder, parse them, delete the folder.
+    (None, reason) when Wi-Fi is not available (no adapter / WLAN AutoConfig service stopped)."""
+    import shutil
+    import tempfile
+
+    folder = tempfile.mkdtemp(prefix="aegis-wlan-")
+    try:
+        rc, out, err = runner(["netsh", "wlan", "export", "profile", f"folder={folder}", "key=absent"], timeout=30)
+        files = sorted(Path(folder).glob("*.xml"))
+        if rc != 0 and not files:
+            return None, (out or err).strip()[:200] or f"netsh exited with {rc}"
+        profiles = []
+        for f in files:
+            try:
+                p = parse_wlan_profile_xml(f.read_text(encoding="utf-8", errors="replace"))
+            except OSError:
+                p = None
+            if p:
+                profiles.append(p)
+        return profiles, ""
+    finally:
+        shutil.rmtree(folder, ignore_errors=True)
+
+
+def _nm_unescape(text: str) -> str:
+    return re.sub(r"\\(.)", r"\1", text)
+
+
+def _nm_split(line: str) -> List[str]:
+    """Split one ``nmcli -t`` line on unescaped colons."""
+    return [_nm_unescape(x) for x in re.split(r"(?<!\\):", line)]
+
+
+def collect_nm_wifi_profiles(runner: Callable[..., Tuple[int, str, str]] = run,
+                             limit: int = 60) -> Tuple[Optional[List[WifiProfile]], str]:
+    """Saved Wi-Fi connections from NetworkManager (``nmcli``); (None, reason) when nmcli is not available."""
+    rc, out, err = runner(["nmcli", "-t", "-f", "NAME,TYPE,AUTOCONNECT", "connection", "show"], timeout=20)
+    if rc != 0:
+        return None, (err or out).strip()[:200] or "nmcli is not available"
+    profiles: List[WifiProfile] = []
+    for line in out.splitlines():
+        parts = _nm_split(line)
+        if len(parts) < 3 or parts[1] != "802-11-wireless":
+            continue
+        name, auto = parts[0], parts[2].strip().lower() == "yes"
+        rc2, detail, _ = runner(["nmcli", "-t", "-f", "802-11-wireless.ssid,802-11-wireless.hidden,"
+                                 "802-11-wireless-security.key-mgmt,802-11-wireless-security.wep-key-type",
+                                 "connection", "show", name], timeout=20)
+        fields: Dict[str, str] = {}
+        for row in (detail.splitlines() if rc2 == 0 else []):
+            key, _, val = row.partition(":")
+            fields[key.strip()] = _nm_unescape(val.strip())
+        key_mgmt = fields.get("802-11-wireless-security.key-mgmt", "").lower()
+        wep = key_mgmt == "none" and bool(fields.get("802-11-wireless-security.wep-key-type", "").strip("-' "))
+        if rc2 != 0:
+            continue
+        profiles.append(WifiProfile(name, fields.get("802-11-wireless.ssid", name), "none" if not key_mgmt else key_mgmt,
+                                    "wep" if wep else ("none" if not key_mgmt else ""), auto,
+                                    fields.get("802-11-wireless.hidden", "no").lower() == "yes", "networkmanager"))
+        if len(profiles) >= limit:
+            break
+    return profiles, ""
+
+
+def _manual_fix(p: WifiProfile) -> Optional[Remediation]:
+    if p.source == "windows":
+        return Remediation("run_command", {"command": ["netsh", "wlan", "set", "profileparameter", f"name={p.name}",
+                                                       "connectionmode=manual"]},
+                           f"Stop joining '{p.ssid}' automatically (it stays saved; connect by hand when you need it)")
+    if p.source == "networkmanager":
+        return Remediation("run_command", {"command": ["nmcli", "connection", "modify", p.name, "connection.autoconnect", "no"]},
+                           f"Stop joining '{p.ssid}' automatically (it stays saved)")
+    return None
+
+
+MAX_WIFI_FINDINGS = 15
+
+
+def wifi_profile_findings(profiles: Sequence[WifiProfile]) -> List[Finding]:
+    """Saved networks that put the device at risk: WEP (MEDIUM), open networks joined automatically (LOW - anyone can
+    broadcast the same name and the device connects to it), WPA with TKIP only (LOW), hidden networks joined
+    automatically (LOW - the device calls out the name everywhere, which makes it trackable and easy to lure)."""
+    out: List[Finding] = []
+    for p in profiles:
+        if len(out) >= MAX_WIFI_FINDINGS:
+            break
+        loc = f"Saved Wi-Fi network: {p.ssid}"
+        ev = {"ssid": p.ssid, "profile": p.name, "authentication": p.auth, "encryption": p.encryption,
+              "connects_automatically": p.auto, "hidden_network": p.hidden, "source": p.source}
+        if p.is_wep:
+            out.append(_f("AEG-NET-WIFI-WEP", f"Saved Wi-Fi network uses broken WEP encryption ({p.ssid})", Severity.MEDIUM,
+                          f"The saved network '{p.ssid}' uses WEP, which can be cracked in minutes; anyone nearby can read and "
+                          "change the traffic of every device on it.",
+                          loc, ev, "Switch the router to WPA2 or WPA3 and save the network again; delete this saved profile "
+                          "(Windows: Settings > Network & internet > Wi-Fi > Manage known networks > Forget).",
+                          _manual_fix(p) if p.auto else None, ["T1040"]))
+        elif p.is_open and p.auto:
+            out.append(_f("AEG-NET-WIFI-OPEN-AUTO", f"Joins the open Wi-Fi network '{p.ssid}' automatically", Severity.LOW,
+                          f"'{p.ssid}' is an open (unencrypted) network saved with automatic connection. Anyone can set up a "
+                          "hotspot with the same name - an 'evil twin' - and this device will join it on its own, letting the "
+                          "owner of that hotspot watch or redirect traffic and show fake login pages.",
+                          loc, ev, "Set the network to connect manually (the fix below) or forget it if you no longer use it. "
+                          "On public Wi-Fi use a VPN.", _manual_fix(p), ["T1557"]))
+        elif p.tkip_only:
+            out.append(_f("AEG-NET-WIFI-TKIP", f"Saved Wi-Fi network uses outdated WPA/TKIP ({p.ssid})", Severity.LOW,
+                          f"'{p.ssid}' is protected only with TKIP, the original WPA cipher, which is deprecated and weaker than "
+                          "WPA2/AES. Windows and many devices no longer allow it for new connections.",
+                          loc, ev, "Switch the router to WPA2 (AES) or WPA3 and save the network again.", None, ["T1040"]))
+        elif p.hidden and p.auto:
+            out.append(_f("AEG-NET-WIFI-HIDDEN-AUTO", f"Searches for the hidden Wi-Fi network '{p.ssid}' everywhere",
+                          Severity.LOW,
+                          f"'{p.ssid}' is a hidden network saved with automatic connection, so this device keeps calling out "
+                          "its name wherever it is. That makes the device trackable and lets anyone answer with a fake "
+                          "network of the same name.",
+                          loc, ev, "Make the network visible on the router (hiding the name gives no real protection), or set "
+                          "the profile to connect manually.", _manual_fix(p), ["T1557"]))
+    return out
+
+
 DEFAULT_SHARES = {"admin$", "c$", "d$", "e$", "ipc$", "print$", "fax$"}
 SMB_SCRIPT = (
     "$s=@(Get-SmbShare -ErrorAction SilentlyContinue | Where-Object { -not $_.Special } | ForEach-Object { "
@@ -732,6 +912,24 @@ class NetworkScanner(Scanner):
     title = "Network exposure"
     description = "Connections, listening services, hosts file, proxy/DNS hijack, root certificates, Wi-Fi, SMB shares"
     platforms = ("windows", "linux", "darwin")
+
+    @staticmethod
+    def _saved_wifi(collect: Callable[[], Tuple[Optional[List[WifiProfile]], str]]):
+        title = "Saved Wi-Fi networks are safe to join automatically"
+        try:
+            profiles, why = collect()
+            if profiles is None:
+                yield _check("AEG-NET-CHK-WIFI-SAVED", title, CheckStatus.SKIP, f"Wi-Fi is not available here ({why}).")
+                return
+            wf = wifi_profile_findings(profiles)
+            yield from wf
+            auto = sum(1 for p in profiles if p.auto)
+            yield _check("AEG-NET-CHK-WIFI-SAVED", title,
+                         CheckStatus.FAIL if any(f.severity >= Severity.MEDIUM for f in wf) else
+                         (CheckStatus.WARN if wf else CheckStatus.PASS),
+                         f"{len(profiles)} saved network(s), {auto} joined automatically; {len(wf)} need attention.")
+        except Exception as exc:
+            yield _check("AEG-NET-CHK-WIFI-SAVED", title, CheckStatus.ERROR, f"{type(exc).__name__}: {exc}")
 
     def run(self, ctx: ScanContext):
         sigs = ctx.signatures
@@ -825,6 +1023,7 @@ class NetworkScanner(Scanner):
                              (CheckStatus.PASS if rc == 0 else CheckStatus.SKIP), "best-effort (parses netsh output)")
             except Exception as exc:
                 yield _check("AEG-NET-CHK-WIFI", "Wi-Fi connection is encrypted", CheckStatus.ERROR, f"{type(exc).__name__}: {exc}")
+            yield from self._saved_wifi(collect_windows_wifi_profiles)
             try:
                 shares = [s for s in as_list(powershell_json(SMB_SCRIPT, timeout=60)) if isinstance(s, dict)]
                 sf = smb_findings(shares)
@@ -834,4 +1033,6 @@ class NetworkScanner(Scanner):
             except Exception as exc:
                 yield _check("AEG-NET-CHK-SMB", "No unexpected SMB shares", CheckStatus.ERROR, f"{type(exc).__name__}: {exc}")
         else:
+            if IS_LINUX:
+                yield from self._saved_wifi(collect_nm_wifi_profiles)
             yield _check("AEG-NET-CHK-ROOTCA", "No rogue root CAs", CheckStatus.SKIP, "Windows only")
