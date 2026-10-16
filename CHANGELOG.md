@@ -1,6 +1,6 @@
 # Changelog
 
-## [Unreleased]
+## [1.6.0] - 2026-10-17
 
 ### Detection
 - **AI coding agents and MCP servers (`aiagents`, part of `aegis audit` and the full scan).** Reads the configs of
@@ -44,6 +44,9 @@
   messages as they happen instead of polling once a second.
 - **Database and dev servers on all interfaces.** The network scanner now also reports Redis, MongoDB, Elasticsearch,
   Memcached, CouchDB, MySQL, PostgreSQL, SQL Server and the Docker API listening on every interface.
+
+### Releases
+- **A version bump on `main` publishes itself.** When a commit that changes `__version__` reaches `main`, the Release workflow tags it, builds the Windows executables and publishes the GitHub release; pushing a `v*` tag by hand still works.
 
 ## [1.5.0] - 2026-10-16
 
