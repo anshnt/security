@@ -65,6 +65,7 @@ be honest, because a security tool that overstates what it does is a risk in its
 | Crypto clipboard hijacker (clipper) guard that restores the copied address | ✅ | 🟡 (signatures) | 🟡 (signatures) | 🟡 | ❌ | ❌ | ❌ |
 | Real-time file protection | ✅ user-mode | ✅ kernel | ✅ 💲 | ✅ | ❌ | ❌ | 🟡 (clamonacc, Linux) |
 | Ransomware protection | ✅ canaries + burst detection + suspend culprit | ✅ CFA | ✅ 💲 | ✅ | ❌ | ❌ | ❌ |
+| Infostealer decoys: browser-password and wallet files no real program opens, naming the program that reads them | ✅ (Windows names the process, admin; Linux alerts without a name) | 🟡 (behaviour detection) | 🟡 (behaviour detection) | 🟡 (behaviour detection) | ❌ | ❌ | ❌ |
 | Persistence change alerts | ✅ | 🟡 | 🟡 | 🟡 | ❌ | ❌ | ❌ |
 | File integrity monitoring | ✅ | ❌ | ❌ | 🟡 | ❌ | ❌ | ❌ |
 | Quarantine with restore | ✅ | ✅ | ✅ | ✅ | ❌ | ✅ | 🟡 |

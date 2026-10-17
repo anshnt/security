@@ -216,9 +216,9 @@ pip install -e .[dev]
 pytest -q
 ```
 
-The suite (about 1,170 tests) builds malware-like samples at runtime, using EICAR and synthetic
-PE/script/document/email files, so the repository never contains live malware. CI runs it on Ubuntu
-and Windows, builds the Windows executables, and then runs the packaged `aegis.exe` end to end on a
+The suite (about 4,800 tests) builds malware-like samples at runtime, using EICAR and synthetic
+PE/script/document/email files, so the repository never contains live malware. CI runs it on Ubuntu,
+Windows and macOS, builds the Windows executables, and then runs the packaged `aegis.exe` end to end on a
 live Windows machine (audit, quick scan and threat-hunting scanners), failing on any internal scanner
 error. The HTML/JSON reports from that run are uploaded as a build artifact.
 

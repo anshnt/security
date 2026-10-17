@@ -1,6 +1,6 @@
 """Real-time protection engine.
 
-Four independent guards, each on its own daemon thread(s), share one
+Independent guards, each on its own daemon thread(s), share one
 `RealtimeMonitor`:
 
 * FileGuard         - watches user-writable folders (ReadDirectoryChangesW on
@@ -12,6 +12,12 @@ Four independent guards, each on its own daemon thread(s), share one
                       mass-modification detector and an I/O tracker that finds
                       and *suspends* the likely culprit processes.
 * PersistenceGuard  - diffs autorun entries and the hosts file.
+* ClipboardGuard    - ClickFix commands and crypto address swaps
+                      (aegis.realtime.clipboard).
+* ExtensionGuard    - browser extensions added while it runs
+                      (aegis.realtime.extensions).
+* CredentialCanaryGuard - decoy browser-password and wallet files that only an
+                      infostealer reads (aegis.realtime.credcanary).
 
 Honesty note: this is user-mode protection. It reacts within about a second of
 an event, it cannot veto an operation before it happens like a kernel
