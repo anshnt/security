@@ -295,6 +295,17 @@ def test_guard_does_not_start_when_off_unsupported_or_unprotectable(tmp_path, mo
     assert broken.start(stop) == [] and broken.state.startswith("not running: could not put an audit entry")
 
 
+def test_state_reports_reads_the_source_cannot_see(tmp_path):
+    src = FakeSource()
+    guard = cc.CredentialCanaryGuard(FakeMonitor(tmp_path), src, decoyset(tmp_path))
+    guard.state = "watching 4 decoy files"
+    assert guard.state == "watching 4 decoy files"
+    src.problem = "Windows does not log file reads"
+    assert guard.state == "watching 4 decoy files, but Windows does not log file reads"
+    guard.state = "not running: needs administrator rights"
+    assert guard.state == "not running: needs administrator rights"  # the problem only qualifies a running guard
+
+
 def test_unavailable_reason_per_platform(monkeypatch):
     monkeypatch.setattr(cc, "IS_WINDOWS", True)
     assert "administrator" in cc.unavailable_reason(admin=False) and cc.unavailable_reason(admin=True) is None
@@ -366,6 +377,12 @@ def test_the_monitor_runs_the_credential_canary(tmp_path, monkeypatch):
     mon.start()
     try:
         assert src.ready.wait(3) and mon.status()["credential_canary"] == "watching 4 decoy files"
+        from aegis.core.doctor import read_heartbeat
+
+        deadline = time.monotonic() + 3
+        while not (read_heartbeat(cfg) or {}).get("guards") and time.monotonic() < deadline:
+            time.sleep(0.05)
+        assert read_heartbeat(cfg)["guards"] == {"credential_canary": "watching 4 decoy files"}  # for aegis doctor
     finally:
         mon.stop(timeout=3.0)
     assert mon.remove_canaries() == 4 and not any(os.path.exists(p) for p in src.prepared)

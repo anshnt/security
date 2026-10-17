@@ -515,6 +515,7 @@ class WindowsAuditSource:
     """Security event 4663 for the decoys' audit entries, pushed by an EvtSubscribe subscription (no log polling)."""
 
     QUERY = "*[System[(EventID=4663)]]"
+    problem = ""  # why reads may go unseen, shown in the guard state (GUI, aegis doctor)
 
     def prepare(self, paths: List[str]) -> None:
         bad = []
@@ -532,8 +533,9 @@ class WindowsAuditSource:
 
             pol = harden._auditpol_get(harden.FILE_SYSTEM_GUID)
             if pol is not None and not pol & 1:
-                log.warning("credential canary: Windows does not audit file-system access, so reads of the decoys are not "
-                            "logged. Turn it on with: aegis harden --only windows.file_audit --apply")
+                self.problem = ("Windows does not log file reads; turn it on with "
+                                "`aegis harden --only windows.file_audit --apply`")
+                log.warning("credential canary: %s", self.problem)
         except Exception:
             log.debug("could not read the File System audit policy", exc_info=True)
 
@@ -662,7 +664,17 @@ class CredentialCanaryGuard:
         self.monitor = monitor
         self.source = source  # WindowsAuditSource / InotifySource, or a fake with prepare(paths) and run(stop, on_access)
         self.decoys = decoys
-        self.state = "not started"
+        self._state = "not started"
+
+    @property
+    def state(self) -> str:
+        """'watching N decoy files', 'off' or 'not running: <why>', plus anything the event source reports."""
+        problem = getattr(self.source, "problem", "")
+        return f"{self._state}, but {problem}" if problem and self._state.startswith("watching") else self._state
+
+    @state.setter
+    def state(self, value: str) -> None:
+        self._state = value
 
     def enabled(self) -> bool:
         return bool(getattr(self.monitor.config, "realtime_credential_canary", True))

@@ -507,6 +507,27 @@ def test_heartbeat_roundtrip_and_states(cfg, monkeypatch):
     assert D.check_monitor(cfg, now=now + D.HEARTBEAT_STALE_S - 5).status == CheckStatus.PASS
 
 
+def test_credential_canary_state_comes_from_the_heartbeat(cfg):
+    now = time.time()
+    assert D.check_credential_canary(cfg).status == CheckStatus.SKIP  # protection not running
+    D.write_heartbeat(cfg, components=("files",))
+    assert "does not report" in D.check_credential_canary(cfg, now).detail
+    cases = [("watching 4 decoy files", CheckStatus.PASS, ""),
+             ("off", CheckStatus.SKIP, ""),
+             ("not running: this system tells user-mode programs nothing about file reads (macOS needs an Endpoint "
+              "Security extension)", CheckStatus.SKIP, ""),
+             ("not running: needs administrator rights (to put audit entries on the decoys and read the Security log)",
+              CheckStatus.WARN, "install-service"),
+             ("watching 4 decoy files, but Windows does not log file reads; turn it on with `aegis harden --only "
+              "windows.file_audit --apply`", CheckStatus.WARN, "windows.file_audit"),
+             ("not running: inotify is unavailable (no inotify)", CheckStatus.WARN, "aegis.log")]
+    for state, status, fix in cases:
+        D.write_heartbeat(cfg, components=("credential_canary",), guards={"credential_canary": state})
+        c = D.check_credential_canary(cfg, now)
+        assert c.status == status and fix in c.fix, (state, c)
+    assert D.check_credential_canary(cfg, now + D.HEARTBEAT_STALE_S + 5).status == CheckStatus.SKIP  # stale heartbeat
+
+
 def test_heartbeat_with_dead_process_or_garbage(cfg, monkeypatch):
     D.write_heartbeat(cfg)
     import psutil
@@ -756,7 +777,7 @@ def test_admin_runtime_and_datadir_checks(cfg, monkeypatch):
 # --------------------------------------------------------------------------- orchestration
 
 ALL_IDS = ["DOC-ADMIN", "DOC-RUNTIME", "DOC-DATADIR", "DOC-ACL", "DOC-SIGS", "DOC-YARA", "DOC-YARA-RULES", "DOC-PYYAML",
-           "DOC-SERVICE", "DOC-MONITOR", "DOC-AV", "DOC-DISK", "DOC-HISTORY", "DOC-SCANAGE", "DOC-ALERTS"]
+           "DOC-SERVICE", "DOC-MONITOR", "DOC-CREDCANARY", "DOC-AV", "DOC-DISK", "DOC-HISTORY", "DOC-SCANAGE", "DOC-ALERTS"]
 
 
 @pytest.fixture
