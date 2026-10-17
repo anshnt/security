@@ -1270,6 +1270,8 @@ class ProtectionPage(Page):
         tools.grid(row=3, column=0, columnspan=2, sticky="w", pady=(10, 0))
         ttk.Button(tools, text="Resume suspended processes", command=self.resume_suspended).pack(side="left")
         ttk.Button(tools, text="Remove canary files", command=self.remove_canaries).pack(side="left", padx=8)
+        self.canary_label = ttk.Label(top, text="", style="Muted.TLabel", wraplength=900, justify="left")
+        self.canary_label.grid(row=4, column=0, columnspan=2, sticky="w", pady=(8, 0))
 
         ttk.Label(f, text="Live event feed", style="H1.TLabel", font=(FONT, 13, "bold")).grid(row=2, column=0, sticky="w", pady=(14, 4))
         self.feed = app.tree(f, [("time", "Time", 80), ("severity", "Severity", 80), ("title", "Event", 320),
@@ -1309,6 +1311,8 @@ class ProtectionPage(Page):
         self.state_label.configure(text=f"Real-time protection is {'ON' if on else 'OFF'}",
                                    style="Good.TLabel" if on else "Bad.TLabel")
         self.toggle.configure(text="Turn off" if on else "Turn on", style="TButton" if on else "Accent.TButton")
+        mon = self.app.monitor
+        self.canary_label.configure(text=f"Credential canary: {mon.credentials.state}" if on and mon else "")
 
     def apply_options(self) -> None:
         cfg = self.app.config

@@ -80,11 +80,13 @@ def heartbeat_path(config: Any) -> Path:
     return Path(config.home) / HEARTBEAT_FILE
 
 
-def write_heartbeat(config: Any, started: Optional[float] = None, components: Sequence[str] = ()) -> bool:
-    """Called by the real-time monitor every 30 s. Atomic where the OS allows it. Never raises."""
+def write_heartbeat(config: Any, started: Optional[float] = None, components: Sequence[str] = (),
+                    guards: Optional[Dict[str, str]] = None) -> bool:
+    """Called by the real-time monitor every 30 s, with the state of guards that can be degraded (``guards``). Atomic
+    where the OS allows it. Never raises."""
     path = heartbeat_path(config)
     data = json.dumps({"pid": os.getpid(), "time": time.time(), "started": started, "components": list(components),
-                       "version": __version__})
+                       "guards": dict(guards or {}), "version": __version__})
     try:
         tmp = path.with_name(path.name + ".tmp")
         tmp.write_text(data, encoding="utf-8")
@@ -727,6 +729,32 @@ def check_monitor(config: Any, now: Optional[float] = None) -> DoctorCheck:
     return _chk("DOC-MONITOR", title, CheckStatus.PASS, f"Running (pid {pid}, heartbeat {max(0, int(age))} s ago; {comps}).")
 
 
+def check_credential_canary(config: Any, now: Optional[float] = None) -> DoctorCheck:
+    """Whether the running monitor's credential canary is watching its decoys, from the heartbeat."""
+    title = "Credential canary is watching its decoys"
+    hb = read_heartbeat(config)
+    if hb is None or (now if now is not None else time.time()) - float(hb["time"]) > HEARTBEAT_STALE_S:
+        return _chk("DOC-CREDCANARY", title, CheckStatus.SKIP, "Real-time protection is not running.")
+    state = (hb.get("guards") or {}).get("credential_canary") if isinstance(hb.get("guards"), dict) else None
+    if not state:
+        return _chk("DOC-CREDCANARY", title, CheckStatus.SKIP, "The running monitor does not report it (an older version, "
+                    "or the guard is not one of its components).")
+    if state == "off":
+        return _chk("DOC-CREDCANARY", title, CheckStatus.SKIP, "Switched off (setting realtime_credential_canary).")
+    if "nothing about file reads" in state:
+        return _chk("DOC-CREDCANARY", title, CheckStatus.SKIP, f"Not available here: {state.split(': ', 1)[-1]}.")
+    if state.startswith("watching") and ", but " not in state:
+        return _chk("DOC-CREDCANARY", title, CheckStatus.PASS, state[0].upper() + state[1:] + ".")
+    if "file_audit" in state:
+        fix = "Run `aegis harden --only windows.file_audit --apply` as administrator."
+    elif "administrator" in state:
+        fix = "Start real-time protection with administrator rights: `aegis install-service` from an elevated prompt."
+    else:
+        fix = "See logs/aegis.log in Aegis' data folder for why it could not start, then restart real-time protection."
+    return _chk("DOC-CREDCANARY", title, CheckStatus.WARN, f"Infostealers reading the decoys would go unnoticed: {state}.",
+                "low", fix)
+
+
 _PS_AV = r"""
 $ErrorActionPreference='SilentlyContinue'
 $r=[ordered]@{}
@@ -882,6 +910,7 @@ def doctor(config: Any = None, signatures: Any = None, now: Optional[float] = No
         ("DOC-PYYAML", "PyYAML (Sigma rules)", lambda: check_pyyaml(config)),
         ("DOC-SERVICE", "Background protection is installed", lambda: check_service(config)),
         ("DOC-MONITOR", "Real-time monitor is running", lambda: check_monitor(config, now)),
+        ("DOC-CREDCANARY", "Credential canary is watching its decoys", lambda: check_credential_canary(config, now)),
         ("DOC-AV", "An antivirus product is active", lambda: check_antivirus(config)),
         ("DOC-DISK", "Enough disk space for the quarantine", lambda: check_disk(config)),
         ("DOC-HISTORY", "Scan history is working", lambda: check_history(config)),

@@ -1905,7 +1905,8 @@ class RealtimeMonitor:
         from aegis.core.doctor import write_heartbeat
 
         while True:
-            write_heartbeat(self.config, self.started_at, self.components)
+            guards = {"credential_canary": self.credentials.state} if "credential_canary" in self.components else {}
+            write_heartbeat(self.config, self.started_at, self.components, guards)
             if stop.wait(HEARTBEAT_INTERVAL_S):
                 return
 
