@@ -536,63 +536,71 @@ class WindowsAuditSource:
                             "logged. Turn it on with: aegis harden --only windows.file_audit --apply")
         except Exception:
             log.debug("could not read the File System audit policy", exc_info=True)
+
+        def on_xml(xml: str) -> None:
+            a = access_from_event_xml(xml)
+            if a:
+                on_access(a)
+
         while not stop.is_set():
             try:
-                self._follow(stop, on_access)
+                follow_events("Security", self.QUERY, stop, on_xml)
             except OSError as exc:
                 log.warning("credential canary cannot read the Security log (%s); retrying in 30s", exc)
                 stop.wait(30)
 
-    def _follow(self, stop: threading.Event, on_access: Callable[[Access], None]) -> None:
-        import ctypes
-        from ctypes import wintypes
 
-        w = ctypes.WinDLL("wevtapi", use_last_error=True)  # type: ignore[attr-defined]
-        k32 = ctypes.WinDLL("kernel32", use_last_error=True)  # type: ignore[attr-defined]
-        H = wintypes.HANDLE
-        w.EvtSubscribe.argtypes = [H, H, wintypes.LPCWSTR, wintypes.LPCWSTR, H, ctypes.c_void_p, ctypes.c_void_p,
-                                   wintypes.DWORD]
-        w.EvtSubscribe.restype = H
-        w.EvtNext.argtypes = [H, wintypes.DWORD, ctypes.POINTER(H), wintypes.DWORD, wintypes.DWORD,
-                              ctypes.POINTER(wintypes.DWORD)]
-        w.EvtRender.argtypes = [H, H, wintypes.DWORD, wintypes.DWORD, ctypes.c_void_p, ctypes.POINTER(wintypes.DWORD),
-                                ctypes.POINTER(wintypes.DWORD)]
-        w.EvtClose.argtypes = [H]
-        k32.CreateEventW.argtypes = [ctypes.c_void_p, wintypes.BOOL, wintypes.BOOL, wintypes.LPCWSTR]
-        k32.CreateEventW.restype = H
-        k32.WaitForSingleObject.argtypes = [H, wintypes.DWORD]
-        k32.ResetEvent.argtypes = [H]
-        k32.CloseHandle.argtypes = [H]
+def follow_events(channel: str, query: str, stop: threading.Event, on_xml: Callable[[str], None]) -> None:
+    """Pull subscription to one event log channel: hands the XML of each new event to ``on_xml`` until ``stop``."""
+    import ctypes
+    from ctypes import wintypes
 
-        signal = k32.CreateEventW(None, True, True, None)  # manual reset, initially set
-        sub = w.EvtSubscribe(None, signal, "Security", self.QUERY, None, None, None, 1)  # EvtSubscribeToFutureEvents
-        if not sub:
-            k32.CloseHandle(signal)
-            raise OSError(ctypes.get_last_error(), "EvtSubscribe failed")
-        handles = (H * 16)()
-        got, used, count = wintypes.DWORD(), wintypes.DWORD(), wintypes.DWORD()
-        try:
-            while not stop.is_set():
-                k32.WaitForSingleObject(signal, 1000)
-                k32.ResetEvent(signal)  # before draining, so an event arriving meanwhile sets it again
-                while w.EvtNext(sub, 16, handles, 0, 0, ctypes.byref(got)):
-                    for i in range(got.value):
-                        try:
-                            w.EvtRender(None, handles[i], 1, 0, None, ctypes.byref(used), ctypes.byref(count))  # size
-                            buf = ctypes.create_unicode_buffer(used.value // 2 + 1)
-                            ok = w.EvtRender(None, handles[i], 1, ctypes.sizeof(buf), buf, ctypes.byref(used),
-                                             ctypes.byref(count))  # EvtRenderEventXml
-                        finally:
-                            w.EvtClose(handles[i])
-                        a = access_from_event_xml(buf.value) if ok else None
-                        if a:
-                            on_access(a)
-                err = ctypes.get_last_error()
-                if err not in (259, 1460):  # ERROR_NO_MORE_ITEMS, ERROR_TIMEOUT: drained
-                    raise OSError(err, "EvtNext failed")
-        finally:
-            w.EvtClose(sub)
-            k32.CloseHandle(signal)
+    w = ctypes.WinDLL("wevtapi", use_last_error=True)  # type: ignore[attr-defined]
+    k32 = ctypes.WinDLL("kernel32", use_last_error=True)  # type: ignore[attr-defined]
+    H = wintypes.HANDLE
+    w.EvtSubscribe.argtypes = [H, H, wintypes.LPCWSTR, wintypes.LPCWSTR, H, ctypes.c_void_p, ctypes.c_void_p,
+                               wintypes.DWORD]
+    w.EvtSubscribe.restype = H
+    w.EvtNext.argtypes = [H, wintypes.DWORD, ctypes.POINTER(H), wintypes.DWORD, wintypes.DWORD,
+                          ctypes.POINTER(wintypes.DWORD)]
+    w.EvtRender.argtypes = [H, H, wintypes.DWORD, wintypes.DWORD, ctypes.c_void_p, ctypes.POINTER(wintypes.DWORD),
+                            ctypes.POINTER(wintypes.DWORD)]
+    w.EvtClose.argtypes = [H]
+    k32.CreateEventW.argtypes = [ctypes.c_void_p, wintypes.BOOL, wintypes.BOOL, wintypes.LPCWSTR]
+    k32.CreateEventW.restype = H
+    k32.WaitForSingleObject.argtypes = [H, wintypes.DWORD]
+    k32.ResetEvent.argtypes = [H]
+    k32.CloseHandle.argtypes = [H]
+
+    signal = k32.CreateEventW(None, True, True, None)  # manual reset, initially set
+    sub = w.EvtSubscribe(None, signal, channel, query, None, None, None, 1)  # EvtSubscribeToFutureEvents
+    if not sub:
+        k32.CloseHandle(signal)
+        raise OSError(ctypes.get_last_error(), "EvtSubscribe failed")
+    handles = (H * 16)()
+    got, used, count = wintypes.DWORD(), wintypes.DWORD(), wintypes.DWORD()
+    try:
+        while not stop.is_set():
+            if k32.WaitForSingleObject(signal, 1000) != 0:  # WAIT_OBJECT_0: new events; EvtNext without one fails
+                continue
+            k32.ResetEvent(signal)  # before draining, so an event arriving meanwhile sets it again
+            while w.EvtNext(sub, 16, handles, 0, 0, ctypes.byref(got)):
+                for i in range(got.value):
+                    try:
+                        w.EvtRender(None, handles[i], 1, 0, None, ctypes.byref(used), ctypes.byref(count))  # size
+                        buf = ctypes.create_unicode_buffer(used.value // 2 + 1)
+                        ok = w.EvtRender(None, handles[i], 1, ctypes.sizeof(buf), buf, ctypes.byref(used),
+                                         ctypes.byref(count))  # EvtRenderEventXml
+                    finally:
+                        w.EvtClose(handles[i])
+                    if ok:
+                        on_xml(buf.value)
+            err = ctypes.get_last_error()
+            if err not in (259, 1460, 4317):  # NO_MORE_ITEMS, TIMEOUT, INVALID_OPERATION (asked again): drained
+                raise OSError(err, "EvtNext failed")
+    finally:
+        w.EvtClose(sub)
+        k32.CloseHandle(signal)
 
 
 _INOTIFY_EVENT = struct.Struct("=iIII")  # wd, mask, cookie, len; then len bytes of name

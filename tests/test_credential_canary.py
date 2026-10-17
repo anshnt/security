@@ -395,6 +395,28 @@ def test_real_inotify_reports_opens_but_not_stat(tmp_path):
         t.join(3)
 
 
+@pytest.mark.skipif(sys.platform != "win32", reason="Windows event log")
+def test_real_event_subscription_keeps_delivering_after_quiet_spells():
+    """The Security log needs admin; the Application log does not, and the pull subscription is the same. EvtNext called
+    again after a drain fails with ERROR_INVALID_OPERATION, which once ended the subscription before any event came."""
+    got, stop = [], threading.Event()
+    query = "*[System[Provider[@Name='Windows Error Reporting'] and (EventID=999)]]"
+    t = threading.Thread(target=cc.follow_events, args=("Application", query, stop, got.append), daemon=True)
+    t.start()
+    try:
+        time.sleep(3.5)  # several empty wake-ups first
+        assert t.is_alive()
+        subprocess.run(["powershell", "-NoProfile", "-Command", "Write-EventLog -LogName Application -Source "
+                        "'Windows Error Reporting' -EventId 999 -Message 'Aegis test event'"], check=True, timeout=60)
+        deadline = time.monotonic() + 10
+        while not got and time.monotonic() < deadline:
+            time.sleep(0.1)
+        assert got and "<EventID" in got[0] and "999" in got[0]
+    finally:
+        stop.set()
+        t.join(3)
+
+
 @pytest.mark.skipif(sys.platform != "win32" or not os.environ.get("CI"),
                     reason="turns on file-system auditing and reads the Security log; Windows CI only")
 def test_real_windows_audit_names_the_process_that_read_a_decoy(tmp_path):
