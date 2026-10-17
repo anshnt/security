@@ -1,6 +1,6 @@
 # Changelog
 
-## [Unreleased]
+## [1.7.0] - 2026-10-18
 
 ### Detection
 - **Credential canary (infostealer detection) in real-time protection.** Following arXiv 2609.30070, which points to
