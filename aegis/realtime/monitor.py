@@ -1,6 +1,6 @@
 """Real-time protection engine.
 
-Four independent guards, each on its own daemon thread(s), share one
+Independent guards, each on its own daemon thread(s), share one
 `RealtimeMonitor`:
 
 * FileGuard         - watches user-writable folders (ReadDirectoryChangesW on
@@ -12,6 +12,12 @@ Four independent guards, each on its own daemon thread(s), share one
                       mass-modification detector and an I/O tracker that finds
                       and *suspends* the likely culprit processes.
 * PersistenceGuard  - diffs autorun entries and the hosts file.
+* ClipboardGuard    - ClickFix commands and crypto address swaps
+                      (aegis.realtime.clipboard).
+* ExtensionGuard    - browser extensions added while it runs
+                      (aegis.realtime.extensions).
+* CredentialCanaryGuard - decoy browser-password and wallet files that only an
+                      infostealer reads (aegis.realtime.credcanary).
 
 Honesty note: this is user-mode protection. It reacts within about a second of
 an event, it cannot veto an operation before it happens like a kernel
@@ -1728,7 +1734,7 @@ class PersistenceGuard:
 
 # =========================================================================== the monitor
 
-ALL_COMPONENTS = ("files", "processes", "ransomware", "persistence", "clipboard", "extensions")
+ALL_COMPONENTS = ("files", "processes", "ransomware", "persistence", "clipboard", "extensions", "credential_canary")
 
 
 class RealtimeMonitor:
@@ -1758,10 +1764,12 @@ class RealtimeMonitor:
         self.ransomware = RansomwareGuard(self, canary_dirs)
         self.persistence = PersistenceGuard(self)
         from aegis.realtime.clipboard import ClipboardGuard
+        from aegis.realtime.credcanary import CredentialCanaryGuard
         from aegis.realtime.extensions import ExtensionGuard
 
         self.clipboard = ClipboardGuard(self)
         self.extensions = ExtensionGuard(self)
+        self.credentials = CredentialCanaryGuard(self)
 
     # ---- plumbing used by the guards
     @property
@@ -1868,7 +1876,8 @@ class RealtimeMonitor:
             self._running = True
             self.started_at = time.time()
             guards = {"files": self.files, "processes": self.processes, "ransomware": self.ransomware,
-                      "persistence": self.persistence, "clipboard": self.clipboard, "extensions": self.extensions}
+                      "persistence": self.persistence, "clipboard": self.clipboard, "extensions": self.extensions,
+                      "credential_canary": self.credentials}
             for name in self.components:
                 guard = guards.get(name)
                 if guard is None:
@@ -1939,7 +1948,8 @@ class RealtimeMonitor:
             self.stop()
 
     def remove_canaries(self) -> int:
-        return self.ransomware.remove_canaries()
+        """Delete the ransomware canaries and the credential decoys (both are planted again at the next start)."""
+        return self.ransomware.remove_canaries() + self.credentials.remove()
 
     def status(self) -> Dict[str, Any]:
         return {
@@ -1949,5 +1959,6 @@ class RealtimeMonitor:
             "watched": [str(p) for p, _ in self.files.specs],
             "canaries": len(self.ransomware.canaries.canaries) if self.ransomware.canaries else 0,
             "suspended_pids": sorted(self.ransomware.suspended),
+            "credential_canary": self.credentials.state,
             "stats": dict(self.stats),
         }

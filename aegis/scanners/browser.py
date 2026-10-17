@@ -326,7 +326,10 @@ def chromium_browser_roots(os_name: str = OS_NAME, home: Optional[Path] = None,
         add("chromium", "Chromium (snap)", home / "snap" / "chromium" / "common" / "chromium")
         add("chrome", "Google Chrome (flatpak)", home / ".var" / "app" / "com.google.Chrome" / "config" / "google-chrome")
         add("brave", "Brave (flatpak)", home / ".var" / "app" / "com.brave.Browser" / "config" / "BraveSoftware" / "Brave-Browser")
-    return out
+    from aegis.realtime.credcanary import decoy_roots, is_decoy
+
+    decoys = decoy_roots()  # Aegis's credential decoys: reading one would raise the alarm
+    return [r for r in out if not is_decoy(r.base, decoys)]
 
 
 def firefox_browser_roots(os_name: str = OS_NAME, home: Optional[Path] = None,

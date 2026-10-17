@@ -1,4 +1,4 @@
-"""Real-time protection: file, process, ransomware and persistence guards.
+"""Real-time protection: file, process, ransomware, persistence, clipboard, extension and credential canary guards.
 
 Aegis real-time protection runs entirely in user mode (no kernel driver): it
 reacts to file-system change notifications and polls process / autorun state.

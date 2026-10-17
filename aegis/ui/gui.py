@@ -1223,7 +1223,7 @@ class ProtectionPage(Page):
         f = self.frame
         f.columnconfigure(0, weight=1)
         f.rowconfigure(3, weight=1)
-        app.heading(f, "Protection", "Real-time file, process, ransomware, persistence, clipboard and extension guards").grid(row=0, column=0, sticky="w")
+        app.heading(f, "Protection", "Real-time file, process, ransomware, persistence, clipboard, extension and credential canary guards").grid(row=0, column=0, sticky="w")
         top = app.card(f)
         top.grid(row=1, column=0, sticky="ew", pady=(12, 0))
         top.columnconfigure(0, weight=1)
@@ -1243,6 +1243,7 @@ class ProtectionPage(Page):
             "notifications": tk.BooleanVar(value=cfg.notifications),
             "realtime_clipboard_guard": tk.BooleanVar(value=cfg.realtime_clipboard_guard),
             "realtime_extension_guard": tk.BooleanVar(value=cfg.realtime_extension_guard),
+            "realtime_credential_canary": tk.BooleanVar(value=cfg.realtime_credential_canary),
         }
         opts = ttk.Frame(top, style="Panel.TFrame")
         opts.grid(row=2, column=0, columnspan=2, sticky="w")
@@ -1253,6 +1254,7 @@ class ProtectionPage(Page):
             "notifications": "Desktop notifications",
             "realtime_clipboard_guard": "Clipboard guard (fake CAPTCHA commands, crypto address swaps)",
             "realtime_extension_guard": "Extension guard (new browser extensions)",
+            "realtime_credential_canary": "Credential canary (decoy browser passwords and wallet; Windows: run as admin)",
         }
         for i, (key, var) in enumerate(self.vars.items()):
             ttk.Checkbutton(opts, text=labels[key], variable=var, command=self.apply_options).grid(
@@ -1332,8 +1334,9 @@ class ProtectionPage(Page):
         if mon is None:
             self.app.messagebox.showinfo("Canary files", "Start real-time protection first.")
             return
-        if self.app.messagebox.askyesno("Remove canary files", "Delete all hidden ransomware canary files? "
-                                        "They are recreated the next time protection starts."):
+        if self.app.messagebox.askyesno("Remove canary files", "Delete the hidden ransomware canary files and the decoy "
+                                        "browser-password and wallet files? They are recreated the next time protection "
+                                        "starts."):
             self.app.set_status(f"Removed {mon.remove_canaries()} canary file(s)")
 
 
