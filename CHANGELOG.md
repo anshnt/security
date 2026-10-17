@@ -18,6 +18,8 @@
     decoys, since user mode gets no signal for file reads.
   - Aegis's own file, browser and secrets scanners skip the decoys. Setting: `realtime_credential_canary`, also on the
     GUI Protection page; "Remove canary files" deletes the decoys too.
+  - `aegis doctor` reports whether the canary is really watching (`DOC-CREDCANARY`: not running without administrator
+    rights, or File System auditing off, with the fix), and the Protection page shows its state.
 
 ### Hardening
 - **`windows.file_audit`** (recommended and strict profiles): turns on success auditing for the File System
